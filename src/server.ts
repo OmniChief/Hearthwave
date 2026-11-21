@@ -13,7 +13,7 @@ import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, complete
 import { discoverProvider, discoverSeriesEpisodes, fetchTitleMetadata, importProvider, providerGuide, resolveProviderStream, type ProviderScanProgress } from './adapters/providers.ts';
 import { importXmltv } from './guide.ts';
 import { localSubtitles, subtitleVtt } from './subtitles.ts';
-import { fetchM3u, ProviderError, validateProviderUrl } from './adapters/network.ts';
+import { checkMediaResponse, fetchM3u, ProviderError, validateProviderUrl } from './adapters/network.ts';
 import type { GuideProgramme, ImportItem, ProviderCategory, ProviderConfig, SourceType, User } from './model.ts';
 
 const webRoot = join(dirname(fileURLToPath(import.meta.url)), '..', 'web');
@@ -821,7 +821,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       url:v.source_type === 'folder' ? `/api/media/${v.id}/file` : v.source_type === 'stalker' ? null : v.url.startsWith('xtream-series:') ? null : v.url,
     })) });
   }
-  const resolveMatch = /^\/api\/variants\/(\d+)\/resolve$/.exec(path);
+  const resolveMatch = /^\/api\/variants\/(\d+)\/(resolve|check-playback)$/.exec(path);
   if (resolveMatch && method === 'POST') {
     requireWrite(req);
     const variant = getVariant(positiveId(resolveMatch[1]));
@@ -829,6 +829,10 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     const source = getSource(variant.source_id);
     if (!source) throw new HttpError(404,'Source connection not found.');
     const stream = await resolveProviderStream(source,variant.url);
+    if (resolveMatch[2] === 'check-playback') {
+      const message = await checkMediaResponse(stream, Boolean(source.config.allowLan));
+      return send(res,200,{message});
+    }
     return send(res,200,{url:stream});
   }
   const favouriteMatch = /^\/api\/titles\/(\d+)\/favourite$/.exec(path);
