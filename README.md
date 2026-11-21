@@ -6,7 +6,7 @@ Hearthwave is a new, self-hosted home entertainment platform. Instead of opening
 
 This repository is a fresh implementation, not a fork of Vaultcast. The initial milestone targets low-resource ARM64 and x64 NAS devices with one Node.js process and an embedded SQLite database. There is no PHP, Docker, Redis, separate database server or external scheduler in the runtime.
 
-## Current status — source and quality selection (0.15.0)
+## Current status — browser-side HLS playback (0.16.0)
 
 Working now:
 
@@ -56,8 +56,10 @@ Working now:
 - All available film/episode/Live variants expose a normalized quality tier (4K, FHD, HD, SD or unknown). A title's detail page groups its connections by quality, displays their source and provider folder when available, and offers a specific **Play this version** choice. Identical titles stay grouped while their provider options remain accessible.
 - The player has a direct **Connection** selector, in addition to **Try another source** and automatic bounded fallback. Per-user quality preferences are stored in SQLite and can be changed within the player by every viewer, or under **Settings > Appearance & Playback** by administrators. Preference changes take effect on the next playback; a manually selected connection overrides the default order.
 - Playback requests use a generation guard so a slower response for an earlier title or channel cannot replace a newer choice. Quality preferences choose between existing streams; they do not convert files, proxy video through the NAS or promise browser codec support.
+- **HLS streams (`.m3u8`) can now play through a browser-side HLS engine** when Media Source Extensions are supported; devices with native HLS playback use their built-in video support when the engine is unavailable. Other video formats still use the native video element. HLS support is loaded only when needed and does not add NAS transcoding, a stream proxy, or runtime npm dependencies.
+- HLS startup waits for the manifest before starting video. A bounded startup watchdog, one media-error recovery attempt and one network-error recovery attempt precede existing source fallback. Switching channel, selecting another connection or closing the player releases the old HLS engine so stale streams cannot take over.
 
-Provider integration is an **early compatibility implementation**, not a fully tested release: portal variants differ, and no live provider account has yet been used for end-to-end verification. Episodes are fetched when a viewer opens a series, rather than during bulk catalogue scans. Some Stalker portals may expose episodes in unsupported forms. No transcoding or guaranteed browser codec support is included.
+Provider integration is an **early compatibility implementation**, not a fully tested release: portal variants differ, and no live provider account has yet been used for end-to-end verification. Episodes are fetched when a viewer opens a series, rather than during bulk catalogue scans. Some Stalker portals may expose episodes in unsupported forms. HLS in the MediaSource engine requires the provider to allow cross-origin browser requests for its manifest, segments and encryption keys; otherwise native browser support or another accessible connection is needed. No transcoding or guaranteed browser codec support is included.
 
 Designed but **not yet implemented**: automatically refreshed XMLTV schedules, external artwork/metadata enrichment beyond what providers supply, remote-provider subtitle discovery, downloads/acquisition, personal scheduled channels, emulation, games, AI generation, community, file sharing, pairing worker PCs, complete installer/updater, guided backup restore and migration rollback. Directional controls now work at the browser level, but native remote mapping and television playback still need device validation. Navigation destinations for unbuilt capabilities are previews only.
 
@@ -76,6 +78,8 @@ PORT=9090 HOST=127.0.0.1 HEARTHWAVE_DATA_DIR=/path/to/your/data npm start
 ```
 
 No `npm install` is required to start this preview because it uses Node built-ins. This is a development build, **not yet a hardened installer-ready release**. For access outside your home network, place it behind an authenticated HTTPS reverse proxy and apply appropriate firewall rules. For now, imported M3U playlists are pasted in Settings; a stored reference URL is not automatically fetched.
+
+The HLS viewer engine is a locally hosted copy of the Apache-2.0-licensed **hls.js 1.7.4 light UMD distribution** in `web/vendor/hls.light.min.js` (license: `web/vendor/HLS-LICENSE.txt`). It is downloaded by browsers only when an HLS stream is opened, and no CDN is needed.
 
 ### Add a provider
 
@@ -102,6 +106,8 @@ This runs in the existing browser client without installing a television SDK, br
 Choose **Details** on a Library item to view available metadata and select an individual source. Where one provider offers no artwork or description, Hearthwave uses what another source supplied for the shared title; it does not make an external lookup.
 
 The title page groups every known connection under **4K, FHD, HD, SD** or **Unspecified quality**. Use **Play this version** to pick a particular connection. In the player, **Connection** immediately switches to any other available version, while **Try another source** cycles through options. Stream errors and sustained stalls automatically try subsequent connections; browser codec support still determines whether playback succeeds.
+
+For an HLS connection (`.m3u8`), compatible browsers can use a built-in browser-side HLS.js engine, while native HLS browsers can use their own implementation. The HLS engine needs your provider to permit browser CORS requests; Hearthwave does not route media through the NAS to bypass that restriction. A provider URL that is not labelled as HLS still uses the native video element. This is an early device compatibility improvement, not a guarantee for every IPTV provider or Smart TV.
 
 Each viewer can change **Quality preference** in the player; administrators can also use **Settings > Appearance & Playback**. Choose Auto to try the best-labelled version first, or prefer FHD/HD/SD when your device or connection is more reliable at a lower quality. These are priorities, not hard exclusions: unknown and higher-quality versions remain available as fallbacks. The choice is saved to your household account and applies when you next start a title. No video transcoding takes place on the NAS.
 
@@ -167,7 +173,7 @@ Provider requests block localhost and link-local/cloud-metadata destinations. Pr
 
 1. **Foundation:** shared UI, accounts, content identity and source setup (delivered as the first preview).
 2. **Source adapters:** initial Xtream/Stalker connections, selected imports and playback resolution (delivered in v0.2).
-3. **Core media:** on-demand provider series episode browsing (v0.3), Library details and explicit source choice (v0.5), identity matching and local sidecar subtitles (v0.6), manual provider metadata refresh and saved Library views (v0.7), season accordions and next-episode controls (v0.8), full-catalogue paging (v0.10), multi-source genre browsing (v0.14), grouped quality/connection selection and per-user playback priority (v0.15); external metadata services, remote subtitles, requests and downloads remain planned.
+3. **Core media:** on-demand provider series episode browsing (v0.3), Library details and explicit source choice (v0.5), identity matching and local sidecar subtitles (v0.6), manual provider metadata refresh and saved Library views (v0.7), season accordions and next-episode controls (v0.8), full-catalogue paging (v0.10), multi-source genre browsing (v0.14), grouped quality/connection selection and per-user playback priority (v0.15), browser-side HLS engine (v0.16); external metadata services, remote subtitles, requests and downloads remain planned.
 4. **Live:** provider guide lookup (v0.3), normalized channel matching and manual unified XMLTV (v0.4), manual channel mapping (v0.5), a paginated multi-day guide timeline (v0.9), server-indexed region/genre filters (v0.10); automated guide refresh, broader portal compatibility, radio and personal channels remain planned.
 5. **Extended:** games, arcade, creative studio, worker pairing, Community and My Space.
 6. **Hardening:** administrator backup export and basic process metrics (v0.12), directional keyboard/TV-remote navigation (v0.13); on-device installer/updater, 1 GB RAM profiling, real-device remote compatibility, security audit, guided restore and rollback remain planned.

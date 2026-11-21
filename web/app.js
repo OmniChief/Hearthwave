@@ -1,7 +1,10 @@
 import { installTvNavigation } from './tv-navigation.js';
 import { orderPlaybackVariants, playbackVariantLabel } from './playback-variants.js';
+import { prepareMedia } from './hls-playback.js';
 
 const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', libraryGenre: '', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], sourceJobs: {}, sourcePollTimer: null, detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, qualityPreference: 'auto', activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackRequest: 0, playbackGeneration: 0, recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
+let releaseMedia = () => {};
+let failedPlaybackGeneration = -1;
 const $ = (selector) => document.querySelector(selector);
 const page = $('#page');
 
@@ -554,20 +557,38 @@ function clearPlaybackRecovery() {
   state.recoveryTimer=null;
 }
 
-/** A bounded client-only stall watchdog. Pausing intentionally never triggers source changes. */
-function schedulePlaybackRecovery(generation,delay) {
+/** Startup can time out before playback begins; intentional pauses after starting never switch sources. */
+function schedulePlaybackRecovery(generation,delay,startup=false) {
   clearPlaybackRecovery();
   state.recoveryTimer=setTimeout(()=>{
-    if(generation!==state.playbackGeneration || $('#player-overlay').hidden || $('#player').paused || $('#player').ended) return;
-    if(state.variantIndex+1<state.variants.length) nextSource();
-    else $('#player-message').textContent='The stream has stalled and there are no more sources to try. You can open it externally or choose another title.';
+    if(generation!==state.playbackGeneration || $('#player-overlay').hidden || $('#player').ended) return;
+    if(!startup && $('#player').paused) return;
+    failSource(generation,'The stream did not start or has stalled. Try another connection or open it externally.');
   },delay);
+}
+
+function disposeMedia() {
+  const dispose=releaseMedia;
+  releaseMedia=()=>{};
+  dispose();
+}
+
+function failSource(generation,message) {
+  if(generation!==state.playbackGeneration || $('#player-overlay').hidden || failedPlaybackGeneration===generation) return;
+  failedPlaybackGeneration=generation;
+  clearPlaybackRecovery();
+  if(state.variantIndex+1<state.variants.length) {nextSource();return;}
+  disposeMedia();
+  $('#player').pause();
+  $('#player-message').textContent=message;
 }
 
 async function playVariant() {
   const generation = ++state.playbackGeneration;
+  failedPlaybackGeneration=-1;
   const item = state.variants[state.variantIndex];
   const video = $('#player');
+  const alive=()=>generation===state.playbackGeneration && !$('#player-overlay').hidden;
   clearPlaybackRecovery();
   state.playbackStarted=false;
   state.lastMediaTime=0;
@@ -576,32 +597,37 @@ async function playVariant() {
   $('#player-source').textContent = `${playbackVariantLabel(item)} (${state.variantIndex + 1}/${state.variants.length})`;
   $('#player-variant').value=String(state.variantIndex);
   $('#try-next').disabled = state.variants.length < 2;
+  disposeMedia();
   video.pause();
   clearSubtitles();
   video.removeAttribute('src');
   video.load();
   try {
     const url = item.resolve ? (await api(`/api/variants/${item.id}/resolve`, { method:'POST' })).url : item.url;
-    if (generation !== state.playbackGeneration || $('#player-overlay').hidden) return;
+    if (!alive()) return;
     if (!url) throw new Error('No stream URL was returned.');
     state.resolvedUrl = url;
-    $('#player-message').textContent = '';
-    video.src = url;
-    video.load();
-    void loadSubtitles(item,generation);
-    schedulePlaybackRecovery(generation,20000);
-    video.play().catch(error=>{
-      if(generation!==state.playbackGeneration || $('#player-overlay').hidden) return;
-      if(error.name==='NotAllowedError') {clearPlaybackRecovery();$('#player-message').textContent='Press Play to start this stream.';}
-      else if(error.name!=='AbortError') {
-        if(state.variantIndex+1<state.variants.length) nextSource();
-        else {clearPlaybackRecovery();$('#player-message').textContent='This format could not play in your browser. Try opening the stream externally.';}
+    $('#player-message').textContent='Preparing stream…';
+    schedulePlaybackRecovery(generation,20000,true);
+    const dispose=await prepareMedia(video,url,{
+      alive,
+      fatal:message=>failSource(generation,message),
+      ready:()=>{
+        if(!alive()) return;
+        $('#player-message').textContent='';
+        void loadSubtitles(item,generation);
+        video.play().catch(error=>{
+          if(!alive() || failedPlaybackGeneration===generation) return;
+          if(error.name==='NotAllowedError') {clearPlaybackRecovery();$('#player-message').textContent='Press Play to start this stream.';}
+          else if(error.name!=='AbortError') failSource(generation,'This format could not play in your browser. Try opening the stream externally.');
+        });
       }
     });
+    if(!alive() || failedPlaybackGeneration===generation) dispose();
+    else releaseMedia=dispose;
   } catch (error) {
-    if (generation !== state.playbackGeneration || $('#player-overlay').hidden) return;
-    if (state.variantIndex + 1 < state.variants.length) nextSource();
-    else $('#player-message').textContent = error instanceof Error ? error.message : 'Could not connect to your provider.';
+    if (!alive()) return;
+    failSource(generation,error instanceof Error ? error.message : 'Could not connect to your provider.');
   }
 }
 
@@ -655,6 +681,7 @@ function closePlayer() {
   state.playbackRequest++;
   state.playbackGeneration++;
   clearPlaybackRecovery();
+  disposeMedia();
   if(document.fullscreenElement===$('#player-panel')) void document.exitFullscreen?.();
   state.resolvedUrl = null;
   const video = $('#player');
@@ -957,7 +984,7 @@ $('#open-stream').addEventListener('click', () => {
   if (state.resolvedUrl && /^https?:\/\//i.test(state.resolvedUrl)) window.open(state.resolvedUrl, '_blank', 'noopener,noreferrer');
   else notify('The local stream is available only inside Hearthwave.');
 });
-$('#player').addEventListener('error', () => { if (!$('#player-overlay').hidden && state.resolvedUrl) nextSource(); });
+$('#player').addEventListener('error', () => { if (state.resolvedUrl) failSource(state.playbackGeneration,'The browser could not play this stream. Try another connection or open it externally.'); });
 $('#player').addEventListener('playing',()=>{state.playbackStarted=true;clearPlaybackRecovery();$('#player-message').textContent='';});
 for(const eventName of ['waiting','stalled']) $('#player').addEventListener(eventName,()=>{
   if(state.playbackStarted && !$('#player').paused && !$('#player-overlay').hidden && !state.recoveryTimer) schedulePlaybackRecovery(state.playbackGeneration,25000);

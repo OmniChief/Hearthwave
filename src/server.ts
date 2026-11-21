@@ -17,7 +17,7 @@ import type { GuideProgramme, ImportItem, ProviderCategory, ProviderConfig, Sour
 
 const webRoot = join(dirname(fileURLToPath(import.meta.url)), '..', 'web');
 const allowedAssets: Record<string, string> = {
-  '/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/tv-navigation.js': 'tv-navigation.js', '/playback-variants.js': 'playback-variants.js',
+  '/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/tv-navigation.js': 'tv-navigation.js', '/playback-variants.js': 'playback-variants.js', '/hls-playback.js': 'hls-playback.js', '/vendor/hls.light.min.js': 'vendor/hls.light.min.js',
   '/styles.css': 'styles.css', '/manifest.webmanifest': 'manifest.webmanifest',
   '/sw.js': 'sw.js', '/icon.svg': 'icon.svg',
 };
@@ -330,7 +330,7 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const path = url.pathname;
   const method = req.method || 'GET';
-  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.15.0' });
+  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.16.0' });
   if (path === '/api/session' && method === 'GET') {
     const current = session(req);
     return send(res, 200, { needsSetup: !hasUsers(), user: current?.user || null, csrf: current?.csrf || null });
@@ -376,7 +376,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   if (path === '/api/system/status' && method === 'GET') {
     if (current.user.role !== 'admin') throw new HttpError(403, 'Administrator access required.');
     const databaseInfo = await stat(join(dataDir, 'hearthwave.sqlite'));
-    return send(res, 200, { version: '0.15.0', schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, databaseBytes: databaseInfo.size, rssBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(process.uptime()), backupBusy: backupBusy() });
+    return send(res, 200, { version: '0.16.0', schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, databaseBytes: databaseInfo.size, rssBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(process.uptime()), backupBusy: backupBusy() });
   }
   if (path === '/api/system/backup' && method === 'POST') {
     requireWrite(req, true);
@@ -753,7 +753,7 @@ const server = createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: http: https:; media-src 'self' blob: http: https:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'");
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: http: https:; media-src 'self' blob: http: https:; connect-src 'self' http: https:; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'none'");
   try {
     const url = new URL(req.url || '/', 'http://localhost');
     if (url.pathname.startsWith('/api/')) return await api(req, res, url);
