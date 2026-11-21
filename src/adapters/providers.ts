@@ -415,7 +415,7 @@ export async function discoverSeriesEpisodes(source: SourceRow, encoded: string,
         if (episodes.length > 1000) throw new ProviderError('This show exceeds the 1,000-episode safety limit.');
       }
     }
-  } else if (source.type === 'stalker' && /^stalker-series:[^:]{1,100}$/.test(encoded)) {
+  } else if (source.type === 'stalker' && /^stalker-series:[^\x00-\x1f\x7f]{1,100}$/.test(encoded)) {
     const root = encoded.slice('stalker-series:'.length);
     const client = new StalkerClient(source);
     const queue: Array<{id:string;season:number}> = [{id:root,season:0}];
