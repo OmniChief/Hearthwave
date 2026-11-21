@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#111724">
+    <meta name="description" content="Your entertainment, together. Library, live television and more in one home.">
+    <title>Hearthwave — Your entertainment, together</title>
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" type="module" defer></script>
+  </head>
+  <body>
+    <div id="auth" class="auth-screen" hidden>
+      <div class="auth-glow"></div>
+      <div class="auth-panel">
+        <div class="brand brand-large"><span class="brand-mark">◒</span><span>hearthwave<span class="brand-dot">.</span></span></div>
+        <div class="eyebrow">A better way to feel at home</div>
+        <h1 id="auth-title">Welcome back.</h1>
+        <p id="auth-description" class="muted">Everything you love, one place to enjoy it.</p>
+        <form id="auth-form" class="field-stack">
+          <label>Username<input name="username" minlength="3" maxlength="50" autocomplete="username" required placeholder="Your username"></label>
+          <label>Password<input name="password" type="password" minlength="12" maxlength="256" autocomplete="current-password" required placeholder="Your password"></label>
+          <button class="button button-primary" id="auth-submit" type="submit">Sign in</button>
+        </form>
+        <p class="form-message" id="auth-error" aria-live="polite"></p>
+        <p class="auth-note">Made for your own server. No cloud account required.</p>
+      </div>
+    </div>
+
+    <div id="shell" class="shell" hidden>
+      <aside class="sidebar">
+        <a href="#home" class="brand" id="brand-link"><span class="brand-mark">◒</span><span>hearthwave<span class="brand-dot">.</span></span></a>
+        <div class="sidebar-caption">YOUR WORLD</div>
+        <nav class="primary-nav" aria-label="Main navigation">
+          <button data-page="home" class="nav-link selected"><span class="nav-icon">⌂</span>Home</button>
+          <button data-page="library" class="nav-link"><span class="nav-icon">▣</span>Library</button>
+          <button data-page="live" class="nav-link"><span class="nav-icon">▻</span>Live</button>
+          <button data-page="play" class="nav-link"><span class="nav-icon">◈</span>Play</button>
+          <button data-page="create" class="nav-link"><span class="nav-icon">✳</span>Create</button>
+          <button data-page="community" class="nav-link"><span class="nav-icon">♧</span>Community</button>
+          <button data-page="my-space" class="nav-link"><span class="nav-icon">☷</span>My Space</button>
+          <button data-page="settings" class="nav-link mobile-settings"><span class="nav-icon">⚙</span>Settings</button>
+        </nav>
+        <div class="sidebar-footer">
+          <button data-page="settings" class="nav-link" id="settings-link"><span class="nav-icon">⚙</span>Settings</button>
+          <div class="sidebar-user"><div class="avatar" id="avatar">H</div><div><strong id="current-user">Home</strong><small id="current-role">Profile</small></div></div>
+          <button class="subtle-button" id="sign-out">Sign out <span>↗</span></button>
+        </div>
+      </aside>
+      <main class="main-area">
+        <header class="topbar">
+          <div class="topbar-leading"><span class="topbar-label">YOUR PERSONAL ENTERTAINMENT HUB</span><h1 id="page-title">Home</h1></div>
+          <div class="topbar-controls"><label class="search-wrap"><span aria-hidden="true">⌕</span><input id="global-search" type="search" placeholder="Search your entertainment" aria-label="Search your entertainment"></label><span class="connection-indicator"><span class="online-dot"></span>Home server</span></div>
+        </header>
+        <div id="notice" class="notice" role="status" hidden></div>
+        <div id="page" class="page-content"></div>
+        <footer class="site-footer">Hearthwave <span>•</span> Private by design <span>•</span> Foundation preview v0.1</footer>
+      </main>
+    </div>
+
+    <div id="player-overlay" class="player-overlay" role="dialog" aria-modal="true" aria-label="Media player" hidden>
+      <div class="player-panel">
+        <div class="player-heading"><div><span class="eyebrow">NOW PLAYING</span><h2 id="player-title">Player</h2></div><button class="icon-button" id="close-player" aria-label="Close player">×</button></div>
+        <video id="player" controls playsinline preload="metadata"></video>
+        <p class="player-message" id="player-message" aria-live="polite"></p>
+        <div class="player-actions"><div id="player-source" class="muted">Source</div><div class="player-buttons"><button class="button button-quiet" id="try-next">Try another source</button><button class="button button-quiet" id="open-stream">Open stream ↗</button></div></div>
+      </div>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "name": "Hearthwave",
+  "short_name": "Hearthwave",
+  "description": "Your entertainment, together.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#111724",
+  "theme_color": "#111724",
+  "icons": [{"src":"/icon.svg", "sizes":"any", "type":"image/svg+xml", "purpose":"any maskable"}]
+}
