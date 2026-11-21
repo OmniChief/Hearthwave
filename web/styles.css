@@ -178,6 +178,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .player-panel video { display:block; background:black; width:100%; max-height:65vh; aspect-ratio:16/9; }
 .player-message { color:#ffb9b2; font-size:13px; min-height:19px; }
 .player-actions { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; }
+.player-details { display:grid; gap:8px; }
+.subtitle-picker { display:flex; gap:9px; align-items:center; color:#b9c4d1; font-size:12px; }
+.subtitle-picker[hidden] { display:none; }
+.subtitle-picker select { background:#101924; color:#f1f4f8; border:1px solid #465365; border-radius:8px; padding:6px 9px; }
 .player-buttons { display:flex; gap:8px; flex-wrap:wrap; }
 .preview-banner { border:1px solid #5e4d43; background:#2f292d; padding:12px 17px; border-radius:11px; color:#f5ceac; font-size:12px; margin-bottom:22px; }
 @media (max-width:1120px) { .sidebar { flex-basis:205px; } .topbar { flex-wrap:wrap; } .topbar-controls { width:100%; } .search-wrap { width:min(500px,80%); } .feature-grid { grid-template-columns:repeat(2,1fr); } }

@@ -176,12 +176,13 @@ function xtreamRows(rows: unknown, source: SourceRow, category: ProviderCategory
     if (!/^[a-z0-9]{2,8}$/.test(ext)) continue;
     items.push({
       kind:kind === 'live' ? 'channel' : kind === 'vod' ? 'film' : 'series', title:name,
-      year:yearFrom(row.releaseDate || row.release_date || name),
+      year:yearFrom(row.releaseDate || row.release_date || row.year || name),
       externalId:kind === 'live' ? field(row.epg_channel_id || row.xmltv_id) : '',
       sourceRef:`${kind}:${id}`, url:kind === 'series' ? `xtream-series:${id}` : client.url(kind,id,ext),
       quality:quality(name),group:category.name,artwork:artwork(row.stream_icon || row.cover || row.backdrop_path),
       description:description(row.plot || row.description),genres:genres(row.genre || row.genres),
       rating:rating(row.rating_5based != null ? Number(row.rating_5based)*2 : row.rating_imdb ?? row.rating),
+      imdbId:field(row.imdb_id || row.imdb),tmdbId:field(row.tmdb_id),
     });
   }
   return items;
@@ -204,6 +205,7 @@ function stalkerRows(rows: unknown, category: ProviderCategory): ImportItem[] {
       quality:quality(name),group:category.name,artwork:artwork(row.logo || row.screenshot_uri),
       description:description(row.description || row.plot),genres:genres(row.genre || row.genres),
       rating:rating(row.rating_imdb ?? row.rating),
+      imdbId:field(row.imdb_id || row.imdb),tmdbId:field(row.tmdb_id),
     });
   }
   return items;

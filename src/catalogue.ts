@@ -7,7 +7,22 @@ const VIDEO_EXTS = new Set(['.mp4', '.m4v', '.mkv', '.avi', '.mov', '.webm']);
 const MUSIC_EXTS = new Set(['.mp3', '.flac', '.m4a', '.wav']);
 
 export function cleanTitle(raw: string): string {
-  return raw.replace(/\.[^.]+$/, '').replace(/[._]+/g, ' ').replace(/\s*(?:\[(?:4K|2160P|1080P|720P|UHD|FHD|HEVC|HD|SD)\]|\((?:4K|2160P|1080P|720P|UHD|FHD|HEVC|HD|SD)\))\s*/gi, ' ').replace(/\s+/g, ' ').trim();
+  return raw.replace(/\.(?:mp4|m4v|mkv|avi|mov|webm|mp3|flac|m4a|wav|jpg|jpeg|png|webp)$/i, '').replace(/[._]+/g, ' ').replace(/\s*(?:\[(?:4K|2160P|1080P|720P|UHD|FHD|HEVC|HD|SD)\]|\((?:4K|2160P|1080P|720P|UHD|FHD|HEVC|HD|SD)\))\s*/gi, ' ').replace(/\s+/g, ' ').trim();
+}
+
+export function displayLibraryTitle(raw:string):string {
+  const name=cleanTitle(raw)
+    .replace(/^(?:(?:UK|US|USA|EN|ENGLISH)\s*[-:|]\s*)+/i,'')
+    .replace(/^(?:(?:NF|NETFLIX|DISNEY\+|AMAZON|APPLE TV\+)\s*[-:|]\s*)+/i,'')
+    .replace(/\s+(?:4K|UHD|FHD|1080P|720P|HEVC|H265|H264|HD|SD)$/i,'')
+    .replace(/(?:\s*\[|\s*\(|\s+)(?:19\d{2}|20\d{2})[\])]?$/i,'').trim();
+  return name || cleanTitle(raw);
+}
+
+/** Stable title identity across provider prefixes, quality labels and optional release-year suffixes. */
+export function libraryMatchKey(raw: string): string {
+  return displayLibraryTitle(raw).normalize('NFKC').toLowerCase().replace(/&/g,' and ')
+    .replace(/[^\p{L}\p{N}]+/gu,' ').trim().slice(0,300);
 }
 
 const channelQualities = /(?:[\s|:/-]+|^)(?:4K|UHD|FHD|FULL\s*HD|HD|SD|HEVC|H265|H264|1080P|720P|2160P)\s*$/i;

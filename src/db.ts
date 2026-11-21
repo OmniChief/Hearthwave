@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { canonicalKey, channelCountry, channelKey, cleanTitle, displayChannelTitle } from './catalogue.ts';
+import { canonicalKey, channelCountry, channelKey, cleanTitle, displayChannelTitle, displayLibraryTitle, libraryMatchKey } from './catalogue.ts';
 import { secretStore } from './secrets.ts';
 import type { ImportItem, MediaKind, ProviderCategory, ProviderConfig, SourceInput, User } from './model.ts';
 
@@ -16,7 +16,7 @@ const secrets = secretStore(dataDir);
 export const db = new DatabaseSync(join(dataDir, 'hearthwave.sqlite'), { enableForeignKeyConstraints: true });
 db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 3000; PRAGMA synchronous = NORMAL;');
 const schemaVersion = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
-if (schemaVersion > 5) throw new Error(`Database schema ${schemaVersion} requires a newer Hearthwave version.`);
+if (schemaVersion > 6) throw new Error(`Database schema ${schemaVersion} requires a newer Hearthwave version.`);
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -134,6 +134,60 @@ if (schemaVersion < 5) {
     COMMIT;
   `);
 }
+if (schemaVersion < 6) {
+  db.exec(`
+    BEGIN IMMEDIATE;
+    ALTER TABLE titles ADD COLUMN match_key TEXT NOT NULL DEFAULT '';
+    ALTER TABLE titles ADD COLUMN imdb_id TEXT NOT NULL DEFAULT '';
+    ALTER TABLE titles ADD COLUMN tmdb_id TEXT NOT NULL DEFAULT '';
+    CREATE INDEX titles_library_match ON titles(kind,match_key,year);
+    CREATE INDEX titles_library_imdb ON titles(kind,imdb_id) WHERE imdb_id<>'';
+    CREATE INDEX titles_library_tmdb ON titles(kind,tmdb_id) WHERE tmdb_id<>'';
+  `);
+  try {
+    // Process existing rows in small pages; avoid materialising a full provider catalogue in RAM.
+    const batch=db.prepare("SELECT id,title FROM titles WHERE kind IN ('film','series') AND id>? ORDER BY id LIMIT 512");
+    const update=db.prepare('UPDATE titles SET match_key=?,title=? WHERE id=?');
+    let cursor=0;
+    for (;;) {
+      const rows=batch.all(cursor) as Array<{id:number;title:string}>;
+      if (!rows.length) break;
+      for (const row of rows) update.run(libraryMatchKey(row.title),displayLibraryTitle(row.title),row.id);
+      cursor=rows[rows.length-1].id;
+    }
+    // Merge only unambiguous identities; distinct known release years stay separate.
+    const duplicates=db.prepare(`SELECT kind,match_key FROM titles WHERE match_key<>''
+      AND kind IN ('film','series') GROUP BY kind,match_key HAVING COUNT(*)>1`).all() as Array<{kind:string;match_key:string}>;
+    const candidates=db.prepare('SELECT id,year FROM titles WHERE kind=? AND match_key=? ORDER BY id');
+    const read=db.prepare('SELECT * FROM titles WHERE id=?');
+    const fill=db.prepare(`UPDATE titles SET year=?,artwork=?,description=?,genres=?,rating=?,duration_seconds=?,imdb_id=?,tmdb_id=? WHERE id=?`);
+    const variants=db.prepare('UPDATE variants SET title_id=? WHERE title_id=?');
+    const children=db.prepare('UPDATE variants SET series_parent_id=? WHERE series_parent_id=?');
+    const favourites=db.prepare('INSERT OR IGNORE INTO favourites(user_id,title_id) SELECT user_id,? FROM favourites WHERE title_id=?');
+    const progress=db.prepare(`INSERT INTO progress(user_id,title_id,position_seconds,updated_at)
+      SELECT user_id,?,position_seconds,updated_at FROM progress WHERE title_id=?
+      ON CONFLICT(user_id,title_id) DO UPDATE SET position_seconds=MAX(progress.position_seconds,excluded.position_seconds)`);
+    const remove=db.prepare('DELETE FROM titles WHERE id=?');
+    type MergeTitle={year:number|null;artwork:string|null;description:string;genres:string;rating:number|null;duration_seconds:number|null;imdb_id:string;tmdb_id:string};
+    const merge=(primaryId:number,duplicateId:number):void=>{
+      const a=read.get(primaryId) as MergeTitle;
+      const b=read.get(duplicateId) as MergeTitle;
+      fill.run(a.year || b.year || null,a.artwork || b.artwork || '',a.description || b.description || '',a.genres || b.genres || '',a.rating ?? b.rating ?? null,a.duration_seconds ?? b.duration_seconds ?? null,a.imdb_id || b.imdb_id || '',a.tmdb_id || b.tmdb_id || '',primaryId);
+      favourites.run(primaryId,duplicateId);
+      progress.run(primaryId,duplicateId);
+      variants.run(primaryId,duplicateId);
+      children.run(primaryId,duplicateId);
+      remove.run(duplicateId);
+    };
+    for (const group of duplicates) {
+      const rows=candidates.all(group.kind,group.match_key) as Array<{id:number;year:number|null}>;
+      const years=[...new Set(rows.map(row=>row.year).filter((year):year is number=>year!=null))];
+      const buckets=years.length<=1 ? [rows] : [...years.map(year=>rows.filter(row=>row.year===year)),rows.filter(row=>row.year==null)];
+      for (const members of buckets) for (let index=1;index<members.length;index++) merge(members[0].id,members[index].id);
+    }
+    db.exec('PRAGMA user_version = 6; COMMIT;');
+  } catch(error) { db.exec('ROLLBACK'); throw error; }
+}
 db.prepare("UPDATE sources SET status='interrupted',last_error='Previous source operation was interrupted; run it again.' WHERE status IN ('scanning','discovering')").run();
 db.prepare("UPDATE guide_feeds SET status='interrupted',last_error='Previous guide import was interrupted; import again.' WHERE status='importing'").run();
 
@@ -238,8 +292,8 @@ export function setSourceStatus(id: number, status: string, error: string | null
 }
 
 const upsertTitle = db.prepare(`
-  INSERT INTO titles (canonical_key,kind,title,year,season,episode,group_name,artwork,channel_key,channel_country,description,genres,rating,duration_seconds)
-  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  INSERT INTO titles (canonical_key,kind,title,year,season,episode,group_name,artwork,channel_key,channel_country,description,genres,rating,duration_seconds,match_key,imdb_id,tmdb_id)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   ON CONFLICT(canonical_key) DO UPDATE SET
     title=CASE WHEN excluded.kind='channel' AND LENGTH(excluded.title)<LENGTH(titles.title) THEN excluded.title ELSE titles.title END,
     artwork=COALESCE(NULLIF(titles.artwork,''), excluded.artwork),
@@ -249,7 +303,10 @@ const upsertTitle = db.prepare(`
     description=COALESCE(NULLIF(titles.description,''), excluded.description),
     genres=COALESCE(NULLIF(titles.genres,''), excluded.genres),
     rating=COALESCE(titles.rating, excluded.rating),
-    duration_seconds=COALESCE(titles.duration_seconds, excluded.duration_seconds)
+    duration_seconds=COALESCE(titles.duration_seconds, excluded.duration_seconds),
+    match_key=COALESCE(NULLIF(titles.match_key,''),excluded.match_key),
+    imdb_id=COALESCE(NULLIF(titles.imdb_id,''),excluded.imdb_id),
+    tmdb_id=COALESCE(NULLIF(titles.tmdb_id,''),excluded.tmdb_id)
   RETURNING id
 `);
 const upsertVariant = db.prepare(`
@@ -265,22 +322,62 @@ const updateMatchedChannel = db.prepare(`UPDATE titles SET
   title=CASE WHEN LENGTH(title)>LENGTH(?) THEN ? ELSE title END,
   artwork=COALESCE(NULLIF(artwork,''),?),
   channel_country=COALESCE(NULLIF(channel_country,''),?) WHERE id=?`);
+const byImdb=db.prepare("SELECT id,year,imdb_id,tmdb_id FROM titles WHERE kind=? AND imdb_id=? LIMIT 3");
+const byTmdb=db.prepare("SELECT id,year,imdb_id,tmdb_id FROM titles WHERE kind=? AND tmdb_id=? LIMIT 3");
+const byLibraryName=db.prepare('SELECT id,year,imdb_id,tmdb_id FROM titles WHERE kind=? AND match_key=? LIMIT 40');
+const updateMatchedLibrary=db.prepare(`UPDATE titles SET
+  year=COALESCE(year,?),artwork=COALESCE(NULLIF(artwork,''),?),
+  description=COALESCE(NULLIF(description,''),?),genres=COALESCE(NULLIF(genres,''),?),
+  rating=COALESCE(rating,?),duration_seconds=COALESCE(duration_seconds,?),
+  imdb_id=COALESCE(NULLIF(imdb_id,''),?),tmdb_id=COALESCE(NULLIF(tmdb_id,''),?) WHERE id=?`);
+interface LibraryCandidate { id:number;year:number|null;imdb_id:string;tmdb_id:string }
+function metadataIds(item:ImportItem):{imdb:string;tmdb:string} {
+  const imdb=/^tt\d{5,12}$/i.test(item.imdbId || '') ? item.imdbId!.toLowerCase() : '';
+  const tmdb=/^[1-9]\d{0,11}$/.test(item.tmdbId || '') ? item.tmdbId! : '';
+  return {imdb,tmdb};
+}
+/** IDs outrank names; unknown years merge only when there is one unambiguous candidate. */
+function matchedLibraryTitle(item:ImportItem,matchKey:string,imdb:string,tmdb:string):number|null {
+  if (!['film','series'].includes(item.kind) || !matchKey) return null;
+  const compatible=(row:LibraryCandidate)=> (!imdb || !row.imdb_id || imdb===row.imdb_id) && (!tmdb || !row.tmdb_id || tmdb===row.tmdb_id);
+  for (const [statement,id] of [[byImdb,imdb],[byTmdb,tmdb]] as const) {
+    if (!id) continue;
+    const matches=(statement.all(item.kind,id) as LibraryCandidate[]).filter(compatible);
+    if (matches.length===1) return matches[0].id;
+    if (matches.length>1) return null;
+  }
+  const rows=(byLibraryName.all(item.kind,matchKey) as LibraryCandidate[]).filter(compatible);
+  if (rows.length>=40) return null;
+  const exact=rows.filter(row=>row.year!=null && row.year===item.year);
+  if (exact.length===1) return exact[0].id;
+  if (exact.length>1) return null;
+  if (rows.length===1 && (rows[0].year==null || item.year==null)) return rows[0].id;
+  return null;
+}
 
 export function importBatch(sourceId: number, items: ImportItem[], generation: string): void {
   transaction(() => {
     for (const item of items) {
       const key = canonicalKey(item);
-      const name = item.kind === 'channel' ? displayChannelTitle(item.title) : cleanTitle(item.title).replace(/^(?:UK|US|USA|EN)\s*[-:|]\s*/i, '').replace(/\s+(?:UHD|FHD|4K|HD|SD|1080P)$/i, '').trim();
+      const name = item.kind === 'channel' ? displayChannelTitle(item.title) : ['film','series'].includes(item.kind) ? displayLibraryTitle(item.title) : cleanTitle(item.title).replace(/^(?:UK|US|USA|EN)\s*[-:|]\s*/i, '').replace(/\s+(?:UHD|FHD|4K|HD|SD|1080P)$/i, '').trim();
       const identity = item.kind === 'channel' ? channelKey(item.title) : '';
       const country = item.kind === 'channel' ? channelCountry(item.title,item.group,item.region) : '';
       const existing = item.kind === 'channel' && !existingKey.get(key) ? channelCandidates.all(identity) as Array<{id:number;channel_country:string}> : [];
       const compatible = existing.filter(row => !country || !row.channel_country || row.channel_country === country);
+      const matchKey = ['film','series'].includes(item.kind) ? libraryMatchKey(item.title) : '';
+      const {imdb,tmdb}=metadataIds(item);
       let titleId: number;
       if (compatible.length === 1 && existing.length === 1) {
         titleId = compatible[0].id;
         updateMatchedChannel.run(name,name,item.artwork || '',country,titleId);
       } else {
-        titleId = Number((upsertTitle.get(key, item.kind, name, item.year || null, item.season || null, item.episode || null, item.group || '', item.artwork || '',identity,country,(item.description || '').slice(0,4000),(item.genres || '').slice(0,250),item.rating ?? null,item.durationSeconds ?? null) as { id: number }).id);
+        const merged = !existingKey.get(key) ? matchedLibraryTitle(item,matchKey,imdb,tmdb) : null;
+        if (merged!=null) {
+          titleId=merged;
+          updateMatchedLibrary.run(item.year ?? null,item.artwork || '',(item.description || '').slice(0,4000),(item.genres || '').slice(0,250),item.rating ?? null,item.durationSeconds ?? null,imdb,tmdb,titleId);
+        } else {
+          titleId = Number((upsertTitle.get(key, item.kind, name, item.year || null, item.season || null, item.episode || null, item.group || '', item.artwork || '',identity,country,(item.description || '').slice(0,4000),(item.genres || '').slice(0,250),item.rating ?? null,item.durationSeconds ?? null,matchKey,imdb,tmdb) as { id: number }).id);
+        }
       }
       upsertVariant.run(titleId, sourceId, item.sourceRef, secrets.seal(item.url, true), item.quality || '', item.group || '', generation,(item.externalId || '').trim().toLowerCase().slice(0,200));
     }
@@ -322,7 +419,7 @@ export function getTitle(id: number): { id: number; title: string; kind: MediaKi
 
 export function getTitleDetail(id:number,userId:number): unknown | undefined {
   return db.prepare(`SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,t.artwork,
-    t.description,t.genres,t.rating,t.duration_seconds,t.channel_country,
+    t.description,t.genres,t.rating,t.duration_seconds,t.imdb_id,t.tmdb_id,t.channel_country,
     (SELECT COUNT(*) FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL) AS source_count,
     CASE WHEN f.title_id IS NULL THEN 0 ELSE 1 END AS favourite,p.position_seconds
     FROM titles t LEFT JOIN favourites f ON f.title_id=t.id AND f.user_id=?
@@ -347,7 +444,7 @@ export function replaceSeriesEpisodes(seriesId: number, sourceId: number, items:
   const generation = randomUUID();
   transaction(() => {
     for (const item of items) {
-      const titleId = Number((upsertTitle.get(canonicalKey(item), 'episode', cleanTitle(item.title), item.year || null, item.season || null, item.episode || null, item.group || '', item.artwork || '','','',(item.description || '').slice(0,4000),(item.genres || '').slice(0,250),item.rating ?? null,item.durationSeconds ?? null) as {id:number}).id);
+      const titleId = Number((upsertTitle.get(canonicalKey(item), 'episode', cleanTitle(item.title), item.year || null, item.season || null, item.episode || null, item.group || '', item.artwork || '','','',(item.description || '').slice(0,4000),(item.genres || '').slice(0,250),item.rating ?? null,item.durationSeconds ?? null,'','','') as {id:number}).id);
       upsertEpisodeVariant.run(titleId,sourceId,item.sourceRef,secrets.seal(item.url,true),item.quality || '',item.group || '',generation,seriesId,(item.episodeName || '').slice(0,250));
     }
     db.prepare('DELETE FROM variants WHERE series_parent_id=? AND source_id=? AND generation<>?').run(seriesId,sourceId,generation);
@@ -499,7 +596,7 @@ export function storedGuide(titleId:number,limit=12): { programmes:Array<{title:
 
 export function guideGrid(country:string,limit=40,query=''):unknown[] {
   const search=`%${query.replace(/[\\%_]/g,'\\$&')}%`;
-  const rows=db.prepare(`SELECT t.id,t.title,t.artwork,t.channel_country,COUNT(v.id) AS source_count
+  const rows=db.prepare(`SELECT t.id,t.kind,t.title,t.artwork,t.channel_country,COUNT(v.id) AS source_count
     FROM titles t JOIN variants v ON v.title_id=t.id AND v.series_parent_id IS NULL
     WHERE t.kind='channel' AND (?='' OR t.channel_country=?) AND t.title LIKE ? ESCAPE '\\'
     GROUP BY t.id ORDER BY t.title COLLATE NOCASE LIMIT ?`).all(country,country,search,limit) as Array<{id:number;title:string;artwork:string;channel_country:string;source_count:number}>;

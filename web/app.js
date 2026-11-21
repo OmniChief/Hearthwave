@@ -1,4 +1,4 @@
-const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', liveGroup: 'all', liveCountry: 'all', guideView: false, guideCountry: '', query: '', items: [], stats: null, sources: [], detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackGeneration: 0, lastProgressSave: 0 };
+const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', liveGroup: 'all', liveCountry: 'all', guideView: false, guideCountry: '', query: '', items: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackGeneration: 0, lastProgressSave: 0 };
 const $ = (selector) => document.querySelector(selector);
 const page = $('#page');
 
@@ -107,6 +107,7 @@ async function renderHome() {
   const [stats, library, live] = await Promise.all([api('/api/stats'), api('/api/catalogue?kind=library'), api('/api/catalogue?kind=channel')]);
   state.stats = stats;
   state.items = [...library.items, ...live.items];
+  state.channelQueue = live.items.slice(0,6).map(item=>item.id);
   const recent = library.items.filter(item => item.kind !== 'channel').slice(0, 6);
   page.innerHTML = `<section class="hero"><div><span class="eyebrow">WELCOME TO HEARTHWAVE</span><h2>All your entertainment.<br>One happy place.</h2><p>Movies, music and live television belong together. Your own server, your sources and your choices.</p><button class="button button-primary" data-page="library">Explore your library <span>↗</span></button></div><div class="hero-art"><div class="hero-disc"></div></div></section>
     <div class="stat-grid"><div class="stat"><small>Library titles</small><strong>${stats.items}</strong><span>Grouped across sources</span></div><div class="stat"><small>Live channels</small><strong>${stats.channels}</strong><span>One shared lineup</span></div><div class="stat"><small>Configured sources</small><strong>${stats.sources}</strong><span>Managed in Settings</span></div></div>
@@ -138,7 +139,7 @@ async function renderTitleDetail() {
   state.items=[title];
   const art=typeof title.artwork==='string' && /^https?:\/\//i.test(title.artwork)
     ? `<img src="${esc(title.artwork)}" alt="" referrerpolicy="no-referrer">` : '';
-  const facts=[title.year,title.genres,title.rating ? `★ ${title.rating}/10` : '',title.duration_seconds ? `${Math.round(title.duration_seconds/60)} min` : ''].filter(Boolean);
+  const facts=[title.year,title.genres,title.rating ? `★ ${title.rating}/10` : '',title.duration_seconds ? `${Math.round(title.duration_seconds/60)} min` : '',title.imdb_id ? `IMDb ${title.imdb_id}` : '',title.tmdb_id ? `TMDB ${title.tmdb_id}` : ''].filter(Boolean);
   page.innerHTML=`<section class="surface"><button class="button button-quiet button-small" data-detail-back>← Back to Library</button>
     <div class="detail-layout"><div class="detail-poster media-art tone-${Number(title.id)%4}"><span class="art-initial">${esc(Array.from(title.title||'?')[0].toUpperCase())}</span>${art}</div>
     <div><span class="eyebrow">${esc(title.kind.toUpperCase())} · ${title.source_count} SOURCE${title.source_count===1?'':'S'}</span><h2 class="detail-title">${esc(title.title)}</h2>
@@ -212,6 +213,7 @@ async function renderLive() {
     return countryRank(a.channel_country)-countryRank(b.channel_country) || liveGenres.indexOf(liveGenre(a))-liveGenres.indexOf(liveGenre(b)) || a.title.localeCompare(b.title);
   });
   state.items=result.items;
+  state.channelQueue=selected.map(item=>item.id);
   page.innerHTML = `<div class="preview-banner">All sources share this lineup, grouped by region and familiar genres. Import XMLTV in Settings → Metadata & Guide for a combined programme guide. Administrators can manually match channels from the Guide panel.</div>
     <div class="toolbar">${countries.map(([key,label])=>`<button class="pill ${state.liveCountry===key?'active':''}" data-country="${key}">${label}</button>`).join('')}</div>
     <div class="toolbar"><button class="pill ${state.liveGroup==='all'?'active':''}" data-group="all">All genres</button>${genres.map(genre=>`<button class="pill ${state.liveGroup===genre?'active':''}" data-group="${genre}">${genre}</button>`).join('')}</div>
@@ -231,6 +233,7 @@ async function renderGuideGrid() {
   const result=await api(`/api/guide/grid?country=${encodeURIComponent(state.guideCountry)}&limit=40&q=${encodeURIComponent(state.query)}`);
   if (state.page !== 'live' || !state.guideView) return;
   state.items=result.items;
+  state.channelQueue=result.items.map(item=>item.id);
   page.innerHTML=`<div class="preview-banner">Unified guide entries from your manually imported XMLTV feeds. Times are displayed in this device's local timezone; providers with no mapped XMLTV remain playable.</div>
     ${heading('Programme guide','Now and upcoming programmes, shared across all source types.','<button class="button button-quiet button-small" data-guide-view="close">← Live channels</button>')}
     <div class="toolbar">${[['','All'],['GB','United Kingdom'],['US','United States']].map(([key,label])=>`<button class="pill ${state.guideCountry===key?'active':''}" data-guide-country="${key}">${label}</button>`).join('')}</div>
@@ -360,8 +363,51 @@ async function startPlayback(titleId,preferredId=null) {
   const index = state.seriesEpisodes.findIndex(item => Number(item.id) === Number(titleId));
   $('#previous-episode').hidden = index < 0 || index === state.seriesEpisodes.length - 1;
   $('#next-episode').hidden = index <= 0;
+  if (title.kind==='channel' && !state.channelQueue.some(id=>Number(id)===Number(titleId))) state.channelQueue=state.items.filter(item=>item.kind==='channel').map(item=>item.id);
+  $('#previous-channel').hidden=title.kind!=='channel' || state.channelQueue.length<2;
+  $('#next-channel').hidden=title.kind!=='channel' || state.channelQueue.length<2;
   $('#player-overlay').hidden = false;
   void playVariant();
+}
+
+function setSubtitle(index) {
+  const video=$('#player');
+  video.querySelectorAll('track').forEach(track=>track.remove());
+  const choice=state.subtitleTracks[index];
+  if (!choice) return;
+  const track=document.createElement('track');
+  track.kind='subtitles';
+  track.label=choice.label;
+  track.srclang=choice.language==='und'?'en':choice.language;
+  track.src=choice.url;
+  track.default=true;
+  video.appendChild(track);
+  track.track.mode='showing';
+}
+
+async function loadSubtitles(variant,generation) {
+  if (variant.type!=='folder') return;
+  try {
+    const result=await api(`/api/media/${variant.id}/subtitles`);
+    if (generation!==state.playbackGeneration || $('#player-overlay').hidden) return;
+    state.subtitleTracks=result.subtitles;
+    const picker=$('#subtitle-picker');
+    picker.hidden=!result.subtitles.length;
+    const select=$('#player-subtitles');
+    select.replaceChildren(new Option('Off','off'),...result.subtitles.map((item,index)=>new Option(item.label,String(index))));
+    if (result.subtitles.length) {
+      const preferred=result.subtitles.findIndex(item=>item.language==='en');
+      const index=preferred>=0?preferred:0;
+      select.value=String(index);
+      setSubtitle(index);
+    }
+  } catch { if (generation===state.playbackGeneration) $('#subtitle-picker').hidden=true; }
+}
+
+function clearSubtitles() {
+  state.subtitleTracks=[];
+  $('#subtitle-picker').hidden=true;
+  $('#player').querySelectorAll('track').forEach(track=>track.remove());
 }
 
 async function playVariant() {
@@ -373,6 +419,7 @@ async function playVariant() {
   $('#player-source').textContent = `${item.name}${item.quality ? ` · ${item.quality}` : ''} (${state.variantIndex + 1}/${state.variants.length})`;
   $('#try-next').disabled = state.variants.length < 2;
   video.pause();
+  clearSubtitles();
   video.removeAttribute('src');
   video.load();
   try {
@@ -383,6 +430,7 @@ async function playVariant() {
     $('#player-message').textContent = '';
     video.src = url;
     video.load();
+    void loadSubtitles(item,generation);
     video.play().catch(() => { if (generation === state.playbackGeneration) $('#player-message').textContent = 'Press Play to start this stream.'; });
   } catch (error) {
     if (generation !== state.playbackGeneration || $('#player-overlay').hidden) return;
@@ -410,11 +458,21 @@ async function jumpEpisode(direction) {
   catch (error) { notify(error.message,true); }
 }
 
+async function jumpChannel(direction) {
+  if (state.activeTitle?.kind!=='channel' || state.channelQueue.length<2) return;
+  const index=state.channelQueue.findIndex(id=>Number(id)===Number(state.activeTitle.id));
+  if (index<0) return;
+  const next=state.channelQueue[(index+direction+state.channelQueue.length)%state.channelQueue.length];
+  try { await startPlayback(next); }
+  catch(error) { notify(error.message,true); }
+}
+
 function closePlayer() {
   state.playbackGeneration++;
   state.resolvedUrl = null;
   const video = $('#player');
   video.pause();
+  clearSubtitles();
   video.removeAttribute('src');
   video.load();
   $('#player-overlay').hidden = true;
@@ -600,6 +658,9 @@ document.querySelectorAll('.sidebar [data-page]').forEach(button => button.addEv
 $('#brand-link').addEventListener('click', event => { event.preventDefault(); navigate('home'); });
 $('#close-player').addEventListener('click', closePlayer);
 $('#try-next').addEventListener('click', nextSource);
+$('#player-subtitles').addEventListener('change', event=>setSubtitle(Number(event.target.value)));
+$('#previous-channel').addEventListener('click',()=>jumpChannel(-1));
+$('#next-channel').addEventListener('click',()=>jumpChannel(1));
 $('#previous-episode').addEventListener('click', () => jumpEpisode(1));
 $('#next-episode').addEventListener('click', () => jumpEpisode(-1));
 $('#open-stream').addEventListener('click', () => {

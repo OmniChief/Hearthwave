@@ -42,6 +42,8 @@ export interface ImportItem {
   genres?: string;
   rating?: number | null;
   durationSeconds?: number | null;
+  imdbId?: string;
+  tmdbId?: string;
 }
 
 export interface ProviderCategory {

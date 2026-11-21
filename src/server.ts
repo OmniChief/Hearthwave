@@ -8,6 +8,7 @@ import { parseM3u, scanFolder } from './catalogue.ts';
 import { abortGuideImport, addGuideFeed, addSource, completeImport, createUser, dashboardStats, db, deleteGuideFeed, deleteSource, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getVariant, guideGrid, hasUsers, importBatch, listCategories, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setFavourite, setGuideStatus, setSourceStatus, storedGuide, titleExists, type GuideFeed, type SourceRow } from './db.ts';
 import { discoverProvider, discoverSeriesEpisodes, importProvider, providerGuide, resolveProviderStream } from './adapters/providers.ts';
 import { importXmltv } from './guide.ts';
+import { localSubtitles, subtitleVtt } from './subtitles.ts';
 import { ProviderError, validateProviderUrl } from './adapters/network.ts';
 import type { GuideProgramme, ImportItem, ProviderCategory, ProviderConfig, SourceType, User } from './model.ts';
 
@@ -293,7 +294,7 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const path = url.pathname;
   const method = req.method || 'GET';
-  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.5.0' });
+  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.6.0' });
   if (path === '/api/session' && method === 'GET') {
     const current = session(req);
     return send(res, 200, { needsSetup: !hasUsers(), user: current?.user || null, csrf: current?.csrf || null });
@@ -598,6 +599,19 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     if (!titleExists(titleId) || !Number.isFinite(seconds) || seconds < 0 || seconds > 10_000_000) throw new HttpError(400, 'Invalid playback position.');
     saveProgress(current.user.id, titleId, seconds);
     return send(res, 200, { ok: true });
+  }
+  const subtitlesMatch=/^\/api\/media\/(\d+)\/subtitles(?:\/(\d+))?$/.exec(path);
+  if (subtitlesMatch && method==='GET') {
+    const variant=getVariant(positiveId(subtitlesMatch[1]));
+    if (!variant || variant.source_type!=='folder') throw new HttpError(404,'Local media not found.');
+    const tracks=await localSubtitles(variant);
+    if (subtitlesMatch[2]===undefined) return send(res,200,{subtitles:tracks.map((track,index)=>({label:track.label,language:track.language,url:`/api/media/${variant.id}/subtitles/${index}`}))});
+    const index=Number(subtitlesMatch[2]);
+    if (!Number.isSafeInteger(index) || !tracks[index]) throw new HttpError(404,'Subtitle track not found.');
+    const contents=await subtitleVtt(tracks[index]);
+    res.writeHead(200,{'Content-Type':'text/vtt; charset=utf-8','Cache-Control':'private, no-store'});
+    res.end(contents);
+    return;
   }
   const localMatch = /^\/api\/media\/(\d+)\/file$/.exec(path);
   if (localMatch && method === 'GET') return serveLocal(req, res, positiveId(localMatch[1]));
