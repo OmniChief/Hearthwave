@@ -96,6 +96,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:0 0 21px; }
 .library-sort { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); margin-left:auto; }
 .library-sort select { background:#17212d; border:1px solid #344051; border-radius:9px; color:#f3e3d4; padding:8px 10px; }
+.catalogue-pagination { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:15px; margin:25px 0 8px; padding:15px 18px; background:#192430; border:1px solid var(--stroke); border-radius:13px; }
+.catalogue-pagination strong,.catalogue-pagination small { display:block; }
+.catalogue-pagination strong { font-size:13px; }
+.catalogue-pagination small { color:var(--muted); margin-top:5px; font-size:11px; }
+.catalogue-pager-controls,.catalogue-pager-controls form { display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
+.catalogue-pager-controls form label { display:flex; align-items:center; gap:7px; color:var(--muted); font-size:12px; }
+.catalogue-pager-controls input { width:68px; padding:7px 8px; background:#101925; border:1px solid #435267; border-radius:8px; color:var(--text); }
 .pill { border:1px solid #344051; background:#17212d; border-radius:30px; padding:9px 15px; font-size:12px; font-weight:700; color:#afbdc8; }
 .pill.active { background:#553d43; border-color:#87575c; color:#ffe0ca; }
 .tag { display:inline-block; color:#a3dfcc; background:#25403d; border-radius:7px; font-size:10px; padding:5px 8px; font-weight:800; letter-spacing:.04em; }
@@ -224,4 +231,5 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (max-width:760px) { .guide-row { grid-template-columns:1fr; } .guide-ruler { grid-template-columns:1fr; } .guide-ruler > span { display:none; } .guide-channel { flex-direction:row; align-items:center; flex-wrap:wrap; } }
 @media (max-width:600px) { .detail-layout { grid-template-columns:1fr; } .detail-poster { max-width:200px; } }
 @media (max-width:600px) { .episode-row { flex-wrap:wrap; } .episode-controls { width:100%; justify-content:flex-end; } .autoplay-setting small { width:100%; margin-left:26px; } }
+@media (max-width:600px) { .catalogue-pagination { justify-content:center; text-align:center; } .catalogue-pager-controls { justify-content:center; } }
 @media (prefers-reduced-motion:no-preference) { .nav-link,.button,.media-card,.channel-row { transition:background .15s ease,border-color .15s ease,transform .15s ease; } .media-card:hover { transform:translateY(-2px); } }

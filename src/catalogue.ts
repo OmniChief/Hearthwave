@@ -53,6 +53,20 @@ export function channelCountry(title: string, group = '', hint = ''): string {
   return normalize(category || '');
 }
 
+export const liveGenres = ['General','Entertainment','Sports','Movies','News','Kids','Documentary','Music','Other'] as const;
+export function channelGenre(title:string,group=''):typeof liveGenres[number] {
+  const text=`${group} ${title}`.toUpperCase();
+  if (/\b(?:SPORTS?|ESPN|DAZN|PPV|EUROSPORT)\b/.test(text)) return 'Sports';
+  if (/\b(?:NEWS|CURRENT AFFAIRS)\b/.test(text)) return 'News';
+  if (/\b(?:MOVIES?|CINEMA|FILMS?)\b/.test(text)) return 'Movies';
+  if (/\b(?:KIDS?|CHILDREN|CARTOON)\b/.test(text)) return 'Kids';
+  if (/\b(?:DOCUMENTAR(?:Y|IES)|DOCU|DISCOVERY)\b/.test(text)) return 'Documentary';
+  if (/\b(?:MUSIC|RADIO)\b/.test(text)) return 'Music';
+  if (/\b(?:ENTERTAINMENT|24\/7)\b/.test(group.toUpperCase())) return 'Entertainment';
+  if (/\b(?:GENERAL|FREEVIEW|TERRESTRIAL)\b/.test(group.toUpperCase())) return 'General';
+  return 'Other';
+}
+
 export function canonicalKey(item: ImportItem): string {
   const region = item.kind === 'channel' ? channelCountry(item.title,item.group,item.region).toLowerCase() : (item.region || '').trim().toLowerCase();
   if (item.kind === 'channel') {

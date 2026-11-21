@@ -1,4 +1,4 @@
-const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', librarySort: 'title', liveGroup: 'all', liveCountry: 'all', guideView: false, guideCountry: '', guideOffset: 0, guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackGeneration: 0, recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
+const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackGeneration: 0, recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
 const $ = (selector) => document.querySelector(selector);
 const page = $('#page');
 
@@ -64,6 +64,8 @@ async function navigate(destination) {
   state.guideView = false;
   state.guideOffset = 0;
   state.guideRequest++;
+  state.libraryRequest++;
+  state.liveRequest++;
   state.seriesDetail = null;
   state.detailId = null;
   state.seriesEpisodes = [];
@@ -100,22 +102,16 @@ function liveCard(item) {
 }
 
 const liveGenres=['General','Entertainment','Sports','Movies','News','Kids','Documentary','Music','Other'];
-function liveGenre(item) {
-  const group=String(item.group_name || '').toUpperCase();
-  const title=String(item.title || '').toUpperCase();
-  if (/\b(?:SPORT|ESPN|DAZN|PPV|EUROSPORT)\b/.test(group+' '+title)) return 'Sports';
-  if (/\b(?:NEWS|CURRENT AFFAIRS)\b/.test(group+' '+title)) return 'News';
-  if (/\b(?:MOVIE|CINEMA|FILMS?)\b/.test(group+' '+title)) return 'Movies';
-  if (/\b(?:KIDS?|CHILDREN|CARTOON)\b/.test(group+' '+title)) return 'Kids';
-  if (/\b(?:DOCUMENTARY|DOCU|DISCOVERY)\b/.test(group+' '+title)) return 'Documentary';
-  if (/\b(?:MUSIC|RADIO)\b/.test(group+' '+title)) return 'Music';
-  if (/\b(?:ENTERTAINMENT|24\/7)\b/.test(group)) return 'Entertainment';
-  if (/\b(?:GENERAL|FREEVIEW|TERRESTRIAL)\b/.test(group)) return 'General';
-  return 'Other';
+function liveGenre(item) { return liveGenres.includes(item.live_genre)?item.live_genre:'Other'; }
+
+function cataloguePager(result,scope) {
+  const total=Number(result.total)||0,limit=Number(result.limit)||1,offset=Number(result.offset)||0;
+  const pages=Math.max(1,Math.ceil(total/limit)),current=Math.floor(offset/limit)+1;
+  return `<nav class="catalogue-pagination" aria-label="${scope==='library'?'Library':'Live'} pages"><div><strong>${total?`${offset+1}–${offset+result.items.length} of ${total}`:'0'} items</strong><small>Page ${current} of ${pages}</small></div><div class="catalogue-pager-controls"><button class="button button-quiet button-small" data-catalogue-move="${scope}" data-direction="-1" ${offset===0?'disabled':''}>← Previous</button><form id="${scope}-pager" data-limit="${limit}" data-pages="${pages}"><label>Page <input type="number" name="page" min="1" max="${pages}" value="${current}" required></label><button class="button button-quiet button-small" type="submit">Go</button></form><button class="button button-quiet button-small" data-catalogue-move="${scope}" data-direction="1" ${offset+result.items.length>=total?'disabled':''}>Next →</button></div></nav>`;
 }
 
 async function renderHome() {
-  const [stats, library, live, continueWatching] = await Promise.all([api('/api/stats'), api('/api/catalogue?kind=library'), api('/api/catalogue?kind=channel'), api('/api/catalogue?kind=library&view=continue&sort=activity&limit=6')]);
+  const [stats, library, live, continueWatching] = await Promise.all([api('/api/stats'), api('/api/catalogue?kind=library&limit=6&sort=added'), api('/api/catalogue?kind=channel&limit=6'), api('/api/catalogue?kind=library&view=continue&sort=activity&limit=6')]);
   state.stats = stats;
   state.items = [...continueWatching.items,...library.items, ...live.items];
   state.channelQueue = live.items.slice(0,6).map(item=>item.id);
@@ -132,16 +128,19 @@ async function renderHome() {
 async function renderLibrary() {
   if (state.detailId) return renderTitleDetail();
   if (state.seriesDetail) return renderSeriesDetail();
+  const request=++state.libraryRequest;
   const types = [{key:'all',name:'All media'}, {key:'film',name:'Films'}, {key:'series',name:'Series'}, {key:'episode',name:'Episodes'}, {key:'music',name:'Music'}, {key:'photo',name:'Photos'}];
-  const result = await api(`/api/catalogue?kind=${encodeURIComponent(state.kind === 'all' ? 'library' : state.kind)}&q=${encodeURIComponent(state.query)}&view=${encodeURIComponent(state.libraryView)}&sort=${encodeURIComponent(state.librarySort)}`);
+  const result = await api(`/api/catalogue?kind=${encodeURIComponent(state.kind === 'all' ? 'library' : state.kind)}&q=${encodeURIComponent(state.query)}&view=${encodeURIComponent(state.libraryView)}&sort=${encodeURIComponent(state.librarySort)}&limit=48&offset=${state.libraryOffset}`);
+  if (state.page!=='library' || state.detailId || state.seriesDetail || request!==state.libraryRequest) return;
+  if(state.libraryOffset && state.libraryOffset>=result.total) {state.libraryOffset=Math.max(0,Math.ceil(result.total/48)-1)*48;return renderLibrary();}
   state.items = result.items;
   const items = result.items.filter(item => item.kind !== 'channel');
   page.innerHTML = `<div class="preview-banner">One title across your sources, with provider artwork and descriptions when available. Choose Details to see editions and start a specific version; series episodes load only when opened.</div>
     <div class="toolbar">${types.map(type => `<button class="pill ${state.kind === type.key ? 'active':''}" data-kind="${type.key}">${type.name}</button>`).join('')}</div>
     <div class="toolbar"><button class="pill ${state.libraryView==='all'?'active':''}" data-library-view="all">Everything</button><button class="pill ${state.libraryView==='favourites'?'active':''}" data-library-view="favourites">★ Favourites</button><button class="pill ${state.libraryView==='continue'?'active':''}" data-library-view="continue">Continue watching</button><label class="library-sort">Sort <select id="library-sort" aria-label="Sort library"><option value="title" ${state.librarySort==='title'?'selected':''}>Title A–Z</option><option value="year" ${state.librarySort==='year'?'selected':''}>Newest release</option><option value="added" ${state.librarySort==='added'?'selected':''}>Recently added</option><option value="activity" ${state.librarySort==='activity'?'selected':''}>Recently watched</option></select></label></div>
-    ${heading(state.kind === 'all' ? 'Your collection' : types.find(t => t.key === state.kind).name, `${items.length} item${items.length===1?'':'s'} in this view`)}
+    ${heading(state.kind === 'all' ? 'Your collection' : types.find(t => t.key === state.kind).name, `${result.total} item${result.total===1?'':'s'} match this view`)}
     ${items.length ? `<div class="cards">${items.map(mediaCard).join('')}</div>` : emptyState('No matching media', state.libraryView==='favourites'?'Star a film, show or song to see it here.':state.libraryView==='continue'?'Play a film or episode to start a resume position.':'Try another filter, or add a folder in Settings > Sources.', '▣')}
-    ${result.items.length >= result.maxResults ? `<p class="field-note">Showing the first ${result.maxResults} results. Use search to narrow the list.</p>` : ''}`;
+    ${cataloguePager(result,'library')}`;
 }
 
 async function renderTitleDetail() {
@@ -222,21 +221,22 @@ async function showGuideMappingEditor(titleId,query='') {
 
 async function renderLive() {
   if (state.guideView) return renderGuideGrid();
-  const result = await api(`/api/catalogue?kind=channel&q=${encodeURIComponent(state.query)}`);
+  const request=++state.liveRequest;
+  const result = await api(`/api/catalogue?kind=channel&q=${encodeURIComponent(state.query)}&limit=60&offset=${state.liveOffset}&country=${encodeURIComponent(state.liveCountry==='all'?'':state.liveCountry)}&genre=${encodeURIComponent(state.liveGroup==='all'?'':state.liveGroup)}`);
+  if(state.page!=='live' || state.guideView || request!==state.liveRequest) return;
+  if(state.liveOffset && state.liveOffset>=result.total) {state.liveOffset=Math.max(0,Math.ceil(result.total/60)-1)*60;return renderLive();}
   const countries=[['all','All regions'],['GB','United Kingdom'],['US','United States'],['other','Other']];
-  const regionItems=result.items.filter(item=>state.liveCountry==='all' || (state.liveCountry==='other' ? !['GB','US'].includes(item.channel_country) : item.channel_country===state.liveCountry));
-  const genres=liveGenres.filter(genre=>regionItems.some(item=>liveGenre(item)===genre));
-  const selected=(state.liveGroup==='all'?regionItems:regionItems.filter(item=>liveGenre(item)===state.liveGroup)).sort((a,b)=>{
-    const countryRank=code=>code==='GB'?0:code==='US'?1:2;
-    return countryRank(a.channel_country)-countryRank(b.channel_country) || liveGenres.indexOf(liveGenre(a))-liveGenres.indexOf(liveGenre(b)) || a.title.localeCompare(b.title);
-  });
+  const genreCounts=Object.fromEntries(result.genres.map(item=>[item.name,item.count]));
+  const genres=liveGenres.filter(genre=>(genreCounts[genre]||0)>0 || genre===state.liveGroup);
+  const selected=result.items;
   state.items=result.items;
   state.channelQueue=selected.map(item=>item.id);
   page.innerHTML = `<div class="preview-banner">All sources share this lineup, grouped by region and familiar genres. Import XMLTV in Settings → Metadata & Guide for a combined programme guide. Administrators can manually match channels from the Guide panel.</div>
     <div class="toolbar">${countries.map(([key,label])=>`<button class="pill ${state.liveCountry===key?'active':''}" data-country="${key}">${label}</button>`).join('')}</div>
-    <div class="toolbar"><button class="pill ${state.liveGroup==='all'?'active':''}" data-group="all">All genres</button>${genres.map(genre=>`<button class="pill ${state.liveGroup===genre?'active':''}" data-group="${genre}">${genre}</button>`).join('')}</div>
-    ${heading('Your live lineup', `${selected.length} channel${selected.length===1?'':'s'} · ${genres.length} genre${genres.length===1?'':'s'}`, '<button class="button button-quiet button-small" data-guide-view="open">Programme guide</button>')}
+    <div class="toolbar"><button class="pill ${state.liveGroup==='all'?'active':''}" data-group="all">All genres</button>${genres.map(genre=>`<button class="pill ${state.liveGroup===genre?'active':''}" data-group="${genre}">${genre} (${genreCounts[genre]||0})</button>`).join('')}</div>
+    ${heading('Your live lineup', `${result.total} channel${result.total===1?'':'s'} · ${genres.length} genre${genres.length===1?'':'s'}`, '<button class="button button-quiet button-small" data-guide-view="open">Programme guide</button>')}
     ${selected.length ? `<div class="live-list">${selected.map(liveCard).join('')}</div>` : emptyState('No channels to show', 'Import an M3U playlist or create a direct channel in Settings > Sources.', '▻')}
+    ${cataloguePager(result,'live')}
     <section class="surface" id="guide-panel" hidden></section>`;
 }
 
@@ -396,7 +396,7 @@ async function startPlayback(titleId,preferredId=null) {
   const playable = result.variants.filter(variant => variant.playable && (variant.url || variant.resolve));
   if (!playable.length) throw new Error('There is no playable stream for this title yet.');
   if (preferredId != null) playable.sort((a,b)=>(Number(b.id)===Number(preferredId)?1:0)-(Number(a.id)===Number(preferredId)?1:0));
-  const title = (state.items.find(item => Number(item.id) === Number(titleId)) || (await api('/api/catalogue?kind=all')).items.find(item => Number(item.id) === Number(titleId)) || { title:'Your media', id:titleId });
+  const title = state.items.find(item => Number(item.id) === Number(titleId)) || (await api(`/api/titles/${titleId}`)).title;
   state.activeTitle = title;
   state.variants = playable;
   state.variantIndex = 0;
@@ -573,6 +573,8 @@ $('#sign-out').addEventListener('click', async () => {
 
 $('#global-search').addEventListener('input', (event) => {
   state.query = event.target.value;
+  state.libraryOffset=0;
+  state.liveOffset=0;
   state.guideOffset = 0;
   state.detailId = null;
   state.seriesDetail = null;
@@ -586,7 +588,7 @@ $('#global-search').addEventListener('input', (event) => {
 
 page.addEventListener('change', event => {
   if (event.target?.id === 'source-type') syncSourceForm();
-  if (event.target?.id === 'library-sort') { state.librarySort=event.target.value; void renderPage().catch(error=>notify(error.message,true)); }
+  if (event.target?.id === 'library-sort') { state.librarySort=event.target.value;state.libraryOffset=0;void renderPage().catch(error=>notify(error.message,true)); }
   if (event.target?.id === 'autoplay-next') {
     const checkbox=event.target;
     const next=checkbox.checked;
@@ -598,6 +600,15 @@ page.addEventListener('error', event => { if (event.target?.matches?.('.media-ar
 
 page.addEventListener('submit', async event => {
   const form = event.target;
+  if (form.id==='library-pager' || form.id==='live-pager') {
+    event.preventDefault();
+    const requested=Number(new FormData(form).get('page'));
+    if(!Number.isSafeInteger(requested) || requested<1 || requested>Number(form.dataset.pages)) return notify('Enter a valid page number.',true);
+    const scope=form.id==='library-pager'?'library':'live';
+    state[`${scope}Offset`]=(requested-1)*Number(form.dataset.limit);
+    try {await renderPage();window.scrollTo({top:0,behavior:'instant'});} catch(error) {notify(error.message,true);}
+    return;
+  }
   if (!['source-form','m3u-form','user-form','folders-form','guide-form','guide-search-form','guide-map-form'].includes(form.id)) return;
   event.preventDefault();
   const data = new FormData(form);
@@ -642,9 +653,16 @@ page.addEventListener('submit', async event => {
 page.addEventListener('click', async event => {
   const target = event.target.closest('button');
   if (!target) return;
-  if (target.hasAttribute('data-continue')) {state.libraryView='continue';state.librarySort='activity';return navigate('library');}
+  if (target.hasAttribute('data-continue')) {state.libraryView='continue';state.librarySort='activity';state.libraryOffset=0;return navigate('library');}
   if (target.dataset.page) return navigate(target.dataset.page);
-  if (target.dataset.libraryView) {state.libraryView=target.dataset.libraryView;if(state.libraryView==='continue') state.librarySort='activity';return renderPage();}
+  if (target.dataset.libraryView) {state.libraryView=target.dataset.libraryView;state.libraryOffset=0;if(state.libraryView==='continue') state.librarySort='activity';return renderPage();}
+  if (target.dataset.catalogueMove) {
+    const scope=target.dataset.catalogueMove;
+    if (!['library','live'].includes(scope)) return;
+    state[`${scope}Offset`]=Math.max(0,state[`${scope}Offset`]+Number(target.dataset.direction)*(scope==='library'?48:60));
+    try {await renderPage();window.scrollTo({top:0,behavior:'instant'});}catch(error){notify(error.message,true);}
+    return;
+  }
   if (target.dataset.guideView) {state.guideView=target.dataset.guideView==='open';state.guideOffset=0;state.guideRequest++;if(state.guideView){state.guideDay=0;state.guideSlot=Math.floor(new Date().getHours()/6)*6;}return renderPage();}
   if (target.dataset.guideCountry !== undefined) { state.guideCountry=target.dataset.guideCountry;state.guideOffset=0;return renderPage(); }
   if (target.dataset.guideSlot !== undefined) {state.guideSlot=Number(target.dataset.guideSlot);return renderPage();}
@@ -662,7 +680,7 @@ page.addEventListener('click', async event => {
     }
     return;
   }
-  if (target.dataset.country) { state.liveCountry=target.dataset.country; state.liveGroup='all'; return renderPage(); }
+  if (target.dataset.country) { state.liveCountry=target.dataset.country; state.liveGroup='all';state.liveOffset=0; return renderPage(); }
   if (target.dataset.guidePreset) {
     const country=target.dataset.guidePreset;
     const form=$('#guide-form');
@@ -685,6 +703,8 @@ page.addEventListener('click', async event => {
   }
   if (target.id==='refresh-guides') return renderPage();
   if (target.dataset.series) {
+    if (!state.detailId && !state.seriesDetail && state.page==='library') state.libraryScroll=window.scrollY;
+    else if (state.page!=='library') state.libraryScroll=0;
     state.seriesDetail = Number(target.dataset.series);
     state.detailId = null;
     state.page = 'library';
@@ -693,9 +713,11 @@ page.addEventListener('click', async event => {
     window.scrollTo({top:0,behavior:'instant'});
     return renderPage();
   }
-  if (target.hasAttribute('data-series-back')) { state.seriesDetail = null; clearTimeout(state.seriesRefreshTimer); return renderPage(); }
+  if (target.hasAttribute('data-series-back')) { state.seriesDetail = null; clearTimeout(state.seriesRefreshTimer);await renderPage();window.scrollTo({top:state.libraryScroll,behavior:'instant'});return; }
   if (target.dataset.episodeDetail) {state.detailId=Number(target.dataset.episodeDetail);clearTimeout(state.seriesRefreshTimer);return renderPage();}
   if (target.dataset.detail) {
+    if (!state.detailId && !state.seriesDetail && state.page==='library') state.libraryScroll=window.scrollY;
+    else if (state.page!=='library') state.libraryScroll=0;
     state.detailId=Number(target.dataset.detail);
     state.seriesDetail=null;
     state.page='library';
@@ -704,7 +726,7 @@ page.addEventListener('click', async event => {
     window.scrollTo({top:0,behavior:'instant'});
     return renderPage();
   }
-  if (target.hasAttribute('data-detail-back')) { state.detailId=null; return renderPage(); }
+  if (target.hasAttribute('data-detail-back')) {state.detailId=null;const returnToSeries=Boolean(state.seriesDetail);await renderPage();if(!returnToSeries)window.scrollTo({top:state.libraryScroll,behavior:'instant'});return;}
   if (target.dataset.seriesRefresh) {
     try { await api(`/api/titles/${target.dataset.seriesRefresh}/episodes/refresh`,{method:'POST'}); notify('Retrieving available episodes.'); await renderPage(); }
     catch (error) { notify(error.message,true); }
@@ -728,8 +750,8 @@ page.addEventListener('click', async event => {
     return;
   }
   if (target.dataset.guide) return showLiveGuide(target.dataset.guide);
-  if (target.dataset.kind) { state.kind = target.dataset.kind; return renderPage(); }
-  if (target.dataset.group) { state.liveGroup = target.dataset.group; return renderPage(); }
+  if (target.dataset.kind) { state.kind = target.dataset.kind;state.libraryOffset=0; return renderPage(); }
+  if (target.dataset.group) { state.liveGroup = target.dataset.group;state.liveOffset=0; return renderPage(); }
   if (target.dataset.settings) { state.settingsTab = target.dataset.settings; return renderPage(); }
   if (target.dataset.play) {
     try { await startPlayback(target.dataset.play,target.dataset.preferred || null); }

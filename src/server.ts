@@ -4,8 +4,8 @@ import { readFile, realpath, stat } from 'node:fs/promises';
 import { dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
-import { parseM3u, scanFolder } from './catalogue.ts';
-import { abortGuideImport, addGuideFeed, addSource, completeImport, createUser, dashboardStats, db, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, listCategories, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setFavourite, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, type GuideFeed, type SourceRow } from './db.ts';
+import { liveGenres, parseM3u, scanFolder } from './catalogue.ts';
+import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, completeImport, countTitles, createUser, dashboardStats, db, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, listCategories, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setFavourite, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, type GuideFeed, type SourceRow } from './db.ts';
 import { discoverProvider, discoverSeriesEpisodes, fetchTitleMetadata, importProvider, providerGuide, resolveProviderStream } from './adapters/providers.ts';
 import { importXmltv } from './guide.ts';
 import { localSubtitles, subtitleVtt } from './subtitles.ts';
@@ -297,7 +297,7 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const path = url.pathname;
   const method = req.method || 'GET';
-  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.9.0' });
+  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.10.0' });
   if (path === '/api/session' && method === 'GET') {
     const current = session(req);
     return send(res, 200, { needsSetup: !hasUsers(), user: current?.user || null, csrf: current?.csrf || null });
@@ -509,7 +509,20 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     const sort=url.searchParams.get('sort') || 'title';
     if(!['all','favourites','continue'].includes(view) || !['title','year','added','activity'].includes(sort)) throw new HttpError(400,'Unknown Library filter or sort order.');
     const limit=Math.min(250,Math.max(1,Math.floor(Number(url.searchParams.get('limit') || 250) || 250)));
-    return send(res, 200, { items: listTitles(kind as 'all' | 'library' | ImportItem['kind'], current.user.id, query, view as 'all'|'favourites'|'continue',sort as 'title'|'year'|'added'|'activity',limit), maxResults: limit });
+    const offset=Number(url.searchParams.get('offset') || 0);
+    if(!Number.isSafeInteger(offset) || offset<0 || offset>1_000_000) throw new HttpError(400,'Invalid catalogue page.');
+    const country=url.searchParams.get('country') || '';
+    const genre=url.searchParams.get('genre') || '';
+    if ((country || genre) && kind!=='channel') throw new HttpError(400,'Country and genre filters apply only to Live channels.');
+    if (!['','GB','US','other'].includes(country) || (genre && !liveGenres.includes(genre as typeof liveGenres[number]))) throw new HttpError(400,'Unknown Live filter.');
+    const typedKind=kind as 'all'|'library'|ImportItem['kind'];
+    const typedView=view as 'all'|'favourites'|'continue',typedSort=sort as 'title'|'year'|'added'|'activity';
+    return send(res,200,{
+      items:listTitles(typedKind,current.user.id,query,typedView,typedSort,limit,offset,country,genre),
+      total:countTitles(typedKind,current.user.id,query,typedView,country,genre),
+      offset,limit,maxResults:limit,
+      genres:kind==='channel'?channelGenreCounts(country,query):[],
+    });
   }
   const detailMatch=/^\/api\/titles\/(\d+)$/.exec(path);
   if (detailMatch && method==='GET') {
