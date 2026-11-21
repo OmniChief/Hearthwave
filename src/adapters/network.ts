@@ -109,6 +109,16 @@ export async function providerJson(address: string, options: { headers?: Record<
 
 /** Stream XMLTV with DNS pinning and decompression limits; never buffer the complete guide in RAM. */
 export async function providerXmlStream(address:string, onChunk:(chunk:Buffer)=>void|Promise<void>, options:{allowLan?:boolean}={}):Promise<void> {
+  return streamCatalogue(address, onChunk, options, false);
+}
+
+export async function fetchM3u(address:string):Promise<string> {
+  const chunks: Buffer[] = [];
+  await streamCatalogue(address, chunk => { chunks.push(chunk); }, {}, true);
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+async function streamCatalogue(address:string, onChunk:(chunk:Buffer)=>void|Promise<void>, options:{allowLan?:boolean}, playlist:boolean):Promise<void> {
   return withSlot(async () => {
     const url=validateProviderUrl(address);
     const {address:ip,family}=await pinnedAddress(url,Boolean(options.allowLan));
@@ -116,15 +126,16 @@ export async function providerXmlStream(address:string, onChunk:(chunk:Buffer)=>
     const response=await new Promise<http.IncomingMessage>((resolve,reject) => {
       const req=transport.request(url,{
         method:'GET',signal:AbortSignal.timeout(60_000),maxHeaderSize:16*1024,
-        headers:{'User-Agent':'Hearthwave/0.4','Accept':'application/xml, text/xml, application/gzip','Accept-Encoding':'identity'},
+        autoSelectFamily:false,
+        headers:{'User-Agent':'Hearthwave','Accept':playlist?'application/x-mpegURL, audio/x-mpegurl, */*':'application/xml, text/xml, application/gzip','Accept-Encoding':'identity'},
         lookup:(_host,_opts,callback)=>callback(null,ip,family),
       },resolve);
       req.on('error',reject);
       req.end();
     });
     try {
-      if (response.statusCode===429) throw new ProviderError('Guide provider rate limit reached (HTTP 429).',429,retryTime(response.headers));
-      if (response.statusCode!==200) throw new ProviderError(`Guide provider returned HTTP ${response.statusCode || 'unknown'}.`);
+      if (response.statusCode===429) throw new ProviderError('Source provider rate limit reached (HTTP 429).',429,retryTime(response.headers));
+      if (response.statusCode!==200) throw new ProviderError(`Source provider returned HTTP ${response.statusCode || 'unknown'}.`);
       const encoding=String(response.headers['content-encoding'] || '').toLowerCase();
       if (!['','identity','gzip','deflate','br'].includes(encoding)) throw new ProviderError('Unsupported guide response encoding.');
       const factory=encoding==='gzip' ? createGunzip : encoding==='deflate' ? createInflate : encoding==='br' ? createBrotliDecompress : url.pathname.endsWith('.gz') ? createGunzip : null;
@@ -137,6 +148,7 @@ export async function providerXmlStream(address:string, onChunk:(chunk:Buffer)=>
         for await (const part of stream) {
           const chunk=Buffer.from(part);
           received+=chunk.length;
+          if (playlist && received>11*1024*1024) throw new ProviderError('Playlist exceeds the 11 MB import limit.');
           if (received>128*1024*1024) throw new ProviderError('Guide exceeds the 128 MB decompressed safety limit.');
           await onChunk(chunk);
         }

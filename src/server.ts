@@ -13,7 +13,7 @@ import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, complete
 import { discoverProvider, discoverSeriesEpisodes, fetchTitleMetadata, importProvider, providerGuide, resolveProviderStream, type ProviderScanProgress } from './adapters/providers.ts';
 import { importXmltv } from './guide.ts';
 import { localSubtitles, subtitleVtt } from './subtitles.ts';
-import { ProviderError, validateProviderUrl } from './adapters/network.ts';
+import { fetchM3u, ProviderError, validateProviderUrl } from './adapters/network.ts';
 import type { GuideProgramme, ImportItem, ProviderCategory, ProviderConfig, SourceType, User } from './model.ts';
 
 const webRoot = join(dirname(fileURLToPath(import.meta.url)), '..', 'web');
@@ -306,6 +306,12 @@ function startGuideImport(feed:GuideFeed):void {
   })();
 }
 
+async function* playlistItems(address:string):AsyncGenerator<ImportItem> {
+  const items = parseM3u(await fetchM3u(address));
+  if (!items.length) throw new Error('The playlist contains no HTTP or HTTPS channels.');
+  yield* items;
+}
+
 async function* arrayItems(items: ImportItem[]): AsyncGenerator<ImportItem> {
   for (const item of items) yield item;
 }
@@ -541,6 +547,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     }
     const config = connectionConfig(type,input.config);
     const source = addSource({ name, type, location, config });
+    if (type === 'm3u' && location) startImport(source, playlistItems(location));
     if (type === 'direct') {
       const generation = randomUUID();
       importBatch(source.id, [{ kind: 'channel', title: name, sourceRef: 'direct', url: location }], generation);
@@ -582,7 +589,8 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     }
     if (method === 'POST' && sourceMatch[2] === 'scan') {
       requireWrite(req, true);
-      if (source.type === 'folder') startImport(source, scanFolder(source.location));
+      if (source.type === 'm3u' && source.location) startImport(source, playlistItems(source.location));
+      else if (source.type === 'folder') startImport(source, scanFolder(source.location));
       else if (source.type === 'stalker' || source.type === 'xtream') {
         const selected = listCategories(id).filter(row=>row.selected === 1);
         if (!selected.length) throw new HttpError(400, 'Select provider categories in Settings before scanning.');
