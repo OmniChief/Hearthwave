@@ -5,8 +5,9 @@ import { dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
 import { parseM3u, scanFolder } from './catalogue.ts';
-import { addSource, completeImport, createUser, dashboardStats, db, deleteSource, findUser, getSource, getTitle, getVariant, hasUsers, importBatch, listCategories, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, publicSource, publicUsers, removeSession, replaceSeriesEpisodes, saveCategories, saveProgress, saveSession, selectCategories, setFavourite, setSourceStatus, titleExists, type SourceRow } from './db.ts';
+import { abortGuideImport, addGuideFeed, addSource, completeImport, createUser, dashboardStats, db, deleteGuideFeed, deleteSource, findUser, getGuideFeed, getSource, getTitle, getVariant, guideGrid, hasUsers, importBatch, listCategories, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, publicGuideFeed, publicSource, publicUsers, removeSession, replaceSeriesEpisodes, saveCategories, saveProgress, saveSession, selectCategories, setFavourite, setGuideStatus, setSourceStatus, storedGuide, titleExists, type GuideFeed, type SourceRow } from './db.ts';
 import { discoverProvider, discoverSeriesEpisodes, importProvider, providerGuide, resolveProviderStream } from './adapters/providers.ts';
+import { importXmltv } from './guide.ts';
 import { ProviderError, validateProviderUrl } from './adapters/network.ts';
 import type { GuideProgramme, ImportItem, ProviderCategory, ProviderConfig, SourceType, User } from './model.ts';
 
@@ -29,6 +30,7 @@ const inProgress = new Set<number>();
 const failures = new Map<string, { count: number; until: number }>();
 const episodeJobs = new Map<number, {status:'running'|'ready'|'error';started:number;finished:number;error:string}>();
 const guideCache = new Map<number, {expires:number;programmes:GuideProgramme[];source:string}>();
+const importingGuides = new Set<number>();
 
 class HttpError extends Error {
   status: number;
@@ -224,6 +226,29 @@ function startEpisodeDiscovery(seriesId: number): void {
   })();
 }
 
+function startGuideImport(feed:GuideFeed):void {
+  if (importingGuides.has(feed.id)) throw new HttpError(409,'This guide is already importing.');
+  if (importingGuides.size>=1) throw new HttpError(429,'Only one guide can import at a time on a low-memory server.');
+  const address=new URL(feed.location);
+  const previous=feed.last_import ? Date.parse(feed.last_import.replace(' ','T')+'Z') : NaN;
+  if (/(?:^|\.)open-epg\.com$/i.test(address.hostname) && Number.isFinite(previous) && Date.now()-previous<6*3600_000)
+    throw new HttpError(429,'Open-EPG only updates daily. Wait at least six hours between successful imports of this feed.');
+  importingGuides.add(feed.id);
+  setGuideStatus(feed.id,'importing');
+  const generation=randomUUID();
+  void (async()=>{
+    try {
+      const result=await importXmltv(feed,generation);
+      guideCache.clear();
+      console.log(`Guide ${feed.id} imported: ${result.channels} channels, ${result.programmes} programmes`);
+    } catch (error) {
+      const message=error instanceof Error ? error.message : 'Guide import failed.';
+      abortGuideImport(feed.id,generation,message);
+      console.error(`Guide ${feed.id} import failed:`,message);
+    } finally { importingGuides.delete(feed.id); }
+  })();
+}
+
 async function* arrayItems(items: ImportItem[]): AsyncGenerator<ImportItem> {
   for (const item of items) yield item;
 }
@@ -268,7 +293,7 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const path = url.pathname;
   const method = req.method || 'GET';
-  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.3.0' });
+  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.4.0' });
   if (path === '/api/session' && method === 'GET') {
     const current = session(req);
     return send(res, 200, { needsSetup: !hasUsers(), user: current?.user || null, csrf: current?.csrf || null });
@@ -415,6 +440,43 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       return send(res, 200, {categories:listCategories(id)});
     }
   }
+  if (path === '/api/guide/feeds' && method === 'GET') {
+    if (current.user.role !== 'admin') throw new HttpError(403,'Administrator access required.');
+    return send(res,200,{feeds:listGuideFeeds().map(publicGuideFeed)});
+  }
+  if (path === '/api/guide/feeds' && method === 'POST') {
+    requireWrite(req,true);
+    const input=await body(req);
+    const name=textField(input.name,'guide name',100);
+    const country=String(input.country || '');
+    if (!['GB','US',''].includes(country)) throw new HttpError(400,'Choose a supported guide region.');
+    const url=validateProviderUrl(textField(input.location,'XMLTV URL',2048));
+    return send(res,201,{feed:publicGuideFeed(addGuideFeed(name,country,url.toString()))});
+  }
+  const guideFeedMatch=/^\/api\/guide\/feeds\/(\d+)(?:\/(import))?$/.exec(path);
+  if (guideFeedMatch) {
+    const id=positiveId(guideFeedMatch[1]);
+    const feed=getGuideFeed(id);
+    if (!feed) throw new HttpError(404,'Guide feed not found.');
+    if (method==='POST' && guideFeedMatch[2]==='import') {
+      requireWrite(req,true);
+      startGuideImport(feed);
+      return send(res,202,{status:'importing'});
+    }
+    if (method==='DELETE' && !guideFeedMatch[2]) {
+      requireWrite(req,true);
+      if (importingGuides.has(id)) throw new HttpError(409,'Wait for this guide import to finish before removing it.');
+      deleteGuideFeed(id);
+      guideCache.clear();
+      return send(res,200,{ok:true});
+    }
+  }
+  if (path==='/api/guide/grid' && method==='GET') {
+    const country=url.searchParams.get('country') || '';
+    if (!['','GB','US'].includes(country)) throw new HttpError(400,'Unknown guide region.');
+    const limit=Math.floor(Math.min(80,Math.max(1,Number(url.searchParams.get('limit') || 40) || 40)));
+    return send(res,200,{items:guideGrid(country,limit,(url.searchParams.get('q') || '').slice(0,120)),country});
+  }
   if (path === '/api/catalogue' && method === 'GET') {
     const kind = url.searchParams.get('kind') || 'all';
     if (!['all', 'library', 'film', 'series', 'episode', 'channel', 'music', 'photo'].includes(kind)) throw new HttpError(400, 'Unsupported media kind.');
@@ -439,6 +501,8 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   if (guideMatch && method === 'GET') {
     const titleId = positiveId(guideMatch[1]);
     if (getTitle(titleId)?.kind !== 'channel') throw new HttpError(404,'Live channel not found.');
+    const xmltv=storedGuide(titleId);
+    if (xmltv.programmes.length) return send(res,200,{...xmltv,cached:true,kind:'xmltv'});
     const cached = guideCache.get(titleId);
     if (cached && cached.expires > Date.now()) return send(res,200,{programmes:cached.programmes,source:cached.source,cached:true});
     const variants = listVariants(titleId).filter(v=>['stalker','xtream'].includes(v.source_type)).slice(0,2);

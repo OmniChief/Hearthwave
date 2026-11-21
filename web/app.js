@@ -1,4 +1,4 @@
-const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', liveGroup: 'all', query: '', items: [], stats: null, sources: [], seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackGeneration: 0, lastProgressSave: 0 };
+const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', liveGroup: 'all', liveCountry: 'all', guideView: false, guideCountry: '', query: '', items: [], stats: null, sources: [], seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackGeneration: 0, lastProgressSave: 0 };
 const $ = (selector) => document.querySelector(selector);
 const page = $('#page');
 
@@ -53,6 +53,7 @@ function showShell() {
 const headings = { home:'Home', library:'Library', live:'Live', play:'Play', create:'Create', community:'Community', 'my-space':'My Space', settings:'Settings' };
 async function navigate(destination) {
   if (destination === 'settings' && state.session?.user.role !== 'admin') return;
+  state.guideView = false;
   state.seriesDetail = null;
   state.seriesEpisodes = [];
   clearTimeout(state.seriesRefreshTimer);
@@ -81,7 +82,23 @@ function mediaCard(item) {
 }
 
 function liveCard(item) {
-  return `<div class="channel-row"><button class="channel-play" data-play="${item.id}"><span class="channel-icon">▻</span><span><strong>${esc(item.title)}</strong><small>${esc(item.group_name || 'Live channel')} · ${item.source_count} source${item.source_count === 1 ? '' : 's'}</small></span></button><button class="button button-quiet button-small" data-guide="${item.id}" aria-label="Programme guide for ${esc(item.title)}">Guide</button></div>`;
+  const artwork=typeof item.artwork==='string' && /^https?:\/\//i.test(item.artwork) ? `<img src="${esc(item.artwork)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '▻';
+  return `<div class="channel-row"><button class="channel-play" data-play="${item.id}"><span class="channel-icon">${artwork}</span><span><strong>${esc(item.title)}</strong><small>${esc(liveGenre(item))} · ${item.source_count} source${item.source_count === 1 ? '' : 's'}</small></span></button><button class="button button-quiet button-small" data-guide="${item.id}" aria-label="Programme guide for ${esc(item.title)}">Guide</button></div>`;
+}
+
+const liveGenres=['General','Entertainment','Sports','Movies','News','Kids','Documentary','Music','Other'];
+function liveGenre(item) {
+  const group=String(item.group_name || '').toUpperCase();
+  const title=String(item.title || '').toUpperCase();
+  if (/\b(?:SPORT|ESPN|DAZN|PPV|EUROSPORT)\b/.test(group+' '+title)) return 'Sports';
+  if (/\b(?:NEWS|CURRENT AFFAIRS)\b/.test(group+' '+title)) return 'News';
+  if (/\b(?:MOVIE|CINEMA|FILMS?)\b/.test(group+' '+title)) return 'Movies';
+  if (/\b(?:KIDS?|CHILDREN|CARTOON)\b/.test(group+' '+title)) return 'Kids';
+  if (/\b(?:DOCUMENTARY|DOCU|DISCOVERY)\b/.test(group+' '+title)) return 'Documentary';
+  if (/\b(?:MUSIC|RADIO)\b/.test(group+' '+title)) return 'Music';
+  if (/\b(?:ENTERTAINMENT|24\/7)\b/.test(group)) return 'Entertainment';
+  if (/\b(?:GENERAL|FREEVIEW|TERRESTRIAL)\b/.test(group)) return 'General';
+  return 'Other';
 }
 
 async function renderHome() {
@@ -141,20 +158,45 @@ async function showLiveGuide(titleId) {
   try {
     const result = await api(`/api/titles/${titleId}/guide`);
     if (!panel.isConnected) return;
-    panel.innerHTML = `<h2>${esc(channel?.title || 'Channel')} · Programme guide</h2><p class="field-note">${result.source ? `Guide from ${esc(result.source)} · ` : ''}Times are shown as supplied by the provider.</p>${result.programmes.length ? `<div class="episode-list">${result.programmes.map(row => `<div class="episode-row"><div><strong>${esc(row.title)}</strong><small>${esc(row.start)}${row.end ? ` – ${esc(row.end)}`:''}</small>${row.description ? `<p class="field-note">${esc(row.description)}</p>`:''}</div></div>`).join('')}</div>` : '<p class="field-note">No guide entries were returned for this channel. Live playback is unaffected.</p>'}`;
+    panel.innerHTML = `<h2>${esc(channel?.title || 'Channel')} · Programme guide</h2><p class="field-note">${result.source ? `Guide from ${esc(result.source)} · ` : ''}XMLTV timestamps use your device timezone; other provider times are shown as supplied.</p>${result.programmes.length ? `<div class="episode-list">${result.programmes.map(row => `<div class="episode-row"><div><strong>${esc(row.title)}</strong><small>${esc(localGuideTime(row.start))}${row.end ? ` – ${esc(localGuideTime(row.end))}`:''}</small>${row.description ? `<p class="field-note">${esc(row.description)}</p>`:''}</div></div>`).join('')}</div>` : '<p class="field-note">No guide entries were returned for this channel. Live playback is unaffected.</p>'}`;
   } catch (error) { if (panel.isConnected) panel.innerHTML = `<h2>Programme guide unavailable</h2><p class="field-note">${esc(error.message)}</p>`; }
 }
 
 async function renderLive() {
+  if (state.guideView) return renderGuideGrid();
   const result = await api(`/api/catalogue?kind=channel&q=${encodeURIComponent(state.query)}`);
-  state.items = result.items;
-  const groups = [...new Set(result.items.map(item => item.group_name).filter(Boolean))].sort((a,b) => a.localeCompare(b));
-  const selected = state.liveGroup === 'all' ? result.items : result.items.filter(item => item.group_name === state.liveGroup);
-  page.innerHTML = `<div class="preview-banner">Direct links, M3U imports and selected Xtream/Stalker channels share this lineup. Use Guide on a provider channel to load available programme entries. Full XMLTV aggregation and improved player compatibility are still planned.</div>
-    <div class="toolbar"><button class="pill ${state.liveGroup === 'all' ? 'active':''}" data-group="all">All channels</button>${groups.map(group => `<button class="pill ${state.liveGroup === group ? 'active':''}" data-group="${esc(group)}">${esc(group)}</button>`).join('')}</div>
-    ${heading('Your live lineup', `${selected.length} channel${selected.length===1?'':'s'} · ${groups.length} categor${groups.length===1?'y':'ies'}`)}
+  const countries=[['all','All regions'],['GB','United Kingdom'],['US','United States'],['other','Other']];
+  const regionItems=result.items.filter(item=>state.liveCountry==='all' || (state.liveCountry==='other' ? !['GB','US'].includes(item.channel_country) : item.channel_country===state.liveCountry));
+  const genres=liveGenres.filter(genre=>regionItems.some(item=>liveGenre(item)===genre));
+  const selected=(state.liveGroup==='all'?regionItems:regionItems.filter(item=>liveGenre(item)===state.liveGroup)).sort((a,b)=>{
+    const countryRank=code=>code==='GB'?0:code==='US'?1:2;
+    return countryRank(a.channel_country)-countryRank(b.channel_country) || liveGenres.indexOf(liveGenre(a))-liveGenres.indexOf(liveGenre(b)) || a.title.localeCompare(b.title);
+  });
+  state.items=result.items;
+  page.innerHTML = `<div class="preview-banner">All sources share this lineup, grouped by region and familiar genres. Import XMLTV in Settings → Metadata & Guide for a combined programme guide, or use Guide on a channel for provider data. Advanced EPG mapping and player compatibility are still being developed.</div>
+    <div class="toolbar">${countries.map(([key,label])=>`<button class="pill ${state.liveCountry===key?'active':''}" data-country="${key}">${label}</button>`).join('')}</div>
+    <div class="toolbar"><button class="pill ${state.liveGroup==='all'?'active':''}" data-group="all">All genres</button>${genres.map(genre=>`<button class="pill ${state.liveGroup===genre?'active':''}" data-group="${genre}">${genre}</button>`).join('')}</div>
+    ${heading('Your live lineup', `${selected.length} channel${selected.length===1?'':'s'} · ${genres.length} genre${genres.length===1?'':'s'}`, '<button class="button button-quiet button-small" data-guide-view="open">Programme guide</button>')}
     ${selected.length ? `<div class="live-list">${selected.map(liveCard).join('')}</div>` : emptyState('No channels to show', 'Import an M3U playlist or create a direct channel in Settings > Sources.', '▻')}
     <section class="surface" id="guide-panel" hidden></section>`;
+}
+
+function localGuideTime(value) {
+  if (!value) return 'Time unavailable';
+  if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(value) || !/(?:Z|[+-]\d\d:\d\d)$/.test(value)) return value;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toLocaleString(undefined,{weekday:'short',hour:'2-digit',minute:'2-digit',timeZoneName:'short'}) : value;
+}
+
+async function renderGuideGrid() {
+  const result=await api(`/api/guide/grid?country=${encodeURIComponent(state.guideCountry)}&limit=40&q=${encodeURIComponent(state.query)}`);
+  if (state.page !== 'live' || !state.guideView) return;
+  state.items=result.items;
+  page.innerHTML=`<div class="preview-banner">Unified guide entries from your manually imported XMLTV feeds. Times are displayed in this device's local timezone; providers with no mapped XMLTV remain playable.</div>
+    ${heading('Programme guide','Now and upcoming programmes, shared across all source types.','<button class="button button-quiet button-small" data-guide-view="close">← Live channels</button>')}
+    <div class="toolbar">${[['','All'],['GB','United Kingdom'],['US','United States']].map(([key,label])=>`<button class="pill ${state.guideCountry===key?'active':''}" data-guide-country="${key}">${label}</button>`).join('')}</div>
+    ${result.items.length?`<div class="guide-grid">${result.items.map(row=>`<div class="guide-row"><div class="guide-channel"><strong>${esc(row.title)}</strong><small>${esc(row.channel_country || 'Unspecified region')}</small><button class="button button-quiet button-small" data-play="${row.id}">Watch</button></div><div class="guide-schedule">${row.guide.programmes.length?row.guide.programmes.map(programme=>`<div class="guide-event"><strong>${esc(programme.title)}</strong><small>${esc(localGuideTime(programme.start))} – ${esc(localGuideTime(programme.end))}</small></div>`).join(''):'<span class="field-note">No matched XMLTV entries</span>'}</div></div>`).join('')}</div>`:emptyState('No live channels yet','Import channels in Settings → Sources to populate the lineup.','▻')}
+    <p class="field-note">Showing up to 40 channels. More guide navigation and XMLTV source mapping options are planned.</p>`;
 }
 
 const upcoming = {
@@ -192,13 +234,23 @@ async function renderSettings() {
       <button class="button button-quiet button-small" id="refresh-sources">Refresh status</button></section></div>
       <section class="surface" id="provider-folders-panel" hidden></section>
       <section class="surface" id="m3u-import-panel" hidden><h2>Import M3U playlist</h2><p class="field-note">Paste an authorised playlist. Stream entries are indexed progressively; the server does not proxy or transcode them.</p><form class="field-stack" id="m3u-form"><input type="hidden" name="sourceId"><label>M3U text<textarea name="playlist" spellcheck="false" required placeholder="#EXTM3U\n#EXTINF:-1 tvg-id=..."></textarea></label><button class="button button-primary" type="submit">Import playlist</button></form></section>`;
+  } else if (state.settingsTab === 'metadata') {
+    const feeds=(await api('/api/guide/feeds')).feeds;
+    contents=`<div class="info-banner">XMLTV feeds are imported when an administrator clicks Import. No NAS scheduler is required. Existing guide data stays available until a new import succeeds.</div>
+      <div class="two-col"><section class="surface"><h2>Add XMLTV guide</h2><p class="field-note">Choose a prepared guide or enter any public XMLTV/XMLTV.gz URL. UK and US public files update roughly daily, so importing once a day is sufficient.</p><div class="row-actions"><button class="button button-quiet button-small" data-guide-preset="GB">Use UK example</button><button class="button button-quiet button-small" data-guide-preset="US">Use US example</button></div><form id="guide-form" class="field-stack">
+        <label>Guide name<input name="name" required maxlength="100" placeholder="UK free guide"></label>
+        <label>Region<select name="country"><option value="GB">United Kingdom</option><option value="US">United States</option><option value="">Other / mixed</option></select></label>
+        <label>XMLTV URL<input name="location" type="url" required maxlength="2048" placeholder="https://example.org/guide.xml.gz"></label>
+        <button class="button button-primary" type="submit">Add guide feed</button></form></section>
+      <section class="surface"><h2>Configured guides</h2><p class="field-note">The import reads a compressed XMLTV stream in bounded chunks. It never transcodes videos.</p>
+        ${feeds.length?feeds.map(feed=>`<div class="list-row"><div><strong>${esc(feed.name)}</strong> <span class="tag">${esc(feed.country||'Mixed')}</span><small>${esc(feed.status)} · ${feed.channel_count} channels · ${feed.programme_count} programmes${feed.last_import ? ` · Last import ${esc(feed.last_import)}`:''}${feed.last_error ? ` · ${esc(feed.last_error)}`:''}</small></div><div class="row-actions"><button class="button button-quiet button-small" data-guide-import="${feed.id}" ${feed.status==='importing'?'disabled':''}>Import</button><button class="button button-danger button-small" data-guide-remove="${feed.id}">Remove</button></div></div>`).join(''):'<p class="field-note">No XMLTV guides configured.</p>'}
+        <button class="button button-quiet button-small" id="refresh-guides">Refresh status</button></section></div>`;
   } else if (state.settingsTab === 'users') {
     const users = (await api('/api/users')).users;
     contents = `<div class="two-col"><section class="surface"><h2>Household accounts</h2><p class="field-note">Each account has its own favourites and playback positions, saved on this server.</p>${users.map(user => `<div class="list-row"><strong>${esc(user.username)}</strong><span class="tag">${esc(user.role)}</span></div>`).join('')}</section>
       <section class="surface"><h2>Add a viewer</h2><form id="user-form" class="field-stack"><label>Username<input name="username" minlength="3" maxlength="50" required></label><label>Temporary password<input name="password" type="password" minlength="12" maxlength="256" required autocomplete="new-password"></label><label>Role<select name="role"><option value="viewer">Viewer</option><option value="admin">Administrator</option></select></label><button class="button button-primary" type="submit">Create account</button></form></section></div>`;
   } else {
     const explanations = {
-      metadata:['Metadata & Guide','Artwork services, subtitles, XMLTV feeds, EPG mappings and quality-aware channel matching are scheduled for core media and Live milestones.'],
       workers:['Downloads & Workers','Acquisition queues, explicit file conversion and trusted paired worker computers will be managed here, without mandatory on-NAS transcoding.'],
       appearance:['Appearance & Playback','User themes, TV remote layouts, compatibility mode, quality preferences and subtitle defaults will be configured here.'],
       system:['System','Updater, backups, runtime budgets, resource metrics, diagnostics and migration rollback controls belong here.'],
@@ -360,7 +412,7 @@ page.addEventListener('change', event => { if (event.target?.id === 'source-type
 
 page.addEventListener('submit', async event => {
   const form = event.target;
-  if (!['source-form','m3u-form','user-form','folders-form'].includes(form.id)) return;
+  if (!['source-form','m3u-form','user-form','folders-form','guide-form'].includes(form.id)) return;
   event.preventDefault();
   const data = new FormData(form);
   try {
@@ -369,6 +421,9 @@ page.addEventListener('submit', async event => {
       const config = type === 'xtream' ? { username:data.get('username'), password:data.get('password'), allowLan:data.has('allowLan') } : type === 'stalker' ? { mac:data.get('mac'), username:data.get('stalkerUsername'), password:data.get('stalkerPassword'), serial:data.get('serial'), deviceId:data.get('deviceId'), deviceId2:data.get('deviceId2'), allowLan:data.has('allowLan') } : undefined;
       await api('/api/sources', { method:'POST', body:{ name:data.get('name'), type, location:data.get('location') || '', config } });
       notify(['xtream','stalker'].includes(type) ? 'Provider added. Discover its folders and choose what to scan.' : 'Source added. You can scan or import it now.');
+    } else if (form.id === 'guide-form') {
+      await api('/api/guide/feeds',{method:'POST',body:{name:data.get('name'),country:data.get('country'),location:data.get('location')}});
+      notify('Guide feed saved. Click Import to load its XMLTV programmes.');
     } else if (form.id === 'folders-form') {
       const selected = Array.from(form.querySelectorAll('input[name=category]:checked'), checkbox => ({kind:checkbox.dataset.kind,id:checkbox.value}));
       await api(`/api/sources/${data.get('sourceId')}/categories`, {method:'POST',body:{selected}});
@@ -388,6 +443,30 @@ page.addEventListener('click', async event => {
   const target = event.target.closest('button');
   if (!target) return;
   if (target.dataset.page) return navigate(target.dataset.page);
+  if (target.dataset.guideView) { state.guideView=target.dataset.guideView==='open'; return renderPage(); }
+  if (target.dataset.guideCountry !== undefined) { state.guideCountry=target.dataset.guideCountry; return renderPage(); }
+  if (target.dataset.country) { state.liveCountry=target.dataset.country; state.liveGroup='all'; return renderPage(); }
+  if (target.dataset.guidePreset) {
+    const country=target.dataset.guidePreset;
+    const form=$('#guide-form');
+    if (!form) return;
+    form.querySelector('[name=country]').value=country;
+    form.querySelector('[name=name]').value=country==='GB'?'United Kingdom EPG':'United States EPG 1';
+    form.querySelector('[name=location]').value=country==='GB'?'https://www.open-epg.com/files/unitedkingdom.xml.gz':'https://www.open-epg.com/files/unitedstates1.xml.gz';
+    return;
+  }
+  if (target.dataset.guideImport) {
+    try { await api(`/api/guide/feeds/${target.dataset.guideImport}/import`,{method:'POST'}); notify('XMLTV import started. Refresh status in a moment.'); await renderPage(); }
+    catch (error) { notify(error.message,true); }
+    return;
+  }
+  if (target.dataset.guideRemove) {
+    if (!window.confirm('Remove this guide and all of its programme records?')) return;
+    try { await api(`/api/guide/feeds/${target.dataset.guideRemove}`,{method:'DELETE'}); notify('Guide removed.'); await renderPage(); }
+    catch (error) { notify(error.message,true); }
+    return;
+  }
+  if (target.id==='refresh-guides') return renderPage();
   if (target.dataset.series) {
     state.seriesDetail = Number(target.dataset.series);
     state.page = 'library';

@@ -10,10 +10,41 @@ export function cleanTitle(raw: string): string {
   return raw.replace(/\.[^.]+$/, '').replace(/[._]+/g, ' ').replace(/\s*(?:\[(?:4K|2160P|1080P|720P|UHD|FHD|HEVC|HD|SD)\]|\((?:4K|2160P|1080P|720P|UHD|FHD|HEVC|HD|SD)\))\s*/gi, ' ').replace(/\s+/g, ' ').trim();
 }
 
+const channelQualities = /(?:[\s|:/-]+|^)(?:4K|UHD|FHD|FULL\s*HD|HD|SD|HEVC|H265|H264|1080P|720P|2160P)\s*$/i;
+export function displayChannelTitle(raw: string): string {
+  let name = raw.trim().replace(/^(?:(?:\[(?:UK|GB|US|USA|EN|ENGLISH|CA|CANADA)\]|(?:UK|GB|US|USA|EN|ENGLISH|CA|CANADA))\s*[-:|]\s*)+/i,'');
+  name = name.replace(/\s*\[(?:4K|UHD|FHD|HD|SD|HEVC|1080P|720P|2160P)\]\s*$/i,'').trim();
+  for (let i = 0; i < 3; i++) name = name.replace(channelQualities,'').trim();
+  return name.replace(/\s+/g,' ').trim() || raw.trim();
+}
+
+export function channelKey(name: string): string {
+  return displayChannelTitle(name).normalize('NFKC').toLowerCase().replace(/&/g,' and ').replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+}
+
+export function channelCountry(title: string, group = '', hint = ''): string {
+  const normalize = (text: string): string => {
+    const value = text.toUpperCase().trim();
+    if (/^(?:GB|UK|EN|ENGLISH|UNITED KINGDOM)$/.test(value)) return 'GB';
+    if (/^(?:US|USA|UNITED STATES)$/.test(value)) return 'US';
+    if (/^(?:CA|CANADA)$/.test(value)) return 'CA';
+    return '';
+  };
+  const explicit = normalize(hint);
+  if (explicit) return explicit;
+  const prefix = /^\s*\[?(UK|GB|US|USA|EN|ENGLISH|CA|CANADA)\]?\s*[-:|]/i.exec(title)?.[1];
+  if (prefix) return normalize(prefix);
+  const category = /^(?:\W*)(UK|GB|US|USA|EN|ENGLISH|CA|CANADA)(?:\W|$)/i.exec(group)?.[1];
+  return normalize(category || '');
+}
+
 export function canonicalKey(item: ImportItem): string {
-  const region = (item.region || '').trim().toLowerCase();
+  const region = item.kind === 'channel' ? channelCountry(item.title,item.group,item.region).toLowerCase() : (item.region || '').trim().toLowerCase();
+  if (item.kind === 'channel') {
+    if (item.externalId?.trim()) return `channel:${region}:epg:${item.externalId.trim().toLowerCase()}`;
+    return `channel:${region}:${channelKey(item.title)}:0`;
+  }
   const name = cleanTitle(item.title).replace(/^(?:uk|us|usa|en)\s*[-:|]\s*/i, '').replace(/\s+(?:UHD|FHD|4K|HD|SD|1080P|720P)$/i, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
-  if (item.kind === 'channel' && item.externalId?.trim()) return `channel:${region}:epg:${item.externalId.trim().toLowerCase()}`;
   const episode = item.kind === 'episode' ? `:${item.season || 0}:${item.episode || 0}` : '';
   return `${item.kind}:${region}:${name}:${item.year || 0}${episode}`;
 }

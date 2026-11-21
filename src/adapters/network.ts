@@ -78,7 +78,7 @@ export async function providerJson(address: string, options: { headers?: Record<
     const response = await new Promise<http.IncomingMessage>((resolve,reject) => {
       const req = transport.request(url, {
         method:'GET',signal:AbortSignal.timeout(15000),maxHeaderSize:16 * 1024,
-        headers:{'User-Agent':'Hearthwave/0.2','Accept':'application/json','Accept-Encoding':'gzip, deflate, br',...(options.headers || {})},
+        headers:{'User-Agent':'Hearthwave/0.4','Accept':'application/json','Accept-Encoding':'gzip, deflate, br',...(options.headers || {})},
         lookup:(_hostname,_options,callback) => callback(null,ip,family),
       },resolve);
       req.on('error',reject);
@@ -103,6 +103,47 @@ export async function providerJson(address: string, options: { headers?: Record<
       }
       try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown; }
       catch { throw new ProviderError('Provider returned invalid JSON.'); }
+    } finally { response.destroy(); }
+  });
+}
+
+/** Stream XMLTV with DNS pinning and decompression limits; never buffer the complete guide in RAM. */
+export async function providerXmlStream(address:string, onChunk:(chunk:Buffer)=>void|Promise<void>, options:{allowLan?:boolean}={}):Promise<void> {
+  return withSlot(async () => {
+    const url=validateProviderUrl(address);
+    const {address:ip,family}=await pinnedAddress(url,Boolean(options.allowLan));
+    const transport=url.protocol==='https:' ? https : http;
+    const response=await new Promise<http.IncomingMessage>((resolve,reject) => {
+      const req=transport.request(url,{
+        method:'GET',signal:AbortSignal.timeout(60_000),maxHeaderSize:16*1024,
+        headers:{'User-Agent':'Hearthwave/0.4','Accept':'application/xml, text/xml, application/gzip','Accept-Encoding':'identity'},
+        lookup:(_host,_opts,callback)=>callback(null,ip,family),
+      },resolve);
+      req.on('error',reject);
+      req.end();
+    });
+    try {
+      if (response.statusCode===429) throw new ProviderError('Guide provider rate limit reached (HTTP 429).',429,retryTime(response.headers));
+      if (response.statusCode!==200) throw new ProviderError(`Guide provider returned HTTP ${response.statusCode || 'unknown'}.`);
+      const encoding=String(response.headers['content-encoding'] || '').toLowerCase();
+      if (!['','identity','gzip','deflate','br'].includes(encoding)) throw new ProviderError('Unsupported guide response encoding.');
+      const factory=encoding==='gzip' ? createGunzip : encoding==='deflate' ? createInflate : encoding==='br' ? createBrotliDecompress : url.pathname.endsWith('.gz') ? createGunzip : null;
+      const decoder=factory?.();
+      const fail=(error:Error)=>decoder?.destroy(error);
+      if (decoder) response.on('error',fail);
+      try {
+        const stream=decoder ? response.pipe(decoder) : response;
+        let received=0;
+        for await (const part of stream) {
+          const chunk=Buffer.from(part);
+          received+=chunk.length;
+          if (received>128*1024*1024) throw new ProviderError('Guide exceeds the 128 MB decompressed safety limit.');
+          await onChunk(chunk);
+        }
+      } finally {
+        if (decoder) response.removeListener('error',fail);
+        decoder?.destroy();
+      }
     } finally { response.destroy(); }
   });
 }
