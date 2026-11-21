@@ -1,6 +1,7 @@
 node_modules/
 .env
 data/
+.hearthwave-update-*/
 *.log
 .DS_Store
 .vscode/

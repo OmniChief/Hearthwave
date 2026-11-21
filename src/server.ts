@@ -8,6 +8,7 @@ import { liveGenres, parseM3u, scanFolder } from './catalogue.ts';
 import { libraryGenres } from './library-genres.ts';
 import { qualityPreferences, type QualityPreference } from './quality.ts';
 import { BackupError, backupBusy, streamBackup } from './backup.ts';
+import { UpdateError, checkForUpdate, startUpdate, updateStatus } from './updater.ts';
 import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, completeImport, countTitles, createCollection, createSmartCollection, createUser, dashboardStats, dataDir, db, deleteCollection, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, libraryGenreCounts, listCategories, listCollections, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, ownedCollection, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, renameCollection, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setCollectionMembership, setFavourite, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, updateSmartCollectionRules, type GuideFeed, type SmartRules, type SourceRow } from './db.ts';
 import { discoverProvider, discoverSeriesEpisodes, fetchTitleMetadata, importProvider, providerGuide, resolveProviderStream, type ProviderScanProgress } from './adapters/providers.ts';
 import { importXmltv } from './guide.ts';
@@ -349,7 +350,7 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const path = url.pathname;
   const method = req.method || 'GET';
-  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.20.0' });
+  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.21.0', pid: process.pid });
   if (path === '/api/session' && method === 'GET') {
     const current = session(req);
     return send(res, 200, { needsSetup: !hasUsers(), user: current?.user || null, csrf: current?.csrf || null });
@@ -395,10 +396,26 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   if (path === '/api/system/status' && method === 'GET') {
     if (current.user.role !== 'admin') throw new HttpError(403, 'Administrator access required.');
     const databaseInfo = await stat(join(dataDir, 'hearthwave.sqlite'));
-    return send(res, 200, { version: '0.20.0', schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, databaseBytes: databaseInfo.size, rssBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(process.uptime()), backupBusy: backupBusy() });
+    return send(res, 200, { version: '0.21.0', schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, databaseBytes: databaseInfo.size, rssBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(process.uptime()), backupBusy: backupBusy() });
+  }
+  if(path==='/api/system/update/check' && method==='GET') {
+    if(current.user.role!=='admin') throw new HttpError(403,'Administrator access required.');
+    return send(res,200,await checkForUpdate(true));
+  }
+  if(path==='/api/system/update/status' && method==='GET') {
+    if(current.user.role!=='admin') throw new HttpError(403,'Administrator access required.');
+    return send(res,200,await updateStatus());
+  }
+  if(path==='/api/system/update/install' && method==='POST') {
+    requireWrite(req,true);
+    const input=await body(req);
+    if(typeof input.sha!=='string' || !/^[a-f0-9]{40}$/.test(input.sha)) throw new HttpError(400,'Choose a verified GitHub commit first.');
+    await startUpdate(input.sha,shutdownForUpdate);
+    return send(res,202,{accepted:true,message:'Preparing the verified update. Hearthwave will restart when ready.'});
   }
   if (path === '/api/system/backup' && method === 'POST') {
     requireWrite(req, true);
+    if((await updateStatus()).busy) throw new HttpError(409,'Wait for the active update to finish before exporting the database.');
     return streamBackup(res);
   }
   if (path === '/api/preferences' && method === 'GET') return send(res,200,getUserPreferences(current.user.id));
@@ -858,7 +875,7 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': contentTypes[extname(name)] || 'application/octet-stream', 'Cache-Control': name === 'sw.js' ? 'no-cache' : 'no-store' });
     res.end(contents);
   } catch (error) {
-    const status = error instanceof HttpError || error instanceof ProviderError || error instanceof BackupError ? error.status : (error as NodeJS.ErrnoException).code === 'ENOENT' ? 404 : 500;
+    const status = error instanceof HttpError || error instanceof ProviderError || error instanceof BackupError || error instanceof UpdateError ? error.status : (error as NodeJS.ErrnoException).code === 'ENOENT' ? 404 : 500;
     if (status === 500) console.error('Request failed:', error);
     const message = status === 500 ? 'The request could not be completed.' : error instanceof Error ? error.message : 'Request failed.';
     if (!res.headersSent) send(res, status, { error: message });
@@ -870,5 +887,11 @@ const port = Number(process.env.PORT || 9999);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT must be between 1 and 65535.');
 server.listen(port, process.env.HOST || '0.0.0.0', () => console.log(`Hearthwave ready on port ${port}`));
 const shutdown = () => { server.close(() => { db.close(); process.exit(0); }); };
+const shutdownForUpdate = () => {
+  shutdown();
+  // Active local-media responses may outlive the restart request: close them after a short grace period.
+  setTimeout(()=>server.closeAllConnections(),4000).unref();
+  setTimeout(()=>process.exit(1),15000).unref();
+};
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);

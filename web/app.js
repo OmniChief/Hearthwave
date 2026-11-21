@@ -7,6 +7,10 @@ import { adjacentMedia, mediaQueue, presentation } from './local-media.js';
 const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', libraryGenre: '', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, collectionOverview: false, collectionId: 0, collectionName: '', collectionMode: 'manual', liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], browseItems: [], mediaQueue: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], sourceJobs: {}, sourcePollTimer: null, detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, qualityPreference: 'auto', activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackRequest: 0, playbackGeneration: 0, playbackAttempts: [], recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
 let releaseMedia = () => {};
 let failedPlaybackGeneration = -1;
+let latestUpdateCheck = null;
+let updatePollTimer = null;
+let updateStartedHere = false;
+let updateWaitStarted = 0;
 const $ = (selector) => document.querySelector(selector);
 const page = $('#page');
 
@@ -418,6 +422,48 @@ async function refreshSourceStatus() {
   scheduleSourcePoll();
 }
 
+function updaterPanel(status) {
+  const busy=status.busy===true;
+  const last=latestUpdateCheck;
+  return `<section class="surface" id="updater-panel"><h2>Built-in updater</h2>
+    <p>Check the public <strong>OmniChief/Hearthwave</strong> repository for the latest verified commit on <code>main</code>. Updates are started manually by an administrator.</p>
+    <div class="info-banner">Hearthwave downloads and verifies the exact GitHub commit, keeps a temporary recovery snapshot, restarts itself, and restores the previous version if startup fails. It never removes your media or stored settings.</div>
+    <p class="field-note" id="update-progress" aria-live="polite">${esc(status.message||'Ready to check for updates.')}${status.version?` · Target ${esc(status.version)}`:''}</p>
+    ${last?`<div class="list-row"><div><strong>Installed ${esc(last.currentVersion)} → GitHub ${esc(last.latestVersion)}</strong><small>${esc(last.message)} · ${esc(last.latestSha.slice(0,12))}</small></div><span class="tag">${last.available?'Update available':'Up to date'}</span></div>`:''}
+    <div class="row-actions"><button class="button button-quiet" id="check-update" ${busy?'disabled':''}>Check GitHub</button>
+    ${last?.available?`<button class="button button-primary" id="install-update" ${busy?'disabled':''}>Install verified update</button>`:''}</div>
+    <p class="field-note">Updates require outbound HTTPS access to GitHub and write access to the installation folder. No Git command, npm packages, Docker or cron task is required.</p>
+  </section>`;
+}
+
+function scheduleUpdatePolling() {
+  clearTimeout(updatePollTimer);
+  if(state.page!=='settings' || state.settingsTab!=='system') return;
+  updatePollTimer=setTimeout(async()=>{
+    if(state.page!=='settings' || state.settingsTab!=='system') return;
+    try {
+      const status=await api('/api/system/update/status');
+      const panel=$('#updater-panel');
+      if(panel) panel.outerHTML=updaterPanel(status);
+      if(status.phase==='complete' && updateStartedHere) {
+        updateStartedHere=false;
+        notify('Hearthwave updated successfully. Reloading the new interface.');
+        setTimeout(()=>window.location.reload(),1200);
+        return;
+      }
+      if(status.phase==='failed' && updateStartedHere) {
+        updateStartedHere=false;notify(status.message,true);return;
+      }
+      if(status.busy || updateStartedHere) {
+        if(updateStartedHere && Date.now()-updateWaitStarted>300000) {updateStartedHere=false;notify('Update status timed out. Reconnect to Hearthwave and check Settings > System.',true);return;}
+        scheduleUpdatePolling();
+      }
+    } catch {
+      if(updateStartedHere && Date.now()-updateWaitStarted<300000) scheduleUpdatePolling();
+    }
+  },2000);
+}
+
 async function renderSettings() {
   clearTimeout(state.sourcePollTimer);
   if (state.settingsTab === 'sources') {const result=await api('/api/sources');state.sources=result.sources;state.sourceJobs=result.jobs||{};}
@@ -458,7 +504,7 @@ async function renderSettings() {
       <div class="info-banner">This is a preference, not a conversion setting. If the preferred quality is unavailable, all existing sources remain available as fallbacks. Your selection is saved to your account and works across devices. No NAS transcoding is performed.</div></section>
       <section class="surface"><h2>TV controls</h2><p class="field-note">Use arrows to move between controls, OK/Enter to select and Back/Escape to return. The player also lets you choose a connection directly. TV manufacturers differ in which remote buttons they expose to the browser.</p></section>`;
   } else if (state.settingsTab === 'system') {
-    const status = await api('/api/system/status');
+    const [status,updater] = await Promise.all([api('/api/system/status'),api('/api/system/update/status')]);
     const days = Math.floor(status.uptimeSeconds / 86400);
     const hours = Math.floor(status.uptimeSeconds % 86400 / 3600);
     contents = `<section class="surface"><h2>Server overview</h2><p class="field-note">Local diagnostics from this Hearthwave process. Memory measures the server, not your browser.</p>
@@ -468,7 +514,8 @@ async function renderSettings() {
       <div class="info-banner"><strong>Keep this archive private.</strong> It contains the SQLite database and its encryption key, which together expose account data and saved provider credentials. Store it somewhere secure. Local media files and external folders are not included.</div>
       <button id="download-backup" class="button button-primary" ${status.backupBusy ? 'disabled' : ''}>${status.backupBusy ? 'Backup in progress…' : 'Download backup (.tar.gz)'}</button>
       <p class="field-note">A temporary, consistent SQLite snapshot is created on the NAS, streamed to your browser and removed afterwards. No cloud upload or scheduler is involved. Restoring is an offline, administrator-managed operation.</p></section>
-      <section class="surface"><h2>Coming later</h2><p class="field-note">Installer and updater, resource budgeting, diagnostics history and guided restore/rollback are not yet implemented.</p></section>`;
+      ${updaterPanel(updater)}
+      <section class="surface"><h2>Coming later</h2><p class="field-note">A guided first-time installer, resource budgeting, diagnostics history and offline restore tooling are still planned.</p></section>`;
   } else {
     const explanations = {
       workers:['Downloads & Workers','Acquisition queues, explicit file conversion and trusted paired worker computers will be managed here, without mandatory on-NAS transcoding.'],
@@ -478,6 +525,7 @@ async function renderSettings() {
   }
   page.innerHTML = `<div class="settings-layout"><div class="settings-menu">${settingsSections.map(section => `<button class="${state.settingsTab === section[0] ? 'active':''}" data-settings="${section[0]}">${section[1]}</button>`).join('')}</div><div class="settings-content">${contents}</div></div>`;
   if (state.settingsTab === 'sources') {syncSourceForm();scheduleSourcePoll();}
+  if (state.settingsTab === 'system') scheduleUpdatePolling();
 }
 
 function syncSourceForm() {
@@ -1115,6 +1163,31 @@ page.addEventListener('click', async event => {
   if (target.dataset.libraryGenre !== undefined) {state.libraryGenre=target.dataset.libraryGenre;state.libraryOffset=0;return renderPage();}
   if (target.dataset.group) { state.liveGroup = target.dataset.group;state.liveOffset=0; return renderPage(); }
   if (target.dataset.settings) { state.settingsTab = target.dataset.settings; return renderPage(); }
+  if (target.id === 'check-update') {
+    target.disabled=true;target.textContent='Checking GitHub…';
+    try {
+      latestUpdateCheck=await api('/api/system/update/check');
+      const status=await api('/api/system/update/status');
+      const panel=$('#updater-panel');
+      if(panel) panel.outerHTML=updaterPanel(status);
+    } catch(error) {notify(error.message,true);target.disabled=false;target.textContent='Check GitHub';}
+    return;
+  }
+  if (target.id === 'install-update') {
+    if(!latestUpdateCheck?.available) return;
+    if(!window.confirm(`Install Hearthwave ${latestUpdateCheck.latestVersion} from GitHub commit ${latestUpdateCheck.latestSha.slice(0,12)}? The server will briefly restart. If startup fails, the updater will try to restore the previous version.`)) return;
+    target.disabled=true;target.textContent='Preparing update…';
+    try {
+      await api('/api/system/update/install',{method:'POST',body:{sha:latestUpdateCheck.latestSha}});
+      updateStartedHere=true;updateWaitStarted=Date.now();latestUpdateCheck=null;
+      const status=await api('/api/system/update/status');
+      const panel=$('#updater-panel');
+      if(panel) panel.outerHTML=updaterPanel(status);
+      scheduleUpdatePolling();
+      notify('Update accepted. The existing server remains running while files are downloaded and checked.');
+    } catch(error) {notify(error.message,true);target.disabled=false;target.textContent='Install verified update';}
+    return;
+  }
   if (target.id === 'download-backup') {
     target.disabled = true;
     target.textContent = 'Preparing backup…';
