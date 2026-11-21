@@ -612,7 +612,7 @@ export function saveGuideMapping(titleId:number,feedId:number,channelId:string):
 }
 export function removeGuideMapping(titleId:number):void { db.prepare('DELETE FROM guide_mappings WHERE title_id=?').run(titleId); }
 
-export function storedGuide(titleId:number,limit=12): { programmes:Array<{title:string;description:string;start:string;end:string}>; source:string; icon:string } {
+export function storedGuide(titleId:number,limit=12,windowStart?:number,windowEnd?:number): { programmes:Array<{title:string;description:string;start:string;end:string}>; source:string; icon:string } {
   const title=db.prepare("SELECT channel_key,channel_country,canonical_key FROM titles WHERE id=? AND kind='channel'").get(titleId) as {channel_key:string;channel_country:string;canonical_key:string}|undefined;
   if (!title) return {programmes:[],source:'',icon:''};
   const mapping=getGuideMapping(titleId);
@@ -630,23 +630,30 @@ export function storedGuide(titleId:number,limit=12): { programmes:Array<{title:
   const possible=mapping ? rows.filter(row=>row.feed_id===mapping.feed_id && row.channel_id===mapping.channel_id) : exact.length ? exact : sameCountry.filter(row=>row.name_key===title.channel_key);
   const countries=new Set(possible.map(row=>row.country).filter(Boolean));
   if (!mapping && !exact.length && !title.channel_country && countries.size>1) return {programmes:[],source:'',icon:''};
+  const now=Math.floor(Date.now()/1000);
+  const from=windowStart??now-1800;
+  const until=windowEnd??now+86400;
+  const fallback=possible[0];
   for (const row of possible) {
-    const now=Math.floor(Date.now()/1000);
     const items=db.prepare(`SELECT title,description,starts,ends FROM guide_programmes
       WHERE feed_id=? AND generation=? AND channel_id=? AND ends>? AND starts<?
-      ORDER BY starts LIMIT ?`).all(row.feed_id,row.generation,row.channel_id,now-1800,now+86400,limit) as Array<{title:string;description:string;starts:number;ends:number}>;
+      ORDER BY starts LIMIT ?`).all(row.feed_id,row.generation,row.channel_id,from,until,Math.min(48,Math.max(1,limit))) as Array<{title:string;description:string;starts:number;ends:number}>;
     if (items.length) return {programmes:items.map(item=>({title:item.title,description:item.description,start:new Date(item.starts*1000).toISOString(),end:new Date(item.ends*1000).toISOString()})),source:row.source,icon:row.icon};
   }
-  return {programmes:[],source:'',icon:''};
+  return {programmes:[],source:fallback?.source||'',icon:fallback?.icon||''};
 }
 
-export function guideGrid(country:string,limit=40,query=''):unknown[] {
+export function guideGrid(country:string,limit=40,query='',offset=0,windowStart?:number,windowEnd?:number):{items:unknown[];total:number} {
   const search=`%${query.replace(/[\\%_]/g,'\\$&')}%`;
+  const total=Number((db.prepare(`SELECT COUNT(*) AS total FROM titles t WHERE t.kind='channel'
+    AND (?='' OR t.channel_country=?) AND t.title LIKE ? ESCAPE '\\'
+    AND EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL)`)
+    .get(country,country,search) as {total:number}).total);
   const rows=db.prepare(`SELECT t.id,t.kind,t.title,t.artwork,t.channel_country,COUNT(v.id) AS source_count
     FROM titles t JOIN variants v ON v.title_id=t.id AND v.series_parent_id IS NULL
     WHERE t.kind='channel' AND (?='' OR t.channel_country=?) AND t.title LIKE ? ESCAPE '\\'
-    GROUP BY t.id ORDER BY t.title COLLATE NOCASE LIMIT ?`).all(country,country,search,limit) as Array<{id:number;title:string;artwork:string;channel_country:string;source_count:number}>;
-  return rows.map(row=>{ const guide=storedGuide(row.id,2);return {...row,artwork:row.artwork || guide.icon,guide}; });
+    GROUP BY t.id ORDER BY t.title COLLATE NOCASE LIMIT ? OFFSET ?`).all(country,country,search,limit,offset) as Array<{id:number;title:string;artwork:string;channel_country:string;source_count:number}>;
+  return {items:rows.map(row=>{ const guide=storedGuide(row.id,48,windowStart,windowEnd);return {...row,artwork:row.artwork || guide.icon,guide}; }),total};
 }
 
 export function dashboardStats(): { items: number; channels: number; sources: number } {

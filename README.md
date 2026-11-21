@@ -6,7 +6,7 @@ Hearthwave is a new, self-hosted home entertainment platform. Instead of opening
 
 This repository is a fresh implementation, not a fork of Vaultcast. The initial milestone targets low-resource ARM64 and x64 NAS devices with one Node.js process and an embedded SQLite database. There is no PHP, Docker, Redis, separate database server or external scheduler in the runtime.
 
-## Current status — series browsing and playback controls (0.8.0)
+## Current status — navigable unified TV guide (0.9.0)
 
 Working now:
 
@@ -41,10 +41,12 @@ Working now:
 - Collapsible season lists with episode thumbnails where available, individual episode details, playback sources, and watched positions. The most recent season opens by default.
 - Per-user, opt-in automatic playback of the next episode, saved in SQLite and available to both administrators and viewers.
 - TV-oriented fullscreen button and Up/Down channel changes while the Live player is open; Escape closes playback. Native browser video and remote key handling remain device-dependent.
+- A six-hour timeline view for the unified Live XMLTV guide, with day and time-slot navigation (today plus six upcoming days), programme details, current-show highlighting and local-time labels. Channels use provider artwork or matched XMLTV logos, and the guide can page through the lineup 30 channels at a time.
+- The guide API now queries only the requested programme window, caps returned programmes per channel, validates the date range and supports paginated channel results without a new scheduler or background service.
 
 Provider integration is an **early compatibility implementation**, not a fully tested release: portal variants differ, and no live provider account has yet been used for end-to-end verification. Episodes are fetched when a viewer opens a series, rather than during bulk catalogue scans. Some Stalker portals may expose episodes in unsupported forms. No transcoding or guaranteed browser codec support is included.
 
-Designed but **not yet implemented**: multi-day XMLTV timeline navigation, external artwork/metadata enrichment beyond what providers supply, remote-provider subtitle discovery, downloads/acquisition, personal scheduled channels, emulation, games, AI generation, community, file sharing, pairing worker PCs, a full directional-TV-focus mode, complete installer/updater, backup and migration rollback. Navigation destinations for these capabilities are previews only.
+Designed but **not yet implemented**: automatically refreshed XMLTV schedules, external artwork/metadata enrichment beyond what providers supply, remote-provider subtitle discovery, downloads/acquisition, personal scheduled channels, emulation, games, AI generation, community, file sharing, pairing worker PCs, a full directional-TV-focus mode, complete installer/updater, backup and migration rollback. Navigation destinations for these capabilities are previews only.
 
 ## Run locally
 
@@ -69,7 +71,7 @@ No `npm install` is required to start this preview because it uses Node built-in
 3. Click **Choose folders**, select the desired Live TV, VOD and series categories, and save. No categories are enabled automatically.
 4. Click **Scan** to index the selected content. Scan progress is asynchronous; refresh the source status to see completion. Indexed films appear in Library and channels in Live.
 
-Open a series in **Library** to retrieve its episodes on demand. Use **Refresh episodes** if provider contents change. In **Live**, choose **Guide** on a channel for programme details or **Programme guide** for the combined XMLTV lineup.
+Open a series in **Library** to retrieve its episodes on demand. Use **Refresh episodes** if provider contents change. In **Live**, choose **Guide** on a channel for programme details or **Programme guide** for the combined XMLTV lineup. The combined guide has four six-hour time slots, next-day navigation and **More channels** paging; select a programme block for its description.
 
 Season sections expand or collapse independently. Open an episode's **Details** to inspect its sources; use the checkbox above the seasons to save your personal **Automatically play the next episode** preference. In the player, use **Fullscreen** for a TV display. While watching Live TV, the Up/Down keys change channels where the TV remote sends normal keyboard arrows.
 
@@ -124,7 +126,7 @@ Provider requests block localhost and link-local/cloud-metadata destinations. Pr
 1. **Foundation:** shared UI, accounts, content identity and source setup (delivered as the first preview).
 2. **Source adapters:** initial Xtream/Stalker connections, selected imports and playback resolution (delivered in v0.2).
 3. **Core media:** on-demand provider series episode browsing (v0.3), Library details and explicit source choice (v0.5), identity matching and local sidecar subtitles (v0.6), manual provider metadata refresh and saved Library views (v0.7), season accordions and next-episode controls (v0.8); external metadata services, remote subtitles, requests and downloads remain planned.
-4. **Live:** provider guide lookup (v0.3), normalized channel matching and manual unified XMLTV (v0.4), manual channel mapping (v0.5); timeline navigation, broader portal compatibility, radio and personal channels remain planned.
+4. **Live:** provider guide lookup (v0.3), normalized channel matching and manual unified XMLTV (v0.4), manual channel mapping (v0.5), a paginated multi-day guide timeline (v0.9); automated guide refresh, broader portal compatibility, radio and personal channels remain planned.
 5. **Extended:** games, arcade, creative studio, worker pairing, Community and My Space.
 6. **Hardening:** on-device installer/updater, 1 GB RAM profiling, full directional-TV-focus/navigation (basic fullscreen/channel keys in v0.8), security audit, backups and rollback.
 

@@ -1,4 +1,4 @@
-const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', librarySort: 'title', liveGroup: 'all', liveCountry: 'all', guideView: false, guideCountry: '', query: '', items: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackGeneration: 0, recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
+const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', librarySort: 'title', liveGroup: 'all', liveCountry: 'all', guideView: false, guideCountry: '', guideOffset: 0, guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackGeneration: 0, recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
 const $ = (selector) => document.querySelector(selector);
 const page = $('#page');
 
@@ -62,6 +62,8 @@ const headings = { home:'Home', library:'Library', live:'Live', play:'Play', cre
 async function navigate(destination) {
   if (destination === 'settings' && state.session?.user.role !== 'admin') return;
   state.guideView = false;
+  state.guideOffset = 0;
+  state.guideRequest++;
   state.seriesDetail = null;
   state.detailId = null;
   state.seriesEpisodes = [];
@@ -246,15 +248,39 @@ function localGuideTime(value) {
 }
 
 async function renderGuideGrid() {
-  const result=await api(`/api/guide/grid?country=${encodeURIComponent(state.guideCountry)}&limit=40&q=${encodeURIComponent(state.query)}`);
-  if (state.page !== 'live' || !state.guideView) return;
+  const request=++state.guideRequest;
+  const today=new Date();
+  const day=new Date(today.getFullYear(),today.getMonth(),today.getDate()+state.guideDay);
+  const beginning=new Date(day.getFullYear(),day.getMonth(),day.getDate(),state.guideSlot);
+  const ending=new Date(day.getFullYear(),day.getMonth(),day.getDate(),state.guideSlot+6);
+  const start=Math.floor(beginning.getTime()/1000),end=Math.floor(ending.getTime()/1000);
+  const windowMs=(end-start)*1000;
+  const clock=value=>new Date(value).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'});
+  const windowLabel=day.toLocaleDateString(undefined,{weekday:'long',day:'numeric',month:'short'});
+  const result=await api(`/api/guide/grid?country=${encodeURIComponent(state.guideCountry)}&limit=30&offset=${state.guideOffset}&q=${encodeURIComponent(state.query)}&start=${start}&end=${end}`);
+  if (state.page !== 'live' || !state.guideView || request!==state.guideRequest) return;
   state.items=result.items;
   state.channelQueue=result.items.map(item=>item.id);
-  page.innerHTML=`<div class="preview-banner">Unified guide entries from your manually imported XMLTV feeds. Times are displayed in this device's local timezone; providers with no mapped XMLTV remain playable.</div>
-    ${heading('Programme guide','Now and upcoming programmes, shared across all source types.','<button class="button button-quiet button-small" data-guide-view="close">← Live channels</button>')}
+  const windowBeginning=start*1000;
+  const renderProgramme=(programme,index,row)=>{
+    const from=Date.parse(programme.start),until=Date.parse(programme.end);
+    const left=Math.max(0,Math.min(100,(from-windowBeginning)/windowMs*100));
+    const right=Math.max(0,Math.min(100,(until-windowBeginning)/windowMs*100));
+    if (!Number.isFinite(left) || !Number.isFinite(right) || right<=left) return '';
+    const playing=from<=Date.now() && until>Date.now();
+    return `<button type="button" class="guide-programme ${playing?'is-current':''}" style="left:${left.toFixed(3)}%;width:${(right-left).toFixed(3)}%" data-guide-programme="${row.id}" data-programme-index="${index}" title="${esc(programme.title)} · ${esc(clock(from))}–${esc(clock(until))}" aria-label="${esc(programme.title)} on ${esc(row.title)}, ${esc(clock(from))} to ${esc(clock(until))}"><strong>${esc(programme.title)}</strong><small>${esc(clock(from))}–${esc(clock(until))}</small></button>`;
+  };
+  page.innerHTML=`<div class="preview-banner">Unified programme listings from your imported XMLTV feeds. Browse times in your device's timezone; channels without matched guide data can still be played.</div>
+    ${heading('Programme guide',`${esc(windowLabel)} · ${esc(clock(beginning))}–${esc(clock(ending))}`,'<button class="button button-quiet button-small" data-guide-view="close">← Live channels</button>')}
     <div class="toolbar">${[['','All'],['GB','United Kingdom'],['US','United States']].map(([key,label])=>`<button class="pill ${state.guideCountry===key?'active':''}" data-guide-country="${key}">${label}</button>`).join('')}</div>
-    ${result.items.length?`<div class="guide-grid">${result.items.map(row=>`<div class="guide-row"><div class="guide-channel"><strong>${esc(row.title)}</strong><small>${esc(row.channel_country || 'Unspecified region')}</small><button class="button button-quiet button-small" data-play="${row.id}">Watch</button></div><div class="guide-schedule">${row.guide.programmes.length?row.guide.programmes.map(programme=>`<div class="guide-event"><strong>${esc(programme.title)}</strong><small>${esc(localGuideTime(programme.start))} – ${esc(localGuideTime(programme.end))}</small></div>`).join(''):'<span class="field-note">No matched XMLTV entries</span>'}</div></div>`).join('')}</div>`:emptyState('No live channels yet','Import channels in Settings → Sources to populate the lineup.','▻')}
-    <p class="field-note">Showing up to 40 channels. More guide navigation and XMLTV source mapping options are planned.</p>`;
+    <div class="guide-navigation"><div class="guide-date-nav"><button class="button button-quiet button-small" data-guide-day="-1" ${state.guideDay===0?'disabled':''}>← Previous day</button><strong>${esc(windowLabel)}</strong><button class="button button-quiet button-small" data-guide-day="1" ${state.guideDay===6?'disabled':''}>Next day →</button></div><div class="guide-slot-nav">${[0,6,12,18].map(hour=>`<button class="pill ${state.guideSlot===hour?'active':''}" data-guide-slot="${hour}">${String(hour).padStart(2,'0')}:00–${String(hour+6).padStart(2,'0')}:00</button>`).join('')}<button class="button button-primary button-small" data-guide-now>Now</button></div></div>
+    <div id="guide-programme-details" class="guide-programme-details" hidden></div>
+    <div class="guide-ruler"><span>Channel</span><div>${[0,1,2].map(index=>`<span>${esc(clock(windowBeginning+index*windowMs/3))}</span>`).join('')}<span>${esc(clock(ending))}</span></div></div>
+    ${result.items.length?`<div class="guide-grid">${result.items.map(row=>{
+      const image=typeof row.artwork==='string' && /^https?:\/\//i.test(row.artwork)?`<img src="${esc(row.artwork)}" alt="" loading="lazy" referrerpolicy="no-referrer">`:'';
+      return `<div class="guide-row"><div class="guide-channel"><div class="guide-logo"><span>▻</span>${image}</div><div class="guide-channel-text"><strong>${esc(row.title)}</strong><small>${esc(row.channel_country || 'Unspecified region')}</small></div><button class="button button-quiet button-small" data-play="${row.id}">Watch</button></div><div class="guide-timeline">${row.guide.programmes.length?row.guide.programmes.map((programme,index)=>renderProgramme(programme,index,row)).join(''):'<span class="guide-empty-slot">No matched programme data in this window</span>'}</div></div>`;
+    }).join('')}</div>`:emptyState('No live channels yet','Import channels in Settings → Sources to populate the lineup.','▻')}
+    <div class="guide-pagination"><span>${result.total?`${result.offset+1}–${result.offset+result.items.length} of ${result.total} channels`:'No matching channels'}</span><div><button class="button button-quiet button-small" data-guide-page="-1" ${result.offset===0?'disabled':''}>← Previous channels</button><button class="button button-quiet button-small" data-guide-page="1" ${result.offset+result.items.length>=result.total?'disabled':''}>More channels →</button></div></div>`;
 }
 
 const upcoming = {
@@ -547,6 +573,7 @@ $('#sign-out').addEventListener('click', async () => {
 
 $('#global-search').addEventListener('input', (event) => {
   state.query = event.target.value;
+  state.guideOffset = 0;
   state.detailId = null;
   state.seriesDetail = null;
   clearTimeout(state.seriesRefreshTimer);
@@ -618,8 +645,23 @@ page.addEventListener('click', async event => {
   if (target.hasAttribute('data-continue')) {state.libraryView='continue';state.librarySort='activity';return navigate('library');}
   if (target.dataset.page) return navigate(target.dataset.page);
   if (target.dataset.libraryView) {state.libraryView=target.dataset.libraryView;if(state.libraryView==='continue') state.librarySort='activity';return renderPage();}
-  if (target.dataset.guideView) { state.guideView=target.dataset.guideView==='open'; return renderPage(); }
-  if (target.dataset.guideCountry !== undefined) { state.guideCountry=target.dataset.guideCountry; return renderPage(); }
+  if (target.dataset.guideView) {state.guideView=target.dataset.guideView==='open';state.guideOffset=0;state.guideRequest++;if(state.guideView){state.guideDay=0;state.guideSlot=Math.floor(new Date().getHours()/6)*6;}return renderPage();}
+  if (target.dataset.guideCountry !== undefined) { state.guideCountry=target.dataset.guideCountry;state.guideOffset=0;return renderPage(); }
+  if (target.dataset.guideSlot !== undefined) {state.guideSlot=Number(target.dataset.guideSlot);return renderPage();}
+  if (target.dataset.guideDay !== undefined) {state.guideDay=Math.max(0,Math.min(6,state.guideDay+Number(target.dataset.guideDay)));return renderPage();}
+  if (target.hasAttribute('data-guide-now')) {state.guideDay=0;state.guideSlot=Math.floor(new Date().getHours()/6)*6;return renderPage();}
+  if (target.dataset.guidePage !== undefined) {state.guideOffset=Math.max(0,state.guideOffset+Number(target.dataset.guidePage)*30);return renderPage();}
+  if (target.dataset.guideProgramme !== undefined) {
+    const row=state.items.find(item=>String(item.id)===target.dataset.guideProgramme);
+    const programme=row?.guide?.programmes[Number(target.dataset.programmeIndex)];
+    const panel=$('#guide-programme-details');
+    if (programme && panel) {
+      panel.hidden=false;
+      panel.innerHTML=`<strong>${esc(programme.title)}</strong><small>${esc(row.title)} · ${esc(localGuideTime(programme.start))} – ${esc(localGuideTime(programme.end))}</small><p>${esc(programme.description || 'No description provided by this guide.')}</p>`;
+      panel.scrollIntoView({behavior:'smooth',block:'nearest'});
+    }
+    return;
+  }
   if (target.dataset.country) { state.liveCountry=target.dataset.country; state.liveGroup='all'; return renderPage(); }
   if (target.dataset.guidePreset) {
     const country=target.dataset.guidePreset;

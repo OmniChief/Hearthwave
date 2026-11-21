@@ -297,7 +297,7 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const path = url.pathname;
   const method = req.method || 'GET';
-  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.8.0' });
+  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.9.0' });
   if (path === '/api/session' && method === 'GET') {
     const current = session(req);
     return send(res, 200, { needsSetup: !hasUsers(), user: current?.user || null, csrf: current?.csrf || null });
@@ -485,8 +485,17 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   if (path==='/api/guide/grid' && method==='GET') {
     const country=url.searchParams.get('country') || '';
     if (!['','GB','US'].includes(country)) throw new HttpError(400,'Unknown guide region.');
-    const limit=Math.floor(Math.min(80,Math.max(1,Number(url.searchParams.get('limit') || 40) || 40)));
-    return send(res,200,{items:guideGrid(country,limit,(url.searchParams.get('q') || '').slice(0,120)),country});
+    const limit=Math.floor(Math.min(60,Math.max(1,Number(url.searchParams.get('limit') || 30) || 30)));
+    const offsetValue=Number(url.searchParams.get('offset') || 0);
+    if (!Number.isSafeInteger(offsetValue) || offsetValue<0 || offsetValue>20000) throw new HttpError(400,'Invalid guide page.');
+    const now=Math.floor(Date.now()/1000);
+    const startValue=url.searchParams.get('start'),endValue=url.searchParams.get('end');
+    if ((startValue===null)!==(endValue===null)) throw new HttpError(400,'Specify both guide window times.');
+    const start=startValue===null ? Math.floor(now/(6*3600))*6*3600 : Number(startValue);
+    const end=endValue===null ? start+6*3600 : Number(endValue);
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start<now-2*86400 || start>now+10*86400 || end<=start || end-start<5*3600 || end-start>7*3600 || end>now+11*86400)
+      throw new HttpError(400,'Choose a six-hour guide window within the imported programme range.');
+    return send(res,200,{...guideGrid(country,limit,(url.searchParams.get('q') || '').slice(0,120),offsetValue,start,end),country,offset:offsetValue,limit,start,end});
   }
   if (path==='/api/guide/channels' && method==='GET') {
     if (current.user.role!=='admin') throw new HttpError(403,'Administrator access required.');
