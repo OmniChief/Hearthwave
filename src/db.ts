@@ -18,7 +18,7 @@ const secrets = secretStore(dataDir);
 export const db = new DatabaseSync(join(dataDir, 'hearthwave.sqlite'), { enableForeignKeyConstraints: true });
 db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 3000; PRAGMA synchronous = NORMAL;');
 const schemaVersion = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
-if (schemaVersion > 11) throw new Error(`Database schema ${schemaVersion} requires a newer Hearthwave version.`);
+if (schemaVersion > 12) throw new Error(`Database schema ${schemaVersion} requires a newer Hearthwave version.`);
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -272,6 +272,20 @@ if (schemaVersion < 11) {
     COMMIT;
   `);
 }
+if (schemaVersion < 12) {
+  db.exec(`
+    BEGIN IMMEDIATE;
+    ALTER TABLE collections ADD COLUMN mode TEXT NOT NULL DEFAULT 'manual' CHECK(mode IN ('manual','smart'));
+    ALTER TABLE collections ADD COLUMN rule_kind TEXT NOT NULL DEFAULT 'all';
+    ALTER TABLE collections ADD COLUMN rule_genre TEXT NOT NULL DEFAULT '';
+    ALTER TABLE collections ADD COLUMN rule_year_from INTEGER;
+    ALTER TABLE collections ADD COLUMN rule_year_to INTEGER;
+    ALTER TABLE collections ADD COLUMN rule_view TEXT NOT NULL DEFAULT 'all';
+    ALTER TABLE collections ADD COLUMN rule_query TEXT NOT NULL DEFAULT '';
+    PRAGMA user_version = 12;
+    COMMIT;
+  `);
+}
 db.prepare("UPDATE sources SET status='interrupted',last_error='Previous source operation was interrupted; run it again.' WHERE status IN ('scanning','discovering','cancelling')").run();
 db.prepare("UPDATE guide_feeds SET status='interrupted',last_error='Previous guide import was interrupted; import again.' WHERE status='importing'").run();
 
@@ -508,8 +522,36 @@ export function completeImport(sourceId: number, generation: string): void {
 
 export type CatalogueView='all'|'favourites'|'continue';
 export type CatalogueSort='title'|'year'|'added'|'activity';
-export function listTitles(kind: MediaKind | 'all' | 'library', userId: number, query = '', view:CatalogueView='all', sort:CatalogueSort='title', limit=250,offset=0,country='',genre='',libraryGenre='',collectionId=0): unknown[] {
+export type SmartRuleKind='all'|'film'|'series'|'episode'|'music'|'photo';
+export type SmartRuleView='all'|'favourites'|'continue'|'unwatched';
+export interface SmartRules {kind:SmartRuleKind;genre:string;yearFrom:number|null;yearTo:number|null;view:SmartRuleView;query:string}
+export interface CollectionSettings {
+  id:number;name:string;mode:'manual'|'smart';rule_kind:SmartRuleKind;rule_genre:string;
+  rule_year_from:number|null;rule_year_to:number|null;rule_view:SmartRuleView;rule_query:string;
+}
+function collectionClause(collection:CollectionSettings|undefined,userId:number):{sql:string;params:Array<string|number>} {
+  if(!collection) return {sql:'',params:[]};
+  if(collection.mode==='manual') return {sql:' AND EXISTS (SELECT 1 FROM collection_items ci WHERE ci.collection_id=? AND ci.title_id=t.id)',params:[collection.id]};
+  const terms=["t.kind<>'channel'"];
+  const params:Array<string|number>=[];
+  if(collection.rule_kind!=='all') {terms.push('t.kind=?');params.push(collection.rule_kind);}
+  if(collection.rule_genre) {terms.push('EXISTS (SELECT 1 FROM library_genres lg WHERE lg.title_id=t.id AND lg.genre=?)');params.push(collection.rule_genre);}
+  if(collection.rule_year_from!==null) {terms.push('t.year>=?');params.push(collection.rule_year_from);}
+  if(collection.rule_year_to!==null) {terms.push('t.year<=?');params.push(collection.rule_year_to);}
+  if(collection.rule_view==='favourites') terms.push('f.title_id IS NOT NULL');
+  const startedEpisode=`EXISTS (SELECT 1 FROM variants ev JOIN progress ep ON ep.title_id=ev.title_id
+    AND ep.user_id=? AND ep.position_seconds>0 WHERE ev.series_parent_id=t.id)`;
+  if(collection.rule_view==='continue') {terms.push(`(p.position_seconds>0 OR (t.kind='series' AND ${startedEpisode}))`);params.push(userId);}
+  if(collection.rule_view==='unwatched') {terms.push(`(p.position_seconds IS NULL OR p.position_seconds<=0) AND (t.kind<>'series' OR NOT ${startedEpisode})`);params.push(userId);}
+  if(collection.rule_query) {
+    terms.push("t.title LIKE ? ESCAPE '\\'");
+    params.push(`%${collection.rule_query.replace(/[\\%_]/g,'\\$&')}%`);
+  }
+  return {sql:` AND ${terms.join(' AND ')}`,params};
+}
+export function listTitles(kind: MediaKind | 'all' | 'library', userId: number, query = '', view:CatalogueView='all', sort:CatalogueSort='title', limit=250,offset=0,country='',genre='',libraryGenre='',collection?:CollectionSettings): unknown[] {
   const search = `%${query.replace(/[\\%_]/g, '\\$&')}%`;
+  const filter=collectionClause(collection,userId);
   const order=kind==='channel' ? `CASE t.channel_country WHEN 'GB' THEN 0 WHEN 'US' THEN 1 ELSE 2 END,
     CASE t.live_genre WHEN 'General' THEN 0 WHEN 'Entertainment' THEN 1 WHEN 'Sports' THEN 2
       WHEN 'Movies' THEN 3 WHEN 'News' THEN 4 WHEN 'Kids' THEN 5 WHEN 'Documentary' THEN 6
@@ -528,13 +570,14 @@ export function listTitles(kind: MediaKind | 'all' | 'library', userId: number, 
       AND (?='' OR (?='other' AND t.channel_country NOT IN ('GB','US')) OR t.channel_country=?)
       AND (?='' OR t.live_genre=?)
       AND (?='' OR EXISTS (SELECT 1 FROM library_genres lg WHERE lg.title_id=t.id AND lg.genre=?))
-      AND (?=0 OR EXISTS (SELECT 1 FROM collection_items ci WHERE ci.collection_id=? AND ci.title_id=t.id))
+      ${filter.sql}
     GROUP BY t.id ORDER BY ${order} LIMIT ? OFFSET ?
-  `).all(kind,collectionId,userId,userId,kind,kind,kind,search,view,view,view,country,country,country,genre,genre,libraryGenre,libraryGenre,collectionId,collectionId,Math.min(250,Math.max(1,limit)),Math.max(0,offset));
+  `).all(kind,collection?.id||0,userId,userId,kind,kind,kind,search,view,view,view,country,country,country,genre,genre,libraryGenre,libraryGenre,...filter.params,Math.min(250,Math.max(1,limit)),Math.max(0,offset));
 }
 
-export function countTitles(kind: MediaKind | 'all' | 'library',userId:number,query='',view:CatalogueView='all',country='',genre='',libraryGenre='',collectionId=0):number {
+export function countTitles(kind: MediaKind | 'all' | 'library',userId:number,query='',view:CatalogueView='all',country='',genre='',libraryGenre='',collection?:CollectionSettings):number {
   const search=`%${query.replace(/[\\%_]/g,'\\$&')}%`;
+  const filter=collectionClause(collection,userId);
   return Number((db.prepare(`SELECT COUNT(*) AS total FROM titles t
     LEFT JOIN favourites f ON f.title_id=t.id AND f.user_id=?
     LEFT JOIN progress p ON p.title_id=t.id AND p.user_id=?
@@ -543,28 +586,42 @@ export function countTitles(kind: MediaKind | 'all' | 'library',userId:number,qu
       AND (?='' OR (?='other' AND t.channel_country NOT IN ('GB','US')) OR t.channel_country=?)
       AND (?='' OR t.live_genre=?)
       AND (?='' OR EXISTS (SELECT 1 FROM library_genres lg WHERE lg.title_id=t.id AND lg.genre=?))
-      AND (?=0 OR EXISTS (SELECT 1 FROM collection_items ci WHERE ci.collection_id=? AND ci.title_id=t.id))
+      ${filter.sql}
       AND EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id AND (v.series_parent_id IS NULL OR ?='episode' OR ?>0))`)
-      .get(userId,userId,kind,kind,kind,search,view,view,view,country,country,country,genre,genre,libraryGenre,libraryGenre,collectionId,collectionId,kind,collectionId) as {total:number}).total);
+      .get(userId,userId,kind,kind,kind,search,view,view,view,country,country,country,genre,genre,libraryGenre,libraryGenre,...filter.params,kind,collection?.id||0) as {total:number}).total);
 }
 
-export interface CollectionRow {id:number;name:string;created_at:string;item_count:number;included:number}
+export interface CollectionRow extends CollectionSettings {created_at:string;item_count:number|null;included:number}
+const collectionFields='id,name,mode,rule_kind,rule_genre,rule_year_from,rule_year_to,rule_view,rule_query';
 export function listCollections(userId:number,titleId=0):CollectionRow[] {
-  return db.prepare(`SELECT c.id,c.name,c.created_at,
-    (SELECT COUNT(*) FROM collection_items ci JOIN titles t ON t.id=ci.title_id
-      WHERE ci.collection_id=c.id AND EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id)) AS item_count,
-    CASE WHEN ? > 0 AND EXISTS (SELECT 1 FROM collection_items ci WHERE ci.collection_id=c.id AND ci.title_id=?) THEN 1 ELSE 0 END AS included
+  return db.prepare(`SELECT c.id,c.name,c.mode,c.rule_kind,c.rule_genre,c.rule_year_from,c.rule_year_to,c.rule_view,c.rule_query,c.created_at,
+    CASE WHEN c.mode='manual' THEN (SELECT COUNT(*) FROM collection_items ci JOIN titles t ON t.id=ci.title_id
+      WHERE ci.collection_id=c.id AND EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id)) ELSE NULL END AS item_count,
+    CASE WHEN c.mode='manual' AND ? > 0 AND EXISTS (SELECT 1 FROM collection_items ci WHERE ci.collection_id=c.id AND ci.title_id=?) THEN 1 ELSE 0 END AS included
     FROM collections c WHERE c.user_id=? ORDER BY c.name COLLATE NOCASE,c.id LIMIT 64`).all(titleId,titleId,userId) as CollectionRow[];
 }
 
-export function ownedCollection(userId:number,id:number):{id:number;name:string}|undefined {
-  return db.prepare('SELECT id,name FROM collections WHERE id=? AND user_id=?').get(id,userId) as {id:number;name:string}|undefined;
+export function ownedCollection(userId:number,id:number):CollectionSettings|undefined {
+  return db.prepare(`SELECT ${collectionFields} FROM collections WHERE id=? AND user_id=?`).get(id,userId) as CollectionSettings|undefined;
 }
 
-export function createCollection(userId:number,name:string):number {
+function checkCollectionLimit(userId:number):void {
   const count=Number((db.prepare('SELECT COUNT(*) AS total FROM collections WHERE user_id=?').get(userId) as {total:number}).total);
   if(count>=64) throw new Error('Each household member may create up to 64 collections.');
+}
+export function createCollection(userId:number,name:string):number {
+  checkCollectionLimit(userId);
   return Number(db.prepare('INSERT INTO collections(user_id,name) VALUES (?,?)').run(userId,name).lastInsertRowid);
+}
+export function createSmartCollection(userId:number,name:string,rules:SmartRules):number {
+  checkCollectionLimit(userId);
+  return Number(db.prepare(`INSERT INTO collections
+    (user_id,name,mode,rule_kind,rule_genre,rule_year_from,rule_year_to,rule_view,rule_query)
+    VALUES (?,?,'smart',?,?,?,?,?,?)`).run(userId,name,rules.kind,rules.genre,rules.yearFrom,rules.yearTo,rules.view,rules.query).lastInsertRowid);
+}
+export function updateSmartCollectionRules(userId:number,id:number,rules:SmartRules):boolean {
+  return db.prepare(`UPDATE collections SET rule_kind=?,rule_genre=?,rule_year_from=?,rule_year_to=?,rule_view=?,rule_query=?
+    WHERE id=? AND user_id=? AND mode='smart'`).run(rules.kind,rules.genre,rules.yearFrom,rules.yearTo,rules.view,rules.query,id,userId).changes>0;
 }
 
 export function renameCollection(userId:number,id:number,name:string):boolean {
@@ -576,7 +633,9 @@ export function deleteCollection(userId:number,id:number):boolean {
 }
 
 export function setCollectionMembership(userId:number,collectionId:number,titleId:number,include:boolean):boolean {
-  if(!ownedCollection(userId,collectionId)) return false;
+  const collection=ownedCollection(userId,collectionId);
+  if(!collection) return false;
+  if(collection.mode==='smart') throw new Error('Smart collections are populated automatically from their rules.');
   const item=getTitle(titleId);
   if(!item || item.kind==='channel') return false;
   if(include) {

@@ -8,7 +8,7 @@ import { liveGenres, parseM3u, scanFolder } from './catalogue.ts';
 import { libraryGenres } from './library-genres.ts';
 import { qualityPreferences, type QualityPreference } from './quality.ts';
 import { BackupError, backupBusy, streamBackup } from './backup.ts';
-import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, completeImport, countTitles, createCollection, createUser, dashboardStats, dataDir, db, deleteCollection, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, libraryGenreCounts, listCategories, listCollections, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, ownedCollection, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, renameCollection, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setCollectionMembership, setFavourite, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, type GuideFeed, type SourceRow } from './db.ts';
+import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, completeImport, countTitles, createCollection, createSmartCollection, createUser, dashboardStats, dataDir, db, deleteCollection, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, libraryGenreCounts, listCategories, listCollections, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, ownedCollection, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, renameCollection, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setCollectionMembership, setFavourite, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, updateSmartCollectionRules, type GuideFeed, type SmartRules, type SourceRow } from './db.ts';
 import { discoverProvider, discoverSeriesEpisodes, fetchTitleMetadata, importProvider, providerGuide, resolveProviderStream, type ProviderScanProgress } from './adapters/providers.ts';
 import { importXmltv } from './guide.ts';
 import { localSubtitles, subtitleVtt } from './subtitles.ts';
@@ -130,6 +130,25 @@ async function body(req: IncomingMessage, max = 1024 * 1024): Promise<Record<str
 function textField(value: unknown, label: string, maxLength = 200): string {
   if (typeof value !== 'string' || !value.trim() || value.length > maxLength) throw new HttpError(400, `Invalid ${label}.`);
   return value.trim();
+}
+function smartRules(value:unknown):SmartRules {
+  if(!value || typeof value!=='object' || Array.isArray(value)) throw new HttpError(400,'Smart collection rules are required.');
+  const input=value as Record<string,unknown>;
+  const kind=input.kind??'all',view=input.view??'all',genre=input.genre??'',query=input.query??'';
+  if(typeof kind!=='string' || !['all','film','series','episode','music','photo'].includes(kind)) throw new HttpError(400,'Unknown smart collection media type.');
+  if(typeof view!=='string' || !['all','favourites','continue','unwatched'].includes(view)) throw new HttpError(400,'Unknown smart collection watching status.');
+  if(typeof genre!=='string' || (genre!=='' && !libraryGenres.includes(genre as typeof libraryGenres[number]))) throw new HttpError(400,'Unknown smart collection genre.');
+  if(genre && !['all','film','series'].includes(kind)) throw new HttpError(400,'Genre rules apply only to films and series.');
+  if(typeof query!=='string' || query.length>80 || /[\p{Cc}\p{Cf}]/u.test(query)) throw new HttpError(400,'Invalid smart collection title filter.');
+  const year=(raw:unknown):number|null=> {
+    if(raw===null || raw===undefined || raw==='') return null;
+    if(typeof raw!=='number' || !Number.isInteger(raw) || raw<1880 || raw>2100) throw new HttpError(400,'Smart collection years must be between 1880 and 2100.');
+    return raw;
+  };
+  const yearFrom=year(input.yearFrom),yearTo=year(input.yearTo);
+  if(yearFrom!==null && yearTo!==null && yearFrom>yearTo) throw new HttpError(400,'The first year cannot be after the last year.');
+  if(kind==='all' && !genre && view==='all' && yearFrom===null && yearTo===null && !query.trim()) throw new HttpError(400,'Choose at least one smart collection rule.');
+  return {kind:kind as SmartRules['kind'],genre,yearFrom,yearTo,view:view as SmartRules['view'],query:query.trim()};
 }
 function positiveId(value: string): number {
   const number = Number(value);
@@ -330,7 +349,7 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const path = url.pathname;
   const method = req.method || 'GET';
-  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.19.0' });
+  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.20.0' });
   if (path === '/api/session' && method === 'GET') {
     const current = session(req);
     return send(res, 200, { needsSetup: !hasUsers(), user: current?.user || null, csrf: current?.csrf || null });
@@ -376,7 +395,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   if (path === '/api/system/status' && method === 'GET') {
     if (current.user.role !== 'admin') throw new HttpError(403, 'Administrator access required.');
     const databaseInfo = await stat(join(dataDir, 'hearthwave.sqlite'));
-    return send(res, 200, { version: '0.19.0', schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, databaseBytes: databaseInfo.size, rssBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(process.uptime()), backupBusy: backupBusy() });
+    return send(res, 200, { version: '0.20.0', schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, databaseBytes: databaseInfo.size, rssBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(process.uptime()), backupBusy: backupBusy() });
   }
   if (path === '/api/system/backup' && method === 'POST') {
     requireWrite(req, true);
@@ -396,24 +415,39 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   if (path === '/api/collections') {
     if(method==='GET') {
       const titleId=url.searchParams.has('titleId')?positiveId(url.searchParams.get('titleId')!):0;
-      return send(res,200,{collections:listCollections(current.user.id,titleId)});
+      return send(res,200,{collections:listCollections(current.user.id,titleId),genres:libraryGenres});
     }
     if(method==='POST') {
       requireWrite(req);
       const input=await body(req);
       const name=textField(input.name,'collection name',70);
       if(/[\p{Cc}\p{Cf}]/u.test(name)) throw new HttpError(400,'Collection names cannot include control characters.');
-      try {return send(res,201,{id:createCollection(current.user.id,name),name});}
+      const mode=input.mode??'manual';
+      if(mode!=='manual' && mode!=='smart') throw new HttpError(400,'Unknown collection type.');
+      const rules=mode==='smart'?smartRules(input.rules):null;
+      try {return send(res,201,{id:rules?createSmartCollection(current.user.id,name,rules):createCollection(current.user.id,name),name,mode});}
       catch(error) {
         if(error instanceof Error && /UNIQUE constraint|up to 64 collections/i.test(error.message)) throw new HttpError(409,'A collection with that name already exists, or your collection limit has been reached.');
         throw error;
       }
     }
   }
+  const rulesMatch=/^\/api\/collections\/(\d+)\/rules$/.exec(path);
+  if(rulesMatch && method==='PATCH') {
+    requireWrite(req);
+    const id=positiveId(rulesMatch[1]);
+    const collection=ownedCollection(current.user.id,id);
+    if(!collection) throw new HttpError(404,'Collection not found.');
+    if(collection.mode!=='smart') throw new HttpError(409,'Manual collections do not have automatic rules.');
+    const input=await body(req);
+    updateSmartCollectionRules(current.user.id,id,smartRules(input.rules));
+    return send(res,200,{updated:true});
+  }
   const collectionMatch=/^\/api\/collections\/(\d+)(?:\/items(?:\/(\d+))?)?$/.exec(path);
   if(collectionMatch) {
     const id=positiveId(collectionMatch[1]);
-    if(!ownedCollection(current.user.id,id)) throw new HttpError(404,'Collection not found.');
+    const collection=ownedCollection(current.user.id,id);
+    if(!collection) throw new HttpError(404,'Collection not found.');
     if(method==='PATCH' && collectionMatch[2]===undefined && !path.endsWith('/items')) {
       requireWrite(req);
       const input=await body(req);
@@ -432,6 +466,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     }
     if(method==='POST' && path.endsWith('/items')) {
       requireWrite(req);
+      if(collection.mode==='smart') throw new HttpError(409,'Smart collections are populated automatically from their rules.');
       const input=await body(req);
       const titleId=positiveId(String(input.titleId));
       try {
@@ -444,6 +479,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     }
     if(method==='DELETE' && collectionMatch[2]!==undefined) {
       requireWrite(req);
+      if(collection.mode==='smart') throw new HttpError(409,'Smart collections are populated automatically from their rules.');
       const titleId=positiveId(collectionMatch[2]);
       if(!setCollectionMembership(current.user.id,id,titleId,false)) throw new HttpError(404,'Library title not found.');
       return send(res,200,{included:false});
@@ -629,7 +665,8 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     const country=url.searchParams.get('country') || '';
     const genre=url.searchParams.get('genre') || '';
     const collectionId=url.searchParams.has('collection')?positiveId(url.searchParams.get('collection')!):0;
-    if(collectionId && (!ownedCollection(current.user.id,collectionId) || kind==='channel')) throw new HttpError(404,'Collection not found.');
+    const collection=collectionId?ownedCollection(current.user.id,collectionId):undefined;
+    if(collectionId && (!collection || kind==='channel')) throw new HttpError(404,'Collection not found.');
     if (country && kind!=='channel') throw new HttpError(400,'Country filters apply only to Live channels.');
     if (!['','GB','US','other'].includes(country)) throw new HttpError(400,'Unknown Live country filter.');
     if (genre && (kind==='channel' ? !liveGenres.includes(genre as typeof liveGenres[number]) : !['library','film','series'].includes(kind) || !libraryGenres.includes(genre as typeof libraryGenres[number]))) throw new HttpError(400,'Unknown genre filter for this catalogue.');
@@ -637,8 +674,8 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     const typedView=view as 'all'|'favourites'|'continue',typedSort=sort as 'title'|'year'|'added'|'activity';
     const liveGenre=kind==='channel'?genre:'',libraryGenre=kind==='channel'?'':genre;
     return send(res,200,{
-      items:listTitles(typedKind,current.user.id,query,typedView,typedSort,limit,offset,country,liveGenre,libraryGenre,collectionId),
-      total:countTitles(typedKind,current.user.id,query,typedView,country,liveGenre,libraryGenre,collectionId),
+      items:listTitles(typedKind,current.user.id,query,typedView,typedSort,limit,offset,country,liveGenre,libraryGenre,collection),
+      total:countTitles(typedKind,current.user.id,query,typedView,country,liveGenre,libraryGenre,collection),
       offset,limit,maxResults:limit,
       genres:collectionId?[]:kind==='channel'?channelGenreCounts(country,query):['library','film','series'].includes(kind)?libraryGenreCounts(kind as 'library'|'film'|'series',current.user.id,query,typedView):[],
     });

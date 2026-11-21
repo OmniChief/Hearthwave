@@ -4,7 +4,7 @@ import { prepareMedia } from './hls-playback.js';
 import { browserPlaybackCapabilities, connectionAdvice, nativeMediaFailure, playbackReport, streamFormat } from './playback-diagnostics.js';
 import { adjacentMedia, mediaQueue, presentation } from './local-media.js';
 
-const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', libraryGenre: '', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, collectionOverview: false, collectionId: 0, collectionName: '', liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], browseItems: [], mediaQueue: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], sourceJobs: {}, sourcePollTimer: null, detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, qualityPreference: 'auto', activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackRequest: 0, playbackGeneration: 0, playbackAttempts: [], recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
+const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', libraryGenre: '', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, collectionOverview: false, collectionId: 0, collectionName: '', collectionMode: 'manual', liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], browseItems: [], mediaQueue: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], sourceJobs: {}, sourcePollTimer: null, detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, qualityPreference: 'auto', activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackRequest: 0, playbackGeneration: 0, playbackAttempts: [], recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
 let releaseMedia = () => {};
 let failedPlaybackGeneration = -1;
 const $ = (selector) => document.querySelector(selector);
@@ -170,8 +170,27 @@ async function renderHome() {
     ${live.items.length ? `<div class="live-list">${live.items.slice(0, 6).map(liveCard).join('')}</div>` : emptyState('No channels yet', 'Add a direct channel or import an M3U playlist in Settings > Sources.', '▻')}`;
 }
 
+const smartKindOptions = [{key:'all',label:'All Library media'},{key:'film',label:'Films'},{key:'series',label:'Series'},{key:'episode',label:'Episodes'},{key:'music',label:'Music'},{key:'photo',label:'Photos'}];
+const smartViewOptions = [{key:'all',label:'Any watch status'},{key:'favourites',label:'Favourites only'},{key:'continue',label:'Started watching or listening'},{key:'unwatched',label:'Not started'}];
+function smartRuleFields(collection,genres) {
+  const kind=collection?.rule_kind || 'film',genre=collection?.rule_genre || '',view=collection?.rule_view || 'all';
+  const genreDisabled=!['all','film','series'].includes(kind);
+  return `<div class="smart-rule-grid">
+    <label>Media type<select name="kind" data-smart-kind>${smartKindOptions.map(option=>`<option value="${option.key}" ${kind===option.key?'selected':''}>${option.label}</option>`).join('')}</select></label>
+    <label>Genre<select name="genre" data-smart-genre ${genreDisabled?'disabled':''}><option value="">Any genre</option>${genres.map(value=>`<option value="${esc(value)}" ${genre===value?'selected':''}>${esc(value)}</option>`).join('')}</select></label>
+    <label>Watch status<select name="view">${smartViewOptions.map(option=>`<option value="${option.key}" ${view===option.key?'selected':''}>${option.label}</option>`).join('')}</select></label>
+    <label>Title contains<input name="query" maxlength="80" placeholder="Optional words" value="${esc(collection?.rule_query || '')}"></label>
+    <label>Year from<input name="yearFrom" type="number" min="1880" max="2100" placeholder="Any" value="${collection?.rule_year_from??''}"></label>
+    <label>Year to<input name="yearTo" type="number" min="1880" max="2100" placeholder="Any" value="${collection?.rule_year_to??''}"></label>
+  </div><p class="field-note">Rules update as indexed media, favourites and playback history change. No automatic background scans.</p>`;
+}
+function smartRulesFromForm(form) {
+  const data=new FormData(form);
+  return {kind:String(data.get('kind')||'all'),genre:String(data.get('genre')||''),view:String(data.get('view')||'all'),query:String(data.get('query')||'').trim(),yearFrom:data.get('yearFrom')?Number(data.get('yearFrom')):null,yearTo:data.get('yearTo')?Number(data.get('yearTo')):null};
+}
 function collectionControls(titleId,collections) {
-  return `<section class="collection-membership"><h3>Your collections</h3><div class="collection-tags">${collections.map(collection=>`<button class="pill ${collection.included?'active':''}" data-collection-membership="${collection.id}" data-title-id="${titleId}" data-next="${collection.included?'0':'1'}" aria-label="${collection.included?'Remove from':'Add to'} ${esc(collection.name)}">${collection.included?'✓ ':'＋ '}${esc(collection.name)}</button>`).join('')||'<span class="field-note">Create a collection to organise this title alongside your other media.</span>'}</div><button class="button button-quiet button-small" data-library-collections>Manage collections</button></section>`;
+  const manual=collections.filter(collection=>collection.mode!=='smart');
+  return `<section class="collection-membership"><h3>Your collections</h3><div class="collection-tags">${manual.map(collection=>`<button class="pill ${collection.included?'active':''}" data-collection-membership="${collection.id}" data-title-id="${titleId}" data-next="${collection.included?'0':'1'}" aria-label="${collection.included?'Remove from':'Add to'} ${esc(collection.name)}">${collection.included?'✓ ':'＋ '}${esc(collection.name)}</button>`).join('')||'<span class="field-note">Create a manual collection to save this title.</span>'}</div>${collections.some(collection=>collection.mode==='smart')?'<p class="field-note">Smart Collections are updated by their rules, so titles cannot be added to them manually.</p>':''}<button class="button button-quiet button-small" data-library-collections>Manage collections</button></section>`;
 }
 
 async function renderCollectionsOverview() {
@@ -180,9 +199,11 @@ async function renderCollectionsOverview() {
   if(request!==state.libraryRequest || state.page!=='library' || !state.collectionOverview || state.detailId || state.seriesDetail) return;
   state.items=[];
   page.innerHTML=`<section class="surface"><div class="row-actions collection-header"><button class="button button-quiet" data-collection-exit>← Back to Library</button></div>
-    ${heading('Your collections','Personal shelves for films, series, music, photos and episodes. Each household account manages its own.')}
-    <form id="collection-create-form" class="collection-create-form"><label for="collection-name">New collection</label><input id="collection-name" name="name" maxlength="70" placeholder="e.g. Family film night" required><button class="button button-primary" type="submit">Create collection</button></form>
-    ${result.collections.length?`<div class="collection-grid">${result.collections.map(collection=>`<article class="collection-card"><button class="collection-open" data-collection-open="${collection.id}" data-name="${esc(collection.name)}"><span class="collection-icon">▣</span><strong>${esc(collection.name)}</strong><small>${collection.item_count} item${collection.item_count===1?'':'s'}</small></button><form class="collection-rename-form" data-collection-rename-form="${collection.id}"><input name="name" value="${esc(collection.name)}" maxlength="70" aria-label="Rename ${esc(collection.name)}" required><button class="button button-quiet button-small" type="submit">Rename</button></form><button class="button button-danger button-small" data-collection-delete="${collection.id}" data-name="${esc(collection.name)}">Delete</button></article>`).join('')}</div>`:emptyState('No collections yet','Create a collection, then add items from their Library detail pages.','▣')}
+    <div class="collection-creation">
+      <div><h3>Manual collection</h3><form id="collection-create-form" class="collection-create-form"><label for="collection-name">Choose a name</label><input id="collection-name" name="name" maxlength="70" placeholder="e.g. Family film night" required><button class="button button-primary" type="submit">Create collection</button></form></div>
+      <details class="smart-create"><summary>＋ Create Smart Collection</summary><form id="smart-collection-create-form" class="smart-rule-form"><label class="smart-name">Collection name<input name="name" maxlength="70" placeholder="e.g. Unwatched thrillers" required></label>${smartRuleFields(null,result.genres)}<button class="button button-primary" type="submit">Create Smart Collection</button></form></details>
+    </div>
+    ${result.collections.length?`<div class="collection-grid">${result.collections.map(collection=>`<article class="collection-card"><button class="collection-open" data-collection-open="${collection.id}" data-mode="${collection.mode}" data-name="${esc(collection.name)}"><span class="collection-icon">${collection.mode==='smart'?'⚙':'▣'}</span><strong>${esc(collection.name)}</strong><small>${collection.mode==='smart'?'Smart · updates automatically':`${collection.item_count} item${collection.item_count===1?'':'s'}`}</small></button><form class="collection-rename-form" data-collection-rename-form="${collection.id}"><input name="name" value="${esc(collection.name)}" maxlength="70" aria-label="Rename ${esc(collection.name)}" required><button class="button button-quiet button-small" type="submit">Rename</button></form>${collection.mode==='smart'?`<details class="smart-edit"><summary>Edit rules</summary><form class="smart-rule-form" data-smart-rules-form="${collection.id}">${smartRuleFields(collection,result.genres)}<button class="button button-quiet button-small" type="submit">Save rules</button></form></details>`:''}<button class="button button-danger button-small" data-collection-delete="${collection.id}" data-name="${esc(collection.name)}">Delete</button></article>`).join('')}</div>`:emptyState('No collections yet','Create a manual shelf or a Smart Collection to begin.','▣')}
     <p class="field-note">Collections are private to each household account. Removing a collection does not delete your media.</p></section>`;
 }
 
@@ -201,12 +222,12 @@ async function renderLibrary() {
   const genreChoices = [...result.genres];
   if(state.libraryGenre && !genreChoices.some(item=>item.name===state.libraryGenre)) genreChoices.push({name:state.libraryGenre,count:0});
   genreChoices.sort((a,b)=>a.name==='Other'?1:b.name==='Other'?-1:b.count-a.count||a.name.localeCompare(b.name));
-  page.innerHTML = `${state.collectionId?`<div class="collection-active"><span>▣ ${esc(state.collectionName)} · Your collection</span><div><button class="button button-quiet button-small" data-collection-back>All collections</button><button class="button button-quiet button-small" data-collection-exit>Full Library</button></div></div>`:'<div class="preview-banner">One title across your sources, with provider artwork and descriptions when available. Choose Details to see editions and start a specific version; series episodes load only when opened.</div>'}
+  page.innerHTML = `${state.collectionId?`<div class="collection-active"><span>${state.collectionMode==='smart'?'⚙':'▣'} ${esc(state.collectionName)} · ${state.collectionMode==='smart'?'Smart Collection':'Your collection'}</span><div><button class="button button-quiet button-small" data-collection-back>All collections</button><button class="button button-quiet button-small" data-collection-exit>Full Library</button></div></div>`:'<div class="preview-banner">One title across your sources, with provider artwork and descriptions when available. Choose Details to see editions and start a specific version; series episodes load only when opened.</div>'}
     <div class="toolbar">${types.map(type => `<button class="pill ${state.kind === type.key ? 'active':''}" data-kind="${type.key}">${type.name}</button>`).join('')}</div>
     <div class="toolbar"><button class="pill ${state.libraryView==='all'?'active':''}" data-library-view="all">Everything</button><button class="pill ${state.libraryView==='favourites'?'active':''}" data-library-view="favourites">★ Favourites</button><button class="pill ${state.libraryView==='continue'?'active':''}" data-library-view="continue">Continue watching</button><button class="pill ${state.collectionId?'active':''}" data-library-collections>▣ Collections</button><label class="library-sort">Sort <select id="library-sort" aria-label="Sort library"><option value="title" ${state.librarySort==='title'?'selected':''}>Title A–Z</option><option value="year" ${state.librarySort==='year'?'selected':''}>Newest release</option><option value="added" ${state.librarySort==='added'?'selected':''}>Recently added</option><option value="activity" ${state.librarySort==='activity'?'selected':''}>Recently watched</option></select></label></div>
     ${!state.collectionId&&['all','film','series'].includes(state.kind)?`<div class="toolbar genre-rail" role="group" aria-label="Filter Library by genre"><button class="pill ${state.libraryGenre===''?'active':''}" data-library-genre="">All genres</button>${genreChoices.map(item=>`<button class="pill ${state.libraryGenre===item.name?'active':''}" data-library-genre="${esc(item.name)}">${esc(item.name)} (${item.count})</button>`).join('')}</div>`:''}
     ${heading(state.kind === 'all' ? state.collectionId ? state.collectionName : 'Your collection' : types.find(t => t.key === state.kind).name, `${result.total} item${result.total===1?'':'s'} match this view${!state.collectionId&&state.libraryGenre?` · ${esc(state.libraryGenre)}`:''}`)}
-    ${items.length ? `<div class="cards">${items.map(mediaCard).join('')}</div>` : emptyState('No matching media', state.libraryView==='favourites'?'Star a film, show or song to see it here.':state.libraryView==='continue'?'Play a film or episode to start a resume position.':state.collectionId?'Add titles from their detail pages, or choose another filter.':'Try another filter, or add a folder in Settings > Sources.', '▣')}
+    ${items.length ? `<div class="cards">${items.map(mediaCard).join('')}</div>` : emptyState('No matching media', state.libraryView==='favourites'?'Star a film, show or song to see it here.':state.libraryView==='continue'?'Play a film or episode to start a resume position.':state.collectionId?state.collectionMode==='smart'?'Edit this Smart Collection’s rules from All collections, or choose another filter.':'Add titles from their detail pages, or choose another filter.':'Try another filter, or add a folder in Settings > Sources.', '▣')}
     ${cataloguePager(result,'library')}`;
 }
 
@@ -867,6 +888,10 @@ $('#global-search').addEventListener('input', (event) => {
 
 page.addEventListener('change', event => {
   if (event.target?.id === 'source-type') syncSourceForm();
+  if (event.target?.matches?.('[data-smart-kind]')) {
+    const genre=event.target.closest('form')?.querySelector('[data-smart-genre]');
+    if(genre) {genre.disabled=!['all','film','series'].includes(event.target.value);if(genre.disabled) genre.value='';}
+  }
   if (event.target?.id === 'library-sort') { state.librarySort=event.target.value;state.libraryOffset=0;void renderPage().catch(error=>notify(error.message,true)); }
   if (event.target?.id === 'settings-quality-preference') void updateQualityPreference(event.target);
   if (event.target?.id === 'autoplay-next') {
@@ -880,6 +905,22 @@ page.addEventListener('error', event => { if (event.target?.matches?.('.media-ar
 
 page.addEventListener('submit', async event => {
   const form = event.target;
+  if(form.id==='smart-collection-create-form' || form.dataset.smartRulesForm) {
+    event.preventDefault();
+    const creating=form.id==='smart-collection-create-form';
+    const name=creating?String(new FormData(form).get('name')||'').trim():'';
+    if(creating && (!name || name.length>70)) return notify('Enter a Smart Collection name of up to 70 characters.',true);
+    const submit=form.querySelector('button[type=submit]');
+    submit.disabled=true;
+    try {
+      const rules=smartRulesFromForm(form);
+      if(creating) await api('/api/collections',{method:'POST',body:{name,mode:'smart',rules}});
+      else await api(`/api/collections/${form.dataset.smartRulesForm}/rules`,{method:'PATCH',body:{rules}});
+      notify(creating?'Smart Collection created. Its contents update automatically.':'Smart Collection rules updated.');
+      await renderPage();
+    } catch(error) {notify(error.message,true);submit.disabled=false;}
+    return;
+  }
   if(form.id==='collection-create-form' || form.dataset.collectionRenameForm) {
     event.preventDefault();
     const name=String(new FormData(form).get('name') || '').trim();
@@ -955,7 +996,7 @@ page.addEventListener('click', async event => {
   if(target.hasAttribute('data-collection-exit')) {state.collectionId=0;state.collectionName='';state.collectionOverview=false;state.libraryOffset=0;return renderPage();}
   if(target.hasAttribute('data-collection-back')) {state.collectionId=0;state.collectionName='';state.collectionOverview=true;state.libraryOffset=0;return renderPage();}
   if(target.dataset.collectionOpen) {
-    state.collectionId=Number(target.dataset.collectionOpen);state.collectionName=target.dataset.name || 'Collection';state.collectionOverview=false;state.libraryOffset=0;state.libraryGenre='';state.libraryView='all';state.kind='all';return renderPage();
+    state.collectionId=Number(target.dataset.collectionOpen);state.collectionName=target.dataset.name || 'Collection';state.collectionMode=target.dataset.mode==='smart'?'smart':'manual';state.collectionOverview=false;state.libraryOffset=0;state.libraryGenre='';state.libraryView='all';state.kind='all';return renderPage();
   }
   if(target.dataset.collectionDelete) {
     if(!window.confirm(`Delete “${target.dataset.name}”? Your media files will not be deleted.`)) return;
