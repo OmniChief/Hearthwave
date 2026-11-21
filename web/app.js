@@ -737,6 +737,17 @@ function failSource(generation,message,code='unknown') {
   disposeMedia();
   if(presentation(state.activeTitle?.kind)!=='photo') currentMedia().pause();
   $('#player-message').textContent=message;
+  const item=state.variants[state.variantIndex];
+  if (item?.resolve && state.resolvedUrl && code!=='provider') {
+    $('#player-message').textContent='Playback failed. Checking the provider response…';
+    void api(`/api/variants/${item.id}/check-playback`,{method:'POST'}).then(result=>{
+      if(generation!==state.playbackGeneration || $('#player-overlay').hidden) return;
+      $('#player-message').textContent=result.message || message;
+      if(result.message) setPlaybackStatus(generation,'Failed','provider');
+    }).catch(()=>{
+      if(generation===state.playbackGeneration && !$('#player-overlay').hidden) $('#player-message').textContent=message;
+    });
+  }
 }
 
 /** An authenticated <img> only decodes the one selected photo in the viewer. */
