@@ -297,19 +297,22 @@ function stalkerRows(rows: unknown, category: ProviderCategory): ImportItem[] {
   return items;
 }
 
+export interface ProviderScanProgress { folder:string; folderIndex:number; folderCount:number; page:number; listed:number }
+
 /** One provider request at a time per source, with global HTTP concurrency bounded to two. */
-export async function* importProvider(source: SourceRow, categories: ProviderCategory[]): AsyncGenerator<ImportItem> {
+export async function* importProvider(source: SourceRow, categories: ProviderCategory[],onProgress?:(progress:ProviderScanProgress)=>void): AsyncGenerator<ImportItem> {
   if (!categories.length) throw new ProviderError('Select at least one provider folder before scanning.',400);
   if (source.type === 'xtream') {
     const client = xtreamClient(source);
-    for (const category of categories) {
+    for (const [index,category] of categories.entries()) {
+      onProgress?.({folder:category.name,folderIndex:index+1,folderCount:categories.length,page:1,listed:0});
       const action = category.kind === 'series' ? 'get_series' : `get_${category.kind}_streams`;
       const data = await client.action(action,{category_id:category.category_id});
       for (const item of xtreamRows(data,source,category)) yield item;
     }
   } else if (source.type === 'stalker') {
     const client = new StalkerClient(source);
-    for (const category of categories) {
+    for (const [index,category] of categories.entries()) {
       const type = category.kind === 'live' ? 'itv' : category.kind;
       const params: Record<string,string|number> = category.kind === 'live'
         ? {sortby:'number',genre:category.category_id,search:'',fav:0}
@@ -319,6 +322,7 @@ export async function* importProvider(source: SourceRow, categories: ProviderCat
       let complete=false;
       let advertisedTotal:number|null=null;
       for (let page = 0; page < 1000; page++) {
+        onProgress?.({folder:category.name,folderIndex:index+1,folderCount:categories.length,page:page+1,listed:scanned});
         const response = await client.call(type,'get_ordered_list',{...params,p:page});
         const {rows,total,pageSize}=stalkerPage(response);
         if (total !== null && (total>0 || rows.length===0)) advertisedTotal=total;

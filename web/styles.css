@@ -201,6 +201,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .settings-menu button { border:0; background:transparent; border-radius:10px; color:#9baabb; text-align:left; padding:13px 14px; font-size:13px; font-weight:700; }
 .settings-menu button.active { background:#322c37; color:#ffd0af; }
 .settings-content { min-width:0; }
+.list-row .source-job-note { display:block; margin-top:7px; line-height:1.55; font-size:11px; color:#a5c6be; overflow-wrap:anywhere; }
+.list-row .source-job-running { color:#f3d2a0; }
 .info-banner { background:#202d3a; border:1px solid #3b5060; color:#b9d7e6; padding:15px 17px; font-size:12px; border-radius:11px; line-height:1.6; margin-bottom:19px; }
 .auth-screen { min-height:100vh; display:grid; place-items:center; padding:25px; background:radial-gradient(circle at 60% 20%,#493840 0%,transparent 39%),radial-gradient(circle at 20% 80%,#213a42 0%,transparent 39%),#101620; }
 .auth-panel { position:relative; background:#171e2c; border:1px solid #3f4350; border-radius:25px; padding:40px; width:min(100%,440px); box-shadow:0 35px 100px #05070b60; }

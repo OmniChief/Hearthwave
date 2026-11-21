@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
 import { liveGenres, parseM3u, scanFolder } from './catalogue.ts';
 import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, completeImport, countTitles, createUser, dashboardStats, db, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, listCategories, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setFavourite, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, type GuideFeed, type SourceRow } from './db.ts';
-import { discoverProvider, discoverSeriesEpisodes, fetchTitleMetadata, importProvider, providerGuide, resolveProviderStream } from './adapters/providers.ts';
+import { discoverProvider, discoverSeriesEpisodes, fetchTitleMetadata, importProvider, providerGuide, resolveProviderStream, type ProviderScanProgress } from './adapters/providers.ts';
 import { importXmltv } from './guide.ts';
 import { localSubtitles, subtitleVtt } from './subtitles.ts';
 import { ProviderError, validateProviderUrl } from './adapters/network.ts';
@@ -28,6 +28,22 @@ const contentTypes: Record<string, string> = {
 };
 const allowedKinds = new Set<SourceType>(['folder', 'm3u', 'xtream', 'stalker', 'direct']);
 const inProgress = new Set<number>();
+type SourceJobPhase='running'|'cancelling'|'completed'|'cancelled'|'error';
+interface SourceJob {
+  kind:'scan'|'discover'; phase:SourceJobPhase; started:number; finished:number;
+  seen:number; indexed:number; folder:string; folderIndex:number; folderCount:number; page:number; listed:number;
+  cancelRequested:boolean; error:string;
+}
+const sourceJobs=new Map<number,SourceJob>();
+function beginSourceJob(id:number,kind:SourceJob['kind']):SourceJob {
+  if(sourceJobs.size>=200) for(const [oldId] of sourceJobs) {
+    if(!inProgress.has(oldId)) {sourceJobs.delete(oldId);break;}
+  }
+  const job:SourceJob={kind,phase:'running',started:Date.now(),finished:0,seen:0,indexed:0,folder:'',folderIndex:0,folderCount:0,page:0,listed:0,cancelRequested:false,error:''};
+  sourceJobs.set(id,job);
+  return job;
+}
+class ScanCancelled extends Error {constructor(){super('Scan cancelled. Existing catalogue entries were kept.');}}
 const failures = new Map<string, { count: number; until: number }>();
 const episodeJobs = new Map<number, {status:'running'|'ready'|'error';started:number;finished:number;error:string}>();
 const guideCache = new Map<number, {expires:number;programmes:GuideProgramme[];source:string}>();
@@ -155,6 +171,7 @@ function connectionConfig(type: SourceType, raw: unknown): ProviderConfig {
 function startImport(source: SourceRow, items: AsyncIterable<ImportItem>): void {
   if (inProgress.has(source.id)) throw new HttpError(409, 'This source is already being imported.');
   inProgress.add(source.id);
+  const job=beginSourceJob(source.id,'scan');
   setSourceStatus(source.id, 'scanning');
   const generation = randomUUID();
   void (async () => {
@@ -162,36 +179,49 @@ function startImport(source: SourceRow, items: AsyncIterable<ImportItem>): void 
       let buffer: ImportItem[] = [];
       let seen = 0;
       for await (const item of items) {
+        if(job.cancelRequested) throw new ScanCancelled();
         if (++seen > 50_000) throw new Error('This scan exceeds the 50,000-item source limit. Select fewer categories and retry.');
+        job.seen=seen;
         buffer.push(item);
         if (buffer.length === 128) {
           importBatch(source.id, buffer, generation);
+          job.indexed+=buffer.length;
           buffer = [];
           await new Promise<void>(resolve => setImmediate(resolve));
         }
       }
-      if (buffer.length) importBatch(source.id, buffer, generation);
+      if(job.cancelRequested) throw new ScanCancelled();
+      if (buffer.length) {importBatch(source.id, buffer, generation);job.indexed+=buffer.length;}
       completeImport(source.id, generation);
+      job.phase='completed';
     } catch (error) {
-      setSourceStatus(source.id, error instanceof ProviderError && error.status === 429 ? 'rate_limited' : 'error', error instanceof Error ? error.message.slice(0, 300) : 'Scan failed.');
-      console.error(`Import of source ${source.id} failed:`, error);
-    } finally { inProgress.delete(source.id); }
+      const cancelled=job.cancelRequested || error instanceof ScanCancelled;
+      job.phase=cancelled?'cancelled':'error';
+      job.error=cancelled?'Scan cancelled. Existing catalogue entries were kept.':error instanceof Error?error.message.slice(0,300):'Scan failed.';
+      setSourceStatus(source.id,cancelled?'cancelled':error instanceof ProviderError && error.status === 429 ? 'rate_limited' : 'error',job.error);
+      if(!cancelled) console.error(`Import of source ${source.id} failed:`, error);
+    } finally {job.finished=Date.now();inProgress.delete(source.id);}
   })();
 }
 
 function startDiscovery(source: SourceRow): void {
   if (inProgress.has(source.id)) throw new HttpError(409, 'This source is already busy.');
   inProgress.add(source.id);
+  const job=beginSourceJob(source.id,'discover');
   setSourceStatus(source.id,'discovering');
   void (async () => {
     try {
       const categories = await discoverProvider(source);
       saveCategories(source.id,categories);
+      job.seen=categories.length;
+      job.phase='completed';
       setSourceStatus(source.id,'categories_ready');
     } catch (error) {
-      setSourceStatus(source.id,error instanceof ProviderError && error.status === 429 ? 'rate_limited' : 'error',error instanceof Error ? error.message.slice(0,300) : 'Provider discovery failed.');
+      job.phase='error';
+      job.error=error instanceof Error ? error.message.slice(0,300) : 'Provider discovery failed.';
+      setSourceStatus(source.id,error instanceof ProviderError && error.status === 429 ? 'rate_limited' : 'error',job.error);
       console.error(`Provider discovery failed for source ${source.id}:`,error instanceof Error ? error.message : 'Unknown error');
-    } finally { inProgress.delete(source.id); }
+    } finally {job.finished=Date.now();inProgress.delete(source.id);}
   })();
 }
 
@@ -297,7 +327,7 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const path = url.pathname;
   const method = req.method || 'GET';
-  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.10.0' });
+  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.11.0' });
   if (path === '/api/session' && method === 'GET') {
     const current = session(req);
     return send(res, 200, { needsSetup: !hasUsers(), user: current?.user || null, csrf: current?.csrf || null });
@@ -363,7 +393,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   }
   if (path === '/api/sources' && method === 'GET') {
     if (current.user.role !== 'admin') throw new HttpError(403, 'Administrator access required.');
-    return send(res, 200, { sources: listSources().map(safelyPublicSource) });
+    return send(res, 200, { sources: listSources().map(safelyPublicSource),jobs:Object.fromEntries(sourceJobs) });
   }
   if (path === '/api/sources' && method === 'POST') {
     requireWrite(req, true);
@@ -393,7 +423,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     }
     return send(res, 201, { source: safelyPublicSource(getSource(source.id)!) });
   }
-  const sourceMatch = /^\/api\/sources\/(\d+)(?:\/(import|scan|discover|categories))?$/.exec(path);
+  const sourceMatch = /^\/api\/sources\/(\d+)(?:\/(import|scan|discover|categories|cancel))?$/.exec(path);
   if (sourceMatch) {
     const id = positiveId(sourceMatch[1]);
     const source = getSource(id);
@@ -402,7 +432,17 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       requireWrite(req, true);
       if (inProgress.has(id)) throw new HttpError(409, 'Wait for this scan to finish before removing the source.');
       deleteSource(id);
+      sourceJobs.delete(id);
       return send(res, 200, { ok: true });
+    }
+    if (method === 'POST' && sourceMatch[2] === 'cancel') {
+      requireWrite(req,true);
+      const job=sourceJobs.get(id);
+      if(!job || job.kind!=='scan' || !inProgress.has(id) || !['running','cancelling'].includes(job.phase)) throw new HttpError(409,'There is no active scan to cancel.');
+      job.cancelRequested=true;
+      job.phase='cancelling';
+      setSourceStatus(id,'cancelling');
+      return send(res,202,{status:'cancelling'});
     }
     if (method === 'POST' && sourceMatch[2] === 'import') {
       requireWrite(req, true);
@@ -421,7 +461,10 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       else if (source.type === 'stalker' || source.type === 'xtream') {
         const selected = listCategories(id).filter(row=>row.selected === 1);
         if (!selected.length) throw new HttpError(400, 'Select provider categories in Settings before scanning.');
-        startImport(source, importProvider(source,selected));
+        startImport(source, importProvider(source,selected,(progress:ProviderScanProgress)=>{
+          const job=sourceJobs.get(id);
+          if(job && job.kind==='scan') Object.assign(job,progress);
+        }));
       } else throw new HttpError(400, 'This source does not support scanning.');
       return send(res, 202, { status: 'scanning' });
     }

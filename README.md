@@ -6,7 +6,7 @@ Hearthwave is a new, self-hosted home entertainment platform. Instead of opening
 
 This repository is a fresh implementation, not a fork of Vaultcast. The initial milestone targets low-resource ARM64 and x64 NAS devices with one Node.js process and an embedded SQLite database. There is no PHP, Docker, Redis, separate database server or external scheduler in the runtime.
 
-## Current status — full-catalogue browsing (0.10.0)
+## Current status — provider scan progress and control (0.11.0)
 
 Working now:
 
@@ -46,6 +46,8 @@ Working now:
 - Server-side paging of Library and Live, with reliable result counts, previous/next controls and a direct page jump. Browsing no longer stops at the first 250 titles; search, favourites and sorting apply across all indexed matches.
 - Database-backed Live country and genre filters with counts from the entire matching channel catalogue. The Home page requests only six recent Library items and six channels instead of large lists.
 - Provider-discovered episodes appear in the Library's explicit Episodes filter without crowding the default film/series view. Opening a title and returning to Library restores the previous page and scroll position.
+- Administrator-only source scan progress, showing items received/indexed, current Stalker/Xtream folder and Stalker page. The Sources list updates every few seconds only while a job is active, without replacing the add-source form.
+- An explicit **Cancel scan** action for M3U, folder and provider scans. It stops safely after the current bounded request, does not prune the last complete source catalogue, and marks interrupted scans as such after a server restart. Already committed partial new batches may remain visible until the next complete scan.
 
 Provider integration is an **early compatibility implementation**, not a fully tested release: portal variants differ, and no live provider account has yet been used for end-to-end verification. Episodes are fetched when a viewer opens a series, rather than during bulk catalogue scans. Some Stalker portals may expose episodes in unsupported forms. No transcoding or guaranteed browser codec support is included.
 
@@ -72,7 +74,9 @@ No `npm install` is required to start this preview because it uses Node built-in
 1. In **Settings > Sources**, add an **Xtream Codes API** server with its username/password, or a **Stalker / MAG** portal with its registered MAC address (and optional login/device IDs).
 2. Click **Discover folders**, then **Refresh status**. If the status reports an error, check your provider address, credentials and device authorisation.
 3. Click **Choose folders**, select the desired Live TV, VOD and series categories, and save. No categories are enabled automatically.
-4. Click **Scan** to index the selected content. Scan progress is asynchronous; refresh the source status to see completion. Indexed films appear in Library and channels in Live.
+4. Click **Scan** to index the selected content. Scan progress is asynchronous and updates automatically while the Sources panel is open. Indexed films appear in Library and channels in Live.
+
+While a scan is running, the Sources panel displays live counts and the active provider folder/page where applicable. Use **Cancel scan** to stop a run. It takes effect after the current provider request finishes (normally within its request timeout), and previously indexed content is not removed. A later successful scan reconciles any partial new batches.
 
 Open a series in **Library** to retrieve its episodes on demand. Use **Refresh episodes** if provider contents change. In **Live**, choose **Guide** on a channel for programme details or **Programme guide** for the combined XMLTV lineup. The combined guide has four six-hour time slots, next-day navigation and **More channels** paging; select a programme block for its description.
 

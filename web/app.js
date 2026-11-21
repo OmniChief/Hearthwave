@@ -1,4 +1,4 @@
-const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackGeneration: 0, recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
+const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], sourceJobs: {}, sourcePollTimer: null, detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackGeneration: 0, recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
 const $ = (selector) => document.querySelector(selector);
 const page = $('#page');
 
@@ -66,6 +66,7 @@ async function navigate(destination) {
   state.guideRequest++;
   state.libraryRequest++;
   state.liveRequest++;
+  clearTimeout(state.sourcePollTimer);
   state.seriesDetail = null;
   state.detailId = null;
   state.seriesEpisodes = [];
@@ -299,8 +300,38 @@ function renderUpcoming(section) {
 
 const settingsSections = [ ['sources','Sources'],['metadata','Metadata & Guide'],['users','Users & Access'],['workers','Downloads & Workers'],['appearance','Appearance & Playback'],['system','System'] ];
 
+function renderSourceRows() {
+  if(!state.sources.length) return '<p class="field-note">No sources configured yet.</p>';
+  return state.sources.map(source=>{
+    const job=state.sourceJobs[source.id];
+    const active=job && ['running','cancelling'].includes(job.phase);
+    const progress=job?.kind==='scan'?`${Number(job.seen||0).toLocaleString()} items received · ${Number(job.indexed||0).toLocaleString()} indexed${job.folder?` · Folder ${job.folderIndex}/${job.folderCount}: ${job.folder}${job.page?` · Page ${job.page}`:''}`:''}`
+      :job?.kind==='discover'?`${job.phase==='completed'?`${job.seen} folders found`:'Contacting provider for folder list'}`:'';
+    return `<div class="list-row"><div><strong>${esc(source.name)}</strong> <span class="tag">${esc(source.type)}</span><small>${esc(source.location||'No location specified')} · ${esc(source.status)}${source.last_error?` · ${esc(source.last_error)}`:''}</small>${job?`<small class="source-job-note ${active?'source-job-running':''}">${esc(job.phase)} · ${progress}${job.error?` · ${esc(job.error)}`:''}</small>`:''}</div><div class="row-actions">${source.type==='folder'||['xtream','stalker'].includes(source.type)?`<button class="button button-quiet button-small" data-scan="${source.id}" ${active?'disabled':''}>Scan</button>`:''}${['xtream','stalker'].includes(source.type)?`<button class="button button-quiet button-small" data-discover="${source.id}" ${active?'disabled':''}>Discover folders</button><button class="button button-quiet button-small" data-folders="${source.id}" ${active?'disabled':''}>Choose folders</button>`:''}${source.type==='m3u'?`<button class="button button-quiet button-small" data-import="${source.id}" ${active?'disabled':''}>Import M3U</button>`:''}${active&&job.kind==='scan'?`<button class="button button-danger button-small" data-cancel-scan="${source.id}" ${job.cancelRequested?'disabled':''}>${job.cancelRequested?'Cancelling…':'Cancel scan'}</button>`:''}<button class="button button-danger button-small" data-remove="${source.id}" ${active?'disabled':''}>Remove</button></div></div>`;
+  }).join('');
+}
+
+function scheduleSourcePoll() {
+  clearTimeout(state.sourcePollTimer);
+  if(state.page!=='settings' || state.settingsTab!=='sources' || !Object.values(state.sourceJobs).some(job=>['running','cancelling'].includes(job.phase))) return;
+  state.sourcePollTimer=setTimeout(()=>{
+    refreshSourceStatus().catch(()=>{ if(state.page==='settings' && state.settingsTab==='sources') scheduleSourcePoll(); });
+  },3500);
+}
+
+async function refreshSourceStatus() {
+  const result=await api('/api/sources');
+  if(state.page!=='settings' || state.settingsTab!=='sources') return;
+  state.sources=result.sources;
+  state.sourceJobs=result.jobs||{};
+  const container=$('#source-status-list');
+  if(container) container.innerHTML=renderSourceRows();
+  scheduleSourcePoll();
+}
+
 async function renderSettings() {
-  if (state.settingsTab === 'sources') state.sources = (await api('/api/sources')).sources;
+  clearTimeout(state.sourcePollTimer);
+  if (state.settingsTab === 'sources') {const result=await api('/api/sources');state.sources=result.sources;state.sourceJobs=result.jobs||{};}
   let contents = '';
   if (state.settingsTab === 'sources') {
     contents = `<div class="info-banner">Sources are configured here, not as separate browsing areas. For Xtream and Stalker, add an authorised connection, discover folders, choose what to include, then scan. Imports run in small batches on the NAS.</div>
@@ -313,8 +344,8 @@ async function renderSettings() {
       <label id="provider-lan" class="checkbox-row" hidden><input name="allowLan" type="checkbox"> Allow a private LAN provider address</label>
       <p class="field-note" id="source-note">A scan is manual, resumable by re-running it, and uses small indexing batches.</p>
       <button type="submit" class="button button-primary">Add source</button></form></section>
-      <section class="surface"><h2>Configured sources</h2><p class="field-note">Imports are triggered here, with their current status shown beside each source.</p>
-      ${state.sources.length ? state.sources.map(source => `<div class="list-row"><div><strong>${esc(source.name)}</strong> <span class="tag">${esc(source.type)}</span><small>${esc(source.location || 'No location specified')} · ${esc(source.status)}${source.last_error ? ` · ${esc(source.last_error)}` : ''}</small></div><div class="row-actions">${source.type === 'folder' || ['xtream','stalker'].includes(source.type) ? `<button class="button button-quiet button-small" data-scan="${source.id}">Scan</button>`:''}${['xtream','stalker'].includes(source.type) ? `<button class="button button-quiet button-small" data-discover="${source.id}">Discover folders</button><button class="button button-quiet button-small" data-folders="${source.id}">Choose folders</button>`:''}${source.type === 'm3u' ? `<button class="button button-quiet button-small" data-import="${source.id}">Import M3U</button>`:''}<button class="button button-danger button-small" data-remove="${source.id}">Remove</button></div></div>`).join('') : '<p class="field-note">No sources configured yet.</p>'}
+      <section class="surface"><h2>Configured sources</h2><p class="field-note">Imports run in bounded batches. While a scan is active, item counts, the current provider folder and its page are refreshed automatically. Counts indicate work done, not a percentage of the whole provider.</p>
+      <div id="source-status-list">${renderSourceRows()}</div>
       <button class="button button-quiet button-small" id="refresh-sources">Refresh status</button></section></div>
       <section class="surface" id="provider-folders-panel" hidden></section>
       <section class="surface" id="m3u-import-panel" hidden><h2>Import M3U playlist</h2><p class="field-note">Paste an authorised playlist. Stream entries are indexed progressively; the server does not proxy or transcode them.</p><form class="field-stack" id="m3u-form"><input type="hidden" name="sourceId"><label>M3U text<textarea name="playlist" spellcheck="false" required placeholder="#EXTM3U\n#EXTINF:-1 tvg-id=..."></textarea></label><button class="button button-primary" type="submit">Import playlist</button></form></section>`;
@@ -343,7 +374,7 @@ async function renderSettings() {
     contents = emptyState(title, `${description} This settings area is not active in the foundation milestone.`, '⚙');
   }
   page.innerHTML = `<div class="settings-layout"><div class="settings-menu">${settingsSections.map(section => `<button class="${state.settingsTab === section[0] ? 'active':''}" data-settings="${section[0]}">${section[1]}</button>`).join('')}</div><div class="settings-content">${contents}</div></div>`;
-  if (state.settingsTab === 'sources') syncSourceForm();
+  if (state.settingsTab === 'sources') {syncSourceForm();scheduleSourcePoll();}
 }
 
 function syncSourceForm() {
@@ -785,7 +816,12 @@ page.addEventListener('click', async event => {
     try { await api(`/api/sources/${target.dataset.remove}`, { method:'DELETE' }); notify('Source removed.'); await renderPage(); }
     catch (error) { notify(error.message,true); }
   }
-  if (target.id === 'refresh-sources') return renderPage();
+  if (target.dataset.cancelScan) {
+    try {await api(`/api/sources/${target.dataset.cancelScan}/cancel`,{method:'POST'});notify('Cancellation requested. The current provider request may take a few seconds to finish; previously indexed items will be kept.');await refreshSourceStatus();}
+    catch(error){notify(error.message,true);}
+    return;
+  }
+  if (target.id === 'refresh-sources') return refreshSourceStatus();
 });
 
 document.querySelectorAll('.sidebar [data-page]').forEach(button => button.addEventListener('click', () => navigate(button.dataset.page)));

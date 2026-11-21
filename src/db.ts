@@ -218,7 +218,7 @@ if (schemaVersion < 8) {
     db.exec('PRAGMA user_version = 8; COMMIT;');
   } catch(error) {db.exec('ROLLBACK');throw error;}
 }
-db.prepare("UPDATE sources SET status='interrupted',last_error='Previous source operation was interrupted; run it again.' WHERE status IN ('scanning','discovering')").run();
+db.prepare("UPDATE sources SET status='interrupted',last_error='Previous source operation was interrupted; run it again.' WHERE status IN ('scanning','discovering','cancelling')").run();
 db.prepare("UPDATE guide_feeds SET status='interrupted',last_error='Previous guide import was interrupted; import again.' WHERE status='importing'").run();
 
 export function transaction<T>(fn: () => T): T {
