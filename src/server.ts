@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
 import { liveGenres, parseM3u, scanFolder } from './catalogue.ts';
 import { libraryGenres } from './library-genres.ts';
+import { qualityPreferences, type QualityPreference } from './quality.ts';
 import { BackupError, backupBusy, streamBackup } from './backup.ts';
 import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, completeImport, countTitles, createUser, dashboardStats, dataDir, db, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, libraryGenreCounts, listCategories, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setFavourite, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, type GuideFeed, type SourceRow } from './db.ts';
 import { discoverProvider, discoverSeriesEpisodes, fetchTitleMetadata, importProvider, providerGuide, resolveProviderStream, type ProviderScanProgress } from './adapters/providers.ts';
@@ -16,7 +17,7 @@ import type { GuideProgramme, ImportItem, ProviderCategory, ProviderConfig, Sour
 
 const webRoot = join(dirname(fileURLToPath(import.meta.url)), '..', 'web');
 const allowedAssets: Record<string, string> = {
-  '/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/tv-navigation.js': 'tv-navigation.js',
+  '/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/tv-navigation.js': 'tv-navigation.js', '/playback-variants.js': 'playback-variants.js',
   '/styles.css': 'styles.css', '/manifest.webmanifest': 'manifest.webmanifest',
   '/sw.js': 'sw.js', '/icon.svg': 'icon.svg',
 };
@@ -329,7 +330,7 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const path = url.pathname;
   const method = req.method || 'GET';
-  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.14.0' });
+  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.15.0' });
   if (path === '/api/session' && method === 'GET') {
     const current = session(req);
     return send(res, 200, { needsSetup: !hasUsers(), user: current?.user || null, csrf: current?.csrf || null });
@@ -375,7 +376,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   if (path === '/api/system/status' && method === 'GET') {
     if (current.user.role !== 'admin') throw new HttpError(403, 'Administrator access required.');
     const databaseInfo = await stat(join(dataDir, 'hearthwave.sqlite'));
-    return send(res, 200, { version: '0.14.0', schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, databaseBytes: databaseInfo.size, rssBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(process.uptime()), backupBusy: backupBusy() });
+    return send(res, 200, { version: '0.15.0', schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, databaseBytes: databaseInfo.size, rssBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(process.uptime()), backupBusy: backupBusy() });
   }
   if (path === '/api/system/backup' && method === 'POST') {
     requireWrite(req, true);
@@ -385,8 +386,12 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   if (path === '/api/preferences' && method === 'POST') {
     requireWrite(req);
     const input=await body(req);
-    if (typeof input.autoplayNext !== 'boolean') throw new HttpError(400,'Autoplay next must be true or false.');
-    return send(res,200,setUserPreferences(current.user.id,input.autoplayNext));
+    const autoChanged=Object.hasOwn(input,'autoplayNext'),qualityChanged=Object.hasOwn(input,'qualityPreference');
+    if (!autoChanged && !qualityChanged) throw new HttpError(400,'Specify a playback preference to update.');
+    if (autoChanged && typeof input.autoplayNext !== 'boolean') throw new HttpError(400,'Autoplay next must be true or false.');
+    if (qualityChanged && (typeof input.qualityPreference !== 'string' || !qualityPreferences.includes(input.qualityPreference as QualityPreference))) throw new HttpError(400,'Unknown playback quality preference.');
+    const previous=getUserPreferences(current.user.id);
+    return send(res,200,setUserPreferences(current.user.id,autoChanged?input.autoplayNext as boolean:previous.autoplayNext,qualityChanged?input.qualityPreference as QualityPreference:previous.qualityPreference));
   }
   if (path === '/api/stats' && method === 'GET') return send(res, 200, dashboardStats());
   if (path === '/api/users' && method === 'GET') {
@@ -690,7 +695,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     const titleId = positiveId(variantMatch[1]);
     if (!titleExists(titleId)) throw new HttpError(404, 'Title not found.');
     return send(res, 200, { variants: listVariants(titleId).map(v => ({
-      id: v.id, name: v.source_name, quality: v.quality, type: v.source_type,
+      id: v.id, sourceId:v.source_id, name: v.source_name, quality: v.quality, qualityTier:v.quality_tier, qualityRank:v.quality_rank, group:v.group_name, type: v.source_type,
       playable:!v.url.startsWith('xtream-series:') && !v.url.startsWith('stalker-series:'),
       resolve:v.source_type === 'stalker' && v.url.startsWith('stalker:'),
       url:v.source_type === 'folder' ? `/api/media/${v.id}/file` : v.source_type === 'stalker' ? null : v.url.startsWith('xtream-series:') ? null : v.url,

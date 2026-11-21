@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { canonicalKey, channelCountry, channelGenre, channelKey, cleanTitle, displayChannelTitle, displayLibraryTitle, libraryMatchKey } from './catalogue.ts';
 import { classifyLibraryGenres } from './library-genres.ts';
+import { qualityRank, qualityTier, type QualityPreference, type QualityTier } from './quality.ts';
 import { secretStore } from './secrets.ts';
 import type { ImportItem, MediaKind, ProviderCategory, ProviderConfig, SourceInput, User } from './model.ts';
 
@@ -17,7 +18,7 @@ const secrets = secretStore(dataDir);
 export const db = new DatabaseSync(join(dataDir, 'hearthwave.sqlite'), { enableForeignKeyConstraints: true });
 db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 3000; PRAGMA synchronous = NORMAL;');
 const schemaVersion = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
-if (schemaVersion > 9) throw new Error(`Database schema ${schemaVersion} requires a newer Hearthwave version.`);
+if (schemaVersion > 10) throw new Error(`Database schema ${schemaVersion} requires a newer Hearthwave version.`);
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -242,6 +243,15 @@ if (schemaVersion < 9) {
     db.exec('PRAGMA user_version = 9; COMMIT;');
   } catch(error) {db.exec('ROLLBACK');throw error;}
 }
+if (schemaVersion < 10) {
+  db.exec(`
+    BEGIN IMMEDIATE;
+    ALTER TABLE user_preferences ADD COLUMN quality_preference TEXT NOT NULL DEFAULT 'auto'
+      CHECK(quality_preference IN ('auto','fhd','hd','sd'));
+    PRAGMA user_version = 10;
+    COMMIT;
+  `);
+}
 db.prepare("UPDATE sources SET status='interrupted',last_error='Previous source operation was interrupted; run it again.' WHERE status IN ('scanning','discovering','cancelling')").run();
 db.prepare("UPDATE guide_feeds SET status='interrupted',last_error='Previous guide import was interrupted; import again.' WHERE status='importing'").run();
 
@@ -268,15 +278,15 @@ export function publicUsers(): User[] {
   return db.prepare('SELECT id,username,role FROM users ORDER BY id').all() as unknown as User[];
 }
 
-export function getUserPreferences(userId:number): {autoplayNext:boolean} {
-  const row=db.prepare('SELECT autoplay_next FROM user_preferences WHERE user_id=?').get(userId) as {autoplay_next:number}|undefined;
-  return {autoplayNext:row?.autoplay_next===1};
+export function getUserPreferences(userId:number): {autoplayNext:boolean;qualityPreference:QualityPreference} {
+  const row=db.prepare('SELECT autoplay_next,quality_preference FROM user_preferences WHERE user_id=?').get(userId) as {autoplay_next:number;quality_preference:QualityPreference}|undefined;
+  return {autoplayNext:row?.autoplay_next===1,qualityPreference:row?.quality_preference || 'auto'};
 }
 
-export function setUserPreferences(userId:number,autoplayNext:boolean): {autoplayNext:boolean} {
-  db.prepare(`INSERT INTO user_preferences(user_id,autoplay_next) VALUES (?,?)
-    ON CONFLICT(user_id) DO UPDATE SET autoplay_next=excluded.autoplay_next`).run(userId,autoplayNext?1:0);
-  return {autoplayNext};
+export function setUserPreferences(userId:number,autoplayNext:boolean,qualityPreference:QualityPreference): {autoplayNext:boolean;qualityPreference:QualityPreference} {
+  db.prepare(`INSERT INTO user_preferences(user_id,autoplay_next,quality_preference) VALUES (?,?,?)
+    ON CONFLICT(user_id) DO UPDATE SET autoplay_next=excluded.autoplay_next,quality_preference=excluded.quality_preference`).run(userId,autoplayNext?1:0,qualityPreference);
+  return {autoplayNext,qualityPreference};
 }
 
 export function saveSession(hash: string, userId: number, csrf: string, expiry: number): void {
@@ -616,19 +626,24 @@ export function listSeriesEpisodes(seriesId: number, userId: number): unknown[] 
   `).all(userId,userId,seriesId);
 }
 
-export interface VariantRow { id: number; title_id: number; source_id: number; source_ref: string; source_name: string; source_type: string; source_location: string; url: string; quality: string; group_name: string }
+export interface VariantRow { id: number; title_id: number; source_id: number; source_ref: string; source_name: string; source_type: string; source_location: string; url: string; quality: string; group_name: string; quality_tier: QualityTier; quality_rank: number }
 
 export function listVariants(titleId: number): VariantRow[] {
   const rows = db.prepare(`SELECT v.id,v.title_id,v.source_id,v.source_ref,s.name AS source_name,s.type AS source_type,s.location AS source_location,v.url,v.quality,v.group_name
-    FROM variants v JOIN sources s ON s.id=v.source_id WHERE v.title_id=? ORDER BY CASE WHEN v.quality IN ('4K','UHD') THEN 0 WHEN v.quality IN ('FHD','1080P') THEN 1 WHEN v.quality='HD' THEN 2 ELSE 3 END, s.id`)
+    FROM variants v JOIN sources s ON s.id=v.source_id WHERE v.title_id=? ORDER BY s.id,v.id`)
     .all(titleId) as unknown as VariantRow[];
-  return rows.map(v => ({ ...v, url: secrets.open(v.url), source_location: secrets.open(v.source_location) }));
+  return rows.map(v => {
+    const tier=qualityTier(v.quality,v.source_type==='folder'?`${v.group_name} ${v.source_ref}`:v.group_name);
+    return { ...v, quality_tier:tier,quality_rank:qualityRank(tier),url: secrets.open(v.url), source_location: secrets.open(v.source_location) };
+  }).sort((a,b)=>a.quality_rank-b.quality_rank||a.source_id-b.source_id||a.id-b.id);
 }
 
 export function getVariant(id: number): VariantRow | undefined {
   const variant = db.prepare(`SELECT v.id,v.title_id,v.source_id,v.source_ref,s.name AS source_name,s.type AS source_type,s.location AS source_location,v.url,v.quality,v.group_name
     FROM variants v JOIN sources s ON s.id=v.source_id WHERE v.id=?`).get(id) as VariantRow | undefined;
-  return variant ? { ...variant, url: secrets.open(variant.url), source_location: secrets.open(variant.source_location) } : undefined;
+  if (!variant) return undefined;
+  const tier=qualityTier(variant.quality,variant.source_type==='folder'?`${variant.group_name} ${variant.source_ref}`:variant.group_name);
+  return { ...variant, quality_tier:tier,quality_rank:qualityRank(tier),url: secrets.open(variant.url), source_location: secrets.open(variant.source_location) };
 }
 
 export function setFavourite(userId: number, titleId: number, favourite: boolean): void {

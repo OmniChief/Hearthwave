@@ -6,7 +6,7 @@ Hearthwave is a new, self-hosted home entertainment platform. Instead of opening
 
 This repository is a fresh implementation, not a fork of Vaultcast. The initial milestone targets low-resource ARM64 and x64 NAS devices with one Node.js process and an embedded SQLite database. There is no PHP, Docker, Redis, separate database server or external scheduler in the runtime.
 
-## Current status — Library genre browsing (0.14.0)
+## Current status — source and quality selection (0.15.0)
 
 Working now:
 
@@ -53,6 +53,9 @@ Working now:
 - Native text entry and selection controls keep their normal keyboard behavior. While a Live channel is playing, Up/Down still changes channels; television-specific remote key codes used by Samsung/Tizen and LG/WebOS Back buttons are recognized when delivered as keyboard events. Actual remote/browser key mappings still depend on the device.
 - **Unified Library genres:** Films and series can be filtered by Action, Comedy, Drama, Sci-Fi and other familiar genres across all connected providers. Mixed-genre titles appear in each applicable genre without duplicate cards. The genre rail shows whole-catalogue counts for the selected media type, search and Favourites/Continue watching view, independently of pagination.
 - Provider genre labels are normalized into a fixed list; when a film or series lacks metadata, recognizable provider-folder genres can populate the filter. Unclassified items stay under Other. A small indexed SQLite genre table supports browsing without scanning provider JSON or loading the full catalogue into browser memory.
+- All available film/episode/Live variants expose a normalized quality tier (4K, FHD, HD, SD or unknown). A title's detail page groups its connections by quality, displays their source and provider folder when available, and offers a specific **Play this version** choice. Identical titles stay grouped while their provider options remain accessible.
+- The player has a direct **Connection** selector, in addition to **Try another source** and automatic bounded fallback. Per-user quality preferences are stored in SQLite and can be changed within the player by every viewer, or under **Settings > Appearance & Playback** by administrators. Preference changes take effect on the next playback; a manually selected connection overrides the default order.
+- Playback requests use a generation guard so a slower response for an earlier title or channel cannot replace a newer choice. Quality preferences choose between existing streams; they do not convert files, proxy video through the NAS or promise browser codec support.
 
 Provider integration is an **early compatibility implementation**, not a fully tested release: portal variants differ, and no live provider account has yet been used for end-to-end verification. Episodes are fetched when a viewer opens a series, rather than during bulk catalogue scans. Some Stalker portals may expose episodes in unsupported forms. No transcoding or guaranteed browser codec support is included.
 
@@ -97,6 +100,10 @@ Season sections expand or collapse independently. Open an episode's **Details** 
 This runs in the existing browser client without installing a television SDK, browser extension or extra server process. Samsung Tizen, LG WebOS and remote-control browsers differ in which hardware buttons they expose to websites, so physical remote compatibility still needs real-device testing.
 
 Choose **Details** on a Library item to view available metadata and select an individual source. Where one provider offers no artwork or description, Hearthwave uses what another source supplied for the shared title; it does not make an external lookup.
+
+The title page groups every known connection under **4K, FHD, HD, SD** or **Unspecified quality**. Use **Play this version** to pick a particular connection. In the player, **Connection** immediately switches to any other available version, while **Try another source** cycles through options. Stream errors and sustained stalls automatically try subsequent connections; browser codec support still determines whether playback succeeds.
+
+Each viewer can change **Quality preference** in the player; administrators can also use **Settings > Appearance & Playback**. Choose Auto to try the best-labelled version first, or prefer FHD/HD/SD when your device or connection is more reliable at a lower quality. These are priorities, not hard exclusions: unknown and higher-quality versions remain available as fallbacks. The choice is saved to your household account and applies when you next start a title. No video transcoding takes place on the NAS.
 
 Administrators can choose **Fetch provider details** on a film or series page to request richer information directly from up to three of its configured providers. This is manual and rate-limited to once per title per minute, with no automatic NAS metadata scraper. Not every Stalker portal supports the same detail endpoint.
 
@@ -152,7 +159,7 @@ Provider requests block localhost and link-local/cloud-metadata destinations. Pr
   ```
 
   Check the restored account and catalogue before switching traffic. Do **not** extract over a running installation or replace a live SQLite/WAL file. The download is not a substitute for preserving your actual media and any other external files.
-- Older databases migrate to schema v9 on startup. The v9 migration indexes Library genres in bounded batches without external metadata lookups; v8 indexes Live genre classification, and v7 stores user playback preferences. The earlier v6 upgrade conservatively merges duplicate film/series titles (preserving personal data and episode links) only where the known release years do not conflict. Guided restore, migration rollback and a built-in updater are **future milestones**.
+- Older databases migrate to schema v10 on startup. The v10 upgrade adds an individual quality preference to each household account, retaining the previous autoplay selection; v9 indexes Library genres in bounded batches, v8 indexes Live genre classification, and v7 originally introduced user playback preferences. The earlier v6 upgrade conservatively merges duplicate film/series titles (preserving personal data and episode links) only where the known release years do not conflict. Guided restore, migration rollback and a built-in updater are **future milestones**.
 - Local file streams are served from the configured folder only; symbolic-link escapes are rejected at playback time.
 - M3U and direct channels currently use browser-native playback. The browser tries another available source after a playback error or sustained stall, but this cannot make an unsupported HLS/codec combination play on an incompatible device. The app never transcodes the stream on the NAS.
 
@@ -160,7 +167,7 @@ Provider requests block localhost and link-local/cloud-metadata destinations. Pr
 
 1. **Foundation:** shared UI, accounts, content identity and source setup (delivered as the first preview).
 2. **Source adapters:** initial Xtream/Stalker connections, selected imports and playback resolution (delivered in v0.2).
-3. **Core media:** on-demand provider series episode browsing (v0.3), Library details and explicit source choice (v0.5), identity matching and local sidecar subtitles (v0.6), manual provider metadata refresh and saved Library views (v0.7), season accordions and next-episode controls (v0.8), full-catalogue paging (v0.10), multi-source genre browsing (v0.14); external metadata services, remote subtitles, requests and downloads remain planned.
+3. **Core media:** on-demand provider series episode browsing (v0.3), Library details and explicit source choice (v0.5), identity matching and local sidecar subtitles (v0.6), manual provider metadata refresh and saved Library views (v0.7), season accordions and next-episode controls (v0.8), full-catalogue paging (v0.10), multi-source genre browsing (v0.14), grouped quality/connection selection and per-user playback priority (v0.15); external metadata services, remote subtitles, requests and downloads remain planned.
 4. **Live:** provider guide lookup (v0.3), normalized channel matching and manual unified XMLTV (v0.4), manual channel mapping (v0.5), a paginated multi-day guide timeline (v0.9), server-indexed region/genre filters (v0.10); automated guide refresh, broader portal compatibility, radio and personal channels remain planned.
 5. **Extended:** games, arcade, creative studio, worker pairing, Community and My Space.
 6. **Hardening:** administrator backup export and basic process metrics (v0.12), directional keyboard/TV-remote navigation (v0.13); on-device installer/updater, 1 GB RAM profiling, real-device remote compatibility, security audit, guided restore and rollback remain planned.

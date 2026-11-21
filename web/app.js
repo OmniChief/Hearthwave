@@ -1,6 +1,7 @@
 import { installTvNavigation } from './tv-navigation.js';
+import { orderPlaybackVariants, playbackVariantLabel } from './playback-variants.js';
 
-const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', libraryGenre: '', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], sourceJobs: {}, sourcePollTimer: null, detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackGeneration: 0, recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
+const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', libraryGenre: '', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], sourceJobs: {}, sourcePollTimer: null, detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, qualityPreference: 'auto', activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackRequest: 0, playbackGeneration: 0, recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
 const $ = (selector) => document.querySelector(selector);
 const page = $('#page');
 
@@ -13,6 +14,11 @@ function formatBytes(value) {
   const unit = value >= 1024 ** 3 ? 'GiB' : value >= 1024 ** 2 ? 'MiB' : 'KiB';
   const divisor = unit === 'GiB' ? 1024 ** 3 : unit === 'MiB' ? 1024 ** 2 : 1024;
   return `${(value / divisor).toFixed(1)} ${unit}`;
+}
+
+const qualityChoices=[['auto','Auto · best available'],['fhd','Prefer FHD / 1080p or below'],['hd','Prefer HD / 720p or below'],['sd','Prefer SD']];
+function qualityOptions(selected) {
+  return qualityChoices.map(([key,label])=>`<option value="${key}" ${key===selected?'selected':''}>${label}</option>`).join('');
 }
 
 async function api(path, options = {}) {
@@ -57,12 +63,17 @@ function showShell() {
   $('#avatar').textContent = state.session.user.username.charAt(0).toUpperCase();
   document.querySelectorAll('[data-page="settings"]').forEach(button => { button.hidden = state.session.user.role !== 'admin'; });
   state.autoplayNext=false;
+  state.qualityPreference='auto';
   const userId=state.session.user.id;
   api('/api/preferences').then(preferences=>{
     if(state.session?.user.id!==userId) return;
     state.autoplayNext=preferences.autoplayNext===true;
+    state.qualityPreference=preferences.qualityPreference || 'auto';
     const checkbox=$('#autoplay-next');
     if(checkbox) checkbox.checked=state.autoplayNext;
+    for(const selector of ['#player-quality-preference','#settings-quality-preference']) {
+      const input=$(selector);if(input) input.value=state.qualityPreference;
+    }
   }).catch(()=>{});
   navigate('home');
 }
@@ -117,6 +128,15 @@ function mediaCard(item) {
 function liveCard(item) {
   const artwork=typeof item.artwork==='string' && /^https?:\/\//i.test(item.artwork) ? `<img src="${esc(item.artwork)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '▻';
   return `<div class="channel-row"><button class="channel-play" data-play="${item.id}"><span class="channel-icon">${artwork}</span><span><strong>${esc(item.title)}</strong><small>${esc(liveGenre(item))} · ${item.source_count} source${item.source_count === 1 ? '' : 's'}</small></span></button><button class="button button-quiet button-small" data-guide="${item.id}" aria-label="Programme guide for ${esc(item.title)}">Guide</button></div>`;
+}
+
+function sourceOptions(variants,titleId) {
+  const tiers=['4K','FHD','HD','SD','Unknown'];
+  return tiers.map(tier=>{
+    const entries=variants.filter(variant=>variant.qualityTier===tier);
+    if(!entries.length) return '';
+    return `<section class="source-quality-group"><h3>${tier==='Unknown'?'Unspecified quality':tier} <span class="tag">${entries.length} connection${entries.length===1?'':'s'}</span></h3><div class="episode-list">${entries.map(variant=>`<div class="episode-row"><div><strong>${esc(variant.name)}</strong><small>${esc(variant.type)}${variant.group?` · ${esc(variant.group)}`:''}${variant.quality?` · Label: ${esc(variant.quality)}`:''}</small></div>${variant.playable?`<button class="button button-quiet button-small" data-play="${titleId}" data-preferred="${variant.id}">Play this version</button>`:'<span class="field-note">Open series episodes to play</span>'}</div>`).join('')}</div></section>`;
+  }).join('');
 }
 
 const liveGenres=['General','Entertainment','Sports','Movies','News','Kids','Documentary','Music','Other'];
@@ -182,8 +202,8 @@ async function renderTitleDetail() {
     <p class="detail-description">${esc(title.description || 'A description has not been supplied by your sources yet.')}</p>
     <div class="row-actions">${title.kind==='series' ? `<button class="button button-primary" data-series="${title.id}">Browse episodes</button>` : versions.variants.some(v=>v.playable) ? `<button class="button button-primary" data-play="${title.id}">Play best available</button>` : ''}
     <button class="button button-quiet" data-favourite="${title.id}" data-next="${title.favourite?'0':'1'}">${title.favourite?'★ In favourites':'☆ Add to favourites'}</button>${state.session.user.role==='admin' && ['film','series'].includes(title.kind)?`<button class="button button-quiet" data-metadata-refresh="${title.id}">Fetch provider details</button>`:''}</div></div></div>
-    ${heading('Available sources','Choose a version to play. Hearthwave can try the next source if playback fails.')}
-    <div class="episode-list">${versions.variants.map(version=>`<div class="episode-row"><div><strong>${esc(version.name)}</strong><small>${esc([version.quality || 'Quality unspecified',version.type].join(' · '))}</small></div>${version.playable ? `<button class="button button-quiet button-small" data-play="${title.id}" data-preferred="${version.id}">Play this source</button>` : '<span class="field-note">Browse episodes first</span>'}</div>`).join('')}</div></section>`;
+    ${heading('Available sources',`${versions.variants.length} connection${versions.variants.length===1?'':'s'} across your providers. Choose a particular version or let Hearthwave try alternatives if playback fails.`)}
+    ${sourceOptions(versions.variants,title.id)}</section>`;
 }
 
 async function renderSeriesDetail() {
@@ -385,6 +405,10 @@ async function renderSettings() {
     const users = (await api('/api/users')).users;
     contents = `<div class="two-col"><section class="surface"><h2>Household accounts</h2><p class="field-note">Each account has its own favourites and playback positions, saved on this server.</p>${users.map(user => `<div class="list-row"><strong>${esc(user.username)}</strong><span class="tag">${esc(user.role)}</span></div>`).join('')}</section>
       <section class="surface"><h2>Add a viewer</h2><form id="user-form" class="field-stack"><label>Username<input name="username" minlength="3" maxlength="50" required></label><label>Temporary password<input name="password" type="password" minlength="12" maxlength="256" required autocomplete="new-password"></label><label>Role<select name="role"><option value="viewer">Viewer</option><option value="admin">Administrator</option></select></label><button class="button button-primary" type="submit">Create account</button></form></section></div>`;
+  } else if (state.settingsTab === 'appearance') {
+    contents=`<section class="surface"><h2>Playback quality</h2><p>Choose which versions Hearthwave should try first when a title has multiple connections.</p><div class="field-stack"><label>Preferred quality<select id="settings-quality-preference">${qualityOptions(state.qualityPreference)}</select></label></div>
+      <div class="info-banner">This is a preference, not a conversion setting. If the preferred quality is unavailable, all existing sources remain available as fallbacks. Your selection is saved to your account and works across devices. No NAS transcoding is performed.</div></section>
+      <section class="surface"><h2>TV controls</h2><p class="field-note">Use arrows to move between controls, OK/Enter to select and Back/Escape to return. The player also lets you choose a connection directly. TV manufacturers differ in which remote buttons they expose to the browser.</p></section>`;
   } else if (state.settingsTab === 'system') {
     const status = await api('/api/system/status');
     const days = Math.floor(status.uptimeSeconds / 86400);
@@ -400,7 +424,6 @@ async function renderSettings() {
   } else {
     const explanations = {
       workers:['Downloads & Workers','Acquisition queues, explicit file conversion and trusted paired worker computers will be managed here, without mandatory on-NAS transcoding.'],
-      appearance:['Appearance & Playback','User themes, TV remote layouts, compatibility mode, quality preferences and subtitle defaults will be configured here.'],
     };
     const [title,description] = explanations[state.settingsTab];
     contents = emptyState(title, `${description} This settings area is not active in the foundation milestone.`, '⚙');
@@ -455,14 +478,17 @@ async function renderPage() {
 }
 
 async function startPlayback(titleId,preferredId=null) {
+  const request=++state.playbackRequest;
   const result = await api(`/api/titles/${titleId}/variants`);
-  const playable = result.variants.filter(variant => variant.playable && (variant.url || variant.resolve));
+  if(request!==state.playbackRequest) return;
+  const playable = orderPlaybackVariants(result.variants.filter(variant => variant.playable && (variant.url || variant.resolve)),state.qualityPreference,preferredId);
   if (!playable.length) throw new Error('There is no playable stream for this title yet.');
-  if (preferredId != null) playable.sort((a,b)=>(Number(b.id)===Number(preferredId)?1:0)-(Number(a.id)===Number(preferredId)?1:0));
   const title = state.items.find(item => Number(item.id) === Number(titleId)) || (await api(`/api/titles/${titleId}`)).title;
+  if(request!==state.playbackRequest) return;
   state.activeTitle = title;
   state.variants = playable;
   state.variantIndex = 0;
+  renderVariantPicker();
   state.pendingSeek = Number(title.position_seconds) || 0;
   $('#player-title').textContent = title.kind === 'episode' ? `${title.title} · S${title.season || '?'}E${title.episode || '?'}${title.episode_name ? ` · ${title.episode_name}`:''}` : title.title;
   const index = state.seriesEpisodes.findIndex(item => Number(item.id) === Number(titleId));
@@ -474,6 +500,13 @@ async function startPlayback(titleId,preferredId=null) {
   $('#player-overlay').hidden = false;
   tvNavigation.enterPlayer();
   void playVariant();
+}
+
+function renderVariantPicker() {
+  const picker=$('#player-variant');
+  picker.replaceChildren(...state.variants.map((variant,index)=>new Option(`${playbackVariantLabel(variant)} · ${variant.type}${variant.group?` · ${variant.group}`:''}`,String(index))));
+  picker.disabled=state.variants.length<2;
+  picker.value=String(state.variantIndex);
 }
 
 function setSubtitle(index) {
@@ -540,7 +573,8 @@ async function playVariant() {
   state.lastMediaTime=0;
   state.resolvedUrl = null;
   $('#player-message').textContent = item.resolve ? 'Connecting to your provider…' : '';
-  $('#player-source').textContent = `${item.name}${item.quality ? ` · ${item.quality}` : ''} (${state.variantIndex + 1}/${state.variants.length})`;
+  $('#player-source').textContent = `${playbackVariantLabel(item)} (${state.variantIndex + 1}/${state.variants.length})`;
+  $('#player-variant').value=String(state.variantIndex);
   $('#try-next').disabled = state.variants.length < 2;
   video.pause();
   clearSubtitles();
@@ -585,6 +619,20 @@ function nextSource(manual=false) {
   void playVariant();
 }
 
+async function updateQualityPreference(select) {
+  const previous=state.qualityPreference;
+  select.disabled=true;
+  try {
+    const updated=await api('/api/preferences',{method:'POST',body:{qualityPreference:select.value}});
+    state.qualityPreference=updated.qualityPreference;
+    for(const selector of ['#player-quality-preference','#settings-quality-preference']) {
+      const input=$(selector);if(input) input.value=state.qualityPreference;
+    }
+    notify('Quality preference saved. It will be used the next time you start a title.');
+  } catch(error) {select.value=previous;notify(error.message,true);}
+  finally {select.disabled=false;}
+}
+
 async function jumpEpisode(direction) {
   if (!state.activeTitle) return;
   const index = state.seriesEpisodes.findIndex(item => Number(item.id) === Number(state.activeTitle.id));
@@ -604,6 +652,7 @@ async function jumpChannel(direction) {
 }
 
 function closePlayer() {
+  state.playbackRequest++;
   state.playbackGeneration++;
   clearPlaybackRecovery();
   if(document.fullscreenElement===$('#player-panel')) void document.exitFullscreen?.();
@@ -654,6 +703,7 @@ $('#global-search').addEventListener('input', (event) => {
 page.addEventListener('change', event => {
   if (event.target?.id === 'source-type') syncSourceForm();
   if (event.target?.id === 'library-sort') { state.librarySort=event.target.value;state.libraryOffset=0;void renderPage().catch(error=>notify(error.message,true)); }
+  if (event.target?.id === 'settings-quality-preference') void updateQualityPreference(event.target);
   if (event.target?.id === 'autoplay-next') {
     const checkbox=event.target;
     const next=checkbox.checked;
@@ -890,6 +940,14 @@ document.querySelectorAll('.sidebar [data-page]').forEach(button => button.addEv
 $('#brand-link').addEventListener('click', event => { event.preventDefault(); navigate('home'); });
 $('#close-player').addEventListener('click', closePlayer);
 $('#try-next').addEventListener('click',()=>nextSource(true));
+$('#player-variant').addEventListener('change',event=>{
+  const index=Number(event.target.value);
+  if(!Number.isSafeInteger(index) || index<0 || index>=state.variants.length || index===state.variantIndex) return;
+  if(state.activeTitle?.kind!=='channel') state.pendingSeek=$('#player').currentTime || state.pendingSeek;
+  state.variantIndex=index;
+  void playVariant();
+});
+$('#player-quality-preference').addEventListener('change',event=>{void updateQualityPreference(event.target);});
 $('#player-subtitles').addEventListener('change', event=>setSubtitle(Number(event.target.value)));
 $('#previous-channel').addEventListener('click',()=>jumpChannel(-1));
 $('#next-channel').addEventListener('click',()=>jumpChannel(1));
