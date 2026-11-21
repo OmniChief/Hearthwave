@@ -56,14 +56,14 @@
         </header>
         <div id="notice" class="notice" role="status" hidden></div>
         <div id="page" class="page-content"></div>
-        <footer class="site-footer">Hearthwave <span>•</span> Private by design <span>•</span> Preview v0.12</footer>
+        <footer class="site-footer">Hearthwave <span>•</span> Private by design <span>•</span> Preview v0.13</footer>
       </main>
     </div>
 
     <div id="player-overlay" class="player-overlay" role="dialog" aria-modal="true" aria-label="Media player" hidden>
       <div class="player-panel" id="player-panel">
         <div class="player-heading"><div><span class="eyebrow">NOW PLAYING</span><h2 id="player-title">Player</h2></div><button class="icon-button" id="close-player" aria-label="Close player">×</button></div>
-        <video id="player" controls playsinline preload="metadata"></video>
+        <video id="player" controls playsinline preload="metadata" tabindex="0"></video>
         <p class="player-message" id="player-message" aria-live="polite"></p>
         <div class="player-actions"><div class="player-details"><div id="player-source" class="muted">Source</div><label class="subtitle-picker" id="subtitle-picker" hidden>Subtitles <select id="player-subtitles" aria-label="Choose subtitles"></select></label></div><div class="player-buttons"><button class="button button-quiet" id="previous-channel" hidden>← Channel</button><button class="button button-quiet" id="next-channel" hidden>Channel →</button><button class="button button-quiet" id="previous-episode" hidden>← Previous episode</button><button class="button button-quiet" id="next-episode" hidden>Next episode →</button><button class="button button-quiet" id="player-fullscreen">Fullscreen</button><button class="button button-quiet" id="try-next">Try another source</button><button class="button button-quiet" id="open-stream">Open stream ↗</button></div></div>
       </div>

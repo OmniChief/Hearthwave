@@ -6,7 +6,7 @@ Hearthwave is a new, self-hosted home entertainment platform. Instead of opening
 
 This repository is a fresh implementation, not a fork of Vaultcast. The initial milestone targets low-resource ARM64 and x64 NAS devices with one Node.js process and an embedded SQLite database. There is no PHP, Docker, Redis, separate database server or external scheduler in the runtime.
 
-## Current status — administrator backup export (0.12.0)
+## Current status — TV remote navigation (0.13.0)
 
 Working now:
 
@@ -49,10 +49,12 @@ Working now:
 - Administrator-only source scan progress, showing items received/indexed, current Stalker/Xtream folder and Stalker page. The Sources list updates every few seconds only while a job is active, without replacing the add-source form.
 - An explicit **Cancel scan** action for M3U, folder and provider scans. It stops safely after the current bounded request, does not prune the last complete source catalogue, and marks interrupted scans as such after a server restart. Already committed partial new batches may remain visible until the next complete scan.
 - **Settings > System** now shows process memory, uptime, database size and schema version. Administrators can download a compressed backup containing a consistent, online SQLite snapshot and the matching encryption key. The archive is streamed from a temporary snapshot without loading the whole database into server memory; the snapshot is cleaned up afterwards.
+- Directional **TV remote and keyboard navigation** across Home, Library, Live, guide controls, Settings and the media player. Arrow keys choose the nearest visible control, OK/Enter activates it, and Back/Escape returns from details, guide or player before stepping back through visited pages. The focused control is highlighted and scrolled into view; focus is recovered after list refreshes.
+- Native text entry and selection controls keep their normal keyboard behavior. While a Live channel is playing, Up/Down still changes channels; television-specific remote key codes used by Samsung/Tizen and LG/WebOS Back buttons are recognized when delivered as keyboard events. Actual remote/browser key mappings still depend on the device.
 
 Provider integration is an **early compatibility implementation**, not a fully tested release: portal variants differ, and no live provider account has yet been used for end-to-end verification. Episodes are fetched when a viewer opens a series, rather than during bulk catalogue scans. Some Stalker portals may expose episodes in unsupported forms. No transcoding or guaranteed browser codec support is included.
 
-Designed but **not yet implemented**: automatically refreshed XMLTV schedules, external artwork/metadata enrichment beyond what providers supply, remote-provider subtitle discovery, downloads/acquisition, personal scheduled channels, emulation, games, AI generation, community, file sharing, pairing worker PCs, a full directional-TV-focus mode, complete installer/updater, guided backup restore and migration rollback. Navigation destinations for these capabilities are previews only.
+Designed but **not yet implemented**: automatically refreshed XMLTV schedules, external artwork/metadata enrichment beyond what providers supply, remote-provider subtitle discovery, downloads/acquisition, personal scheduled channels, emulation, games, AI generation, community, file sharing, pairing worker PCs, complete installer/updater, guided backup restore and migration rollback. Directional controls now work at the browser level, but native remote mapping and television playback still need device validation. Navigation destinations for unbuilt capabilities are previews only.
 
 ## Run locally
 
@@ -82,6 +84,15 @@ While a scan is running, the Sources panel displays live counts and the active p
 Open a series in **Library** to retrieve its episodes on demand. Use **Refresh episodes** if provider contents change. In **Live**, choose **Guide** on a channel for programme details or **Programme guide** for the combined XMLTV lineup. The combined guide has four six-hour time slots, next-day navigation and **More channels** paging; select a programme block for its description.
 
 Season sections expand or collapse independently. Open an episode's **Details** to inspect its sources; use the checkbox above the seasons to save your personal **Automatically play the next episode** preference. In the player, use **Fullscreen** for a TV display. While watching Live TV, the Up/Down keys change channels where the TV remote sends normal keyboard arrows.
+
+### TV remote and keyboard controls
+
+- **Arrow keys:** move focus between visible actions, cards, navigation tabs and guide controls. The currently focused action has a prominent peach outline; the view scrolls as needed.
+- **OK / Enter:** select the focused action. Native form fields and the video player retain their usual controls; use Left/Right within editable text without moving focus.
+- **Back / Escape:** leave a player, close an open channel guide, return from an item/series detail, then return to the previously visited section. Press Escape while editing to leave the field. Backspace is Back only outside editable fields.
+- **While watching Live:** Up/Down switches between channels in the current visible lineup; choose the on-screen channel buttons for the same action.
+
+This runs in the existing browser client without installing a television SDK, browser extension or extra server process. Samsung Tizen, LG WebOS and remote-control browsers differ in which hardware buttons they expose to websites, so physical remote compatibility still needs real-device testing.
 
 Choose **Details** on a Library item to view available metadata and select an individual source. Where one provider offers no artwork or description, Hearthwave uses what another source supplied for the shared title; it does not make an external lookup.
 
@@ -148,6 +159,6 @@ Provider requests block localhost and link-local/cloud-metadata destinations. Pr
 3. **Core media:** on-demand provider series episode browsing (v0.3), Library details and explicit source choice (v0.5), identity matching and local sidecar subtitles (v0.6), manual provider metadata refresh and saved Library views (v0.7), season accordions and next-episode controls (v0.8), full-catalogue paging (v0.10); external metadata services, remote subtitles, requests and downloads remain planned.
 4. **Live:** provider guide lookup (v0.3), normalized channel matching and manual unified XMLTV (v0.4), manual channel mapping (v0.5), a paginated multi-day guide timeline (v0.9), server-indexed region/genre filters (v0.10); automated guide refresh, broader portal compatibility, radio and personal channels remain planned.
 5. **Extended:** games, arcade, creative studio, worker pairing, Community and My Space.
-6. **Hardening:** administrator backup export and basic process metrics (v0.12); on-device installer/updater, 1 GB RAM profiling, full directional-TV-focus/navigation (basic fullscreen/channel keys in v0.8), security audit, guided restore and rollback remain planned.
+6. **Hardening:** administrator backup export and basic process metrics (v0.12), directional keyboard/TV-remote navigation (v0.13); on-device installer/updater, 1 GB RAM profiling, real-device remote compatibility, security audit, guided restore and rollback remain planned.
 
 The guiding product requirements are captured in the original *Unified Home Entertainment Platform* brief. Hearthwave will develop those requirements iteratively; these previews do not claim to fulfil the entire brief.

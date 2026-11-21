@@ -1,3 +1,5 @@
+import { installTvNavigation } from './tv-navigation.js';
+
 const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], sourceJobs: {}, sourcePollTimer: null, detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackGeneration: 0, recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
 const $ = (selector) => document.querySelector(selector);
 const page = $('#page');
@@ -66,8 +68,16 @@ function showShell() {
 }
 
 const headings = { home:'Home', library:'Library', live:'Live', play:'Play', create:'Create', community:'Community', 'my-space':'My Space', settings:'Settings' };
-async function navigate(destination) {
+const pageHistory = [];
+function rememberPage(destination) {
+  if (destination === state.page) return;
+  pageHistory.push(state.page);
+  if (pageHistory.length > 20) pageHistory.shift();
+}
+async function navigate(destination, recordHistory = true) {
   if (destination === 'settings' && state.session?.user.role !== 'admin') return;
+  const next = headings[destination] ? destination : 'home';
+  if (recordHistory) rememberPage(next);
   state.guideView = false;
   state.guideOffset = 0;
   state.guideRequest++;
@@ -78,7 +88,7 @@ async function navigate(destination) {
   state.detailId = null;
   state.seriesEpisodes = [];
   clearTimeout(state.seriesRefreshTimer);
-  state.page = headings[destination] ? destination : 'home';
+  state.page = next;
   $('#page-title').textContent = headings[state.page];
   document.querySelectorAll('[data-page]').forEach(el => el.classList.toggle('selected', el.dataset.page === state.page));
   $('#global-search').placeholder = state.page === 'live' ? 'Search live channels' : 'Search your entertainment';
@@ -101,7 +111,7 @@ function mediaCard(item) {
   const detail = [item.year, item.kind === 'episode' ? `S${item.season || '?'}E${item.episode || '?'}` : null, `${item.source_count} source${item.source_count === 1 ? '' : 's'}`].filter(Boolean).join(' · ');
   const cover = typeof item.artwork === 'string' && /^https?:\/\//i.test(item.artwork) ? `<img src="${esc(item.artwork)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '';
   const resume=Number(item.position_seconds)>10 && item.kind!=='channel';
-  return `<article class="media-card"><div class="media-art tone-${tone}"><span class="art-initial">${esc(initial)}</span>${cover}<span class="media-kind">${esc(item.kind)}</span>${resume?`<span class="resume-label">${Math.max(1,Math.floor(item.position_seconds/60))}m watched</span>`:''}</div><div class="media-info"><strong title="${esc(item.title)}">${esc(item.title)}</strong><small>${esc(detail)}</small><div class="media-actions"><button class="button button-quiet button-small" data-detail="${item.id}">Details</button>${item.kind === 'series' ? `<button class="button button-quiet button-small" data-series="${item.id}">Episodes</button>` : `<button class="button button-quiet button-small" data-play="${item.id}">${resume?'Resume':'Play'}</button>`}<button class="star-button ${item.favourite ? 'is-favourite':''}" data-favourite="${item.id}" data-next="${item.favourite ? '0':'1'}" aria-label="${item.favourite ? 'Remove from' : 'Add to'} favourites">${item.favourite ? '★':'☆'}</button></div></div></article>`;
+  return `<article class="media-card"><button class="media-art media-art-button tone-${tone}" data-card-detail="${item.id}" aria-label="Details for ${esc(item.title)}"><span class="art-initial">${esc(initial)}</span>${cover}<span class="media-kind">${esc(item.kind)}</span>${resume?`<span class="resume-label">${Math.max(1,Math.floor(item.position_seconds/60))}m watched</span>`:''}</button><div class="media-info"><strong title="${esc(item.title)}">${esc(item.title)}</strong><small>${esc(detail)}</small><div class="media-actions"><button class="button button-quiet button-small" data-detail="${item.id}">Details</button>${item.kind === 'series' ? `<button class="button button-quiet button-small" data-series="${item.id}">Episodes</button>` : `<button class="button button-quiet button-small" data-play="${item.id}">${resume?'Resume':'Play'}</button>`}<button class="star-button ${item.favourite ? 'is-favourite':''}" data-favourite="${item.id}" data-next="${item.favourite ? '0':'1'}" aria-label="${item.favourite ? 'Remove from' : 'Add to'} favourites">${item.favourite ? '★':'☆'}</button></div></div></article>`;
 }
 
 function liveCard(item) {
@@ -207,7 +217,7 @@ async function showLiveGuide(titleId) {
   try {
     const result = await api(`/api/titles/${titleId}/guide`);
     if (!panel.isConnected) return;
-    panel.innerHTML = `<h2>${esc(channel?.title || 'Channel')} · Programme guide</h2><p class="field-note">${result.source ? `Guide from ${esc(result.source)} · ` : ''}XMLTV timestamps use your device timezone; other provider times are shown as supplied.</p>${result.programmes.length ? `<div class="episode-list">${result.programmes.map(row => `<div class="episode-row"><div><strong>${esc(row.title)}</strong><small>${esc(localGuideTime(row.start))}${row.end ? ` – ${esc(localGuideTime(row.end))}`:''}</small>${row.description ? `<p class="field-note">${esc(row.description)}</p>`:''}</div></div>`).join('')}</div>` : '<p class="field-note">No guide entries were returned for this channel. Live playback is unaffected.</p>'}${state.session.user.role==='admin'?`<div class="guide-map-actions"><button class="button button-quiet button-small" data-guide-map="${titleId}">Match an XMLTV channel</button></div><div id="guide-map-editor"></div>`:''}`;
+    panel.innerHTML = `<div class="row-actions"><h2>${esc(channel?.title || 'Channel')} · Programme guide</h2><button class="button button-quiet button-small" data-guide-close>← Close guide</button></div><p class="field-note">${result.source ? `Guide from ${esc(result.source)} · ` : ''}XMLTV timestamps use your device timezone; other provider times are shown as supplied.</p>${result.programmes.length ? `<div class="episode-list">${result.programmes.map(row => `<div class="episode-row"><div><strong>${esc(row.title)}</strong><small>${esc(localGuideTime(row.start))}${row.end ? ` – ${esc(localGuideTime(row.end))}`:''}</small>${row.description ? `<p class="field-note">${esc(row.description)}</p>`:''}</div></div>`).join('')}</div>` : '<p class="field-note">No guide entries were returned for this channel. Live playback is unaffected.</p>'}${state.session.user.role==='admin'?`<div class="guide-map-actions"><button class="button button-quiet button-small" data-guide-map="${titleId}">Match an XMLTV channel</button></div><div id="guide-map-editor"></div>`:''}`;
   } catch (error) { if (panel.isConnected) panel.innerHTML = `<h2>Programme guide unavailable</h2><p class="field-note">${esc(error.message)}</p>`; }
 }
 
@@ -458,6 +468,7 @@ async function startPlayback(titleId,preferredId=null) {
   $('#previous-channel').hidden=title.kind!=='channel' || state.channelQueue.length<2;
   $('#next-channel').hidden=title.kind!=='channel' || state.channelQueue.length<2;
   $('#player-overlay').hidden = false;
+  tvNavigation.enterPlayer();
   void playVariant();
 }
 
@@ -601,6 +612,7 @@ function closePlayer() {
   $('#player-overlay').hidden = true;
   state.activeTitle = null;
   state.variants = [];
+  tvNavigation.exitPlayer();
 }
 
 $('#auth-form').addEventListener('submit', async (event) => {
@@ -754,6 +766,7 @@ page.addEventListener('click', async event => {
   if (target.dataset.series) {
     if (!state.detailId && !state.seriesDetail && state.page==='library') state.libraryScroll=window.scrollY;
     else if (state.page!=='library') state.libraryScroll=0;
+    rememberPage('library');
     state.seriesDetail = Number(target.dataset.series);
     state.detailId = null;
     state.page = 'library';
@@ -764,10 +777,11 @@ page.addEventListener('click', async event => {
   }
   if (target.hasAttribute('data-series-back')) { state.seriesDetail = null; clearTimeout(state.seriesRefreshTimer);await renderPage();window.scrollTo({top:state.libraryScroll,behavior:'instant'});return; }
   if (target.dataset.episodeDetail) {state.detailId=Number(target.dataset.episodeDetail);clearTimeout(state.seriesRefreshTimer);return renderPage();}
-  if (target.dataset.detail) {
+  if (target.dataset.detail || target.dataset.cardDetail) {
     if (!state.detailId && !state.seriesDetail && state.page==='library') state.libraryScroll=window.scrollY;
     else if (state.page!=='library') state.libraryScroll=0;
-    state.detailId=Number(target.dataset.detail);
+    rememberPage('library');
+    state.detailId=Number(target.dataset.detail || target.dataset.cardDetail);
     state.seriesDetail=null;
     state.page='library';
     $('#page-title').textContent='Library';
@@ -799,6 +813,7 @@ page.addEventListener('click', async event => {
     return;
   }
   if (target.dataset.guide) return showLiveGuide(target.dataset.guide);
+  if (target.hasAttribute('data-guide-close')) {const guide=$('#guide-panel');if(guide){guide.hidden=true;guide.innerHTML='';}return;}
   if (target.dataset.kind) { state.kind = target.dataset.kind;state.libraryOffset=0; return renderPage(); }
   if (target.dataset.group) { state.liveGroup = target.dataset.group;state.liveOffset=0; return renderPage(); }
   if (target.dataset.settings) { state.settingsTab = target.dataset.settings; return renderPage(); }
@@ -907,15 +922,23 @@ $('#player-fullscreen').addEventListener('click',()=>{
   if(document.fullscreenElement) void document.exitFullscreen?.();
   else target.requestFullscreen?.().catch(()=>notify('Fullscreen is not available on this device.',true));
 });
-document.addEventListener('keydown', event => {
-  if ($('#player-overlay').hidden || event.altKey || event.ctrlKey || event.metaKey) return;
-  if (event.key === 'Escape') return closePlayer();
-  const focused=document.activeElement;
-  if (['INPUT','TEXTAREA','SELECT'].includes(focused?.tagName) || focused?.isContentEditable) return;
-  if (state.activeTitle?.kind==='channel' && ['ArrowUp','ArrowDown'].includes(event.key)) {
-    event.preventDefault();
-    void jumpChannel(event.key==='ArrowUp'?-1:1);
-  }
+function tvBack(inPlayer) {
+  if (inPlayer) return closePlayer();
+  if (state.detailId && $('[data-detail-back]')) return $('[data-detail-back]').click();
+  if (state.seriesDetail && $('[data-series-back]')) return $('[data-series-back]').click();
+  if (state.guideView) {state.guideView=false;state.guideRequest++;void renderPage().catch(error=>notify(error.message,true));return;}
+  const guide=$('#guide-panel');
+  if (guide && !guide.hidden) {guide.hidden=true;guide.innerHTML='';return;}
+  if (pageHistory.length) return navigate(pageHistory.pop(), false);
+  if (state.page!=='home') return navigate('home',false);
+}
+const tvNavigation = installTvNavigation({
+  onBack: tvBack,
+  onChannel(direction) {
+    if (state.activeTitle?.kind !== 'channel' || state.channelQueue.length < 2) return false;
+    void jumpChannel(direction);
+    return true;
+  },
 });
 
 try {

@@ -5,7 +5,8 @@ body { min-width:320px; margin:0; color:var(--text); background:var(--bg); }
 button, input, select, textarea { font:inherit; }
 button { cursor:pointer; }
 a { color:inherit; }
-button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline:3px solid var(--teal); outline-offset:3px; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible, video:focus-visible { outline:3px solid var(--teal); outline-offset:3px; }
+.tv-navigation button:focus, .tv-navigation a:focus, .tv-navigation input:focus, .tv-navigation select:focus, .tv-navigation textarea:focus, .tv-navigation summary:focus, .tv-navigation video:focus { outline:4px solid var(--peach); outline-offset:3px; box-shadow:0 0 0 6px #ffb79730; position:relative; z-index:2; }
 [hidden] { display:none !important; }
 .muted { color:var(--muted); }
 .eyebrow { color:var(--peach); font-weight:800; letter-spacing:.18em; text-transform:uppercase; font-size:11px; }
@@ -77,6 +78,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .media-card { border:1px solid var(--stroke); border-radius:15px; background:#17202c; overflow:hidden; min-width:0; }
 .media-card:hover { border-color:#6b6070; }
 .media-art { aspect-ratio:2/2.45; display:grid; place-items:center; font-size:55px; background:linear-gradient(135deg,#443b55,#293b46); position:relative; overflow:hidden; }
+.media-art-button { width:100%; border:0; border-radius:0; padding:0; color:inherit; cursor:pointer; }
+.media-art-button:hover { filter:brightness(1.13); }
 .media-art.tone-1 { background:linear-gradient(135deg,#455c56,#263e4b); }
 .media-art.tone-2 { background:linear-gradient(135deg,#654853,#2e374e); }
 .media-art.tone-3 { background:linear-gradient(135deg,#514d3c,#293b46); }
