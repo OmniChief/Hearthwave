@@ -394,8 +394,11 @@ export function completeImport(sourceId: number, generation: string): void {
   });
 }
 
-export function listTitles(kind: MediaKind | 'all' | 'library', userId: number, query = ''): unknown[] {
+export type CatalogueView='all'|'favourites'|'continue';
+export type CatalogueSort='title'|'year'|'added'|'activity';
+export function listTitles(kind: MediaKind | 'all' | 'library', userId: number, query = '', view:CatalogueView='all', sort:CatalogueSort='title', limit=250): unknown[] {
   const search = `%${query.replace(/[\\%_]/g, '\\$&')}%`;
+  const order={title:'t.title COLLATE NOCASE ASC',year:'(t.year IS NULL),t.year DESC,t.title COLLATE NOCASE ASC',added:'t.id DESC',activity:'(p.updated_at IS NULL),p.updated_at DESC,t.id DESC'}[sort];
   return db.prepare(`
     SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,t.artwork,t.channel_country,
       COUNT(v.id) AS source_count,
@@ -405,8 +408,9 @@ export function listTitles(kind: MediaKind | 'all' | 'library', userId: number, 
     LEFT JOIN favourites f ON f.title_id=t.id AND f.user_id=?
     LEFT JOIN progress p ON p.title_id=t.id AND p.user_id=?
     WHERE (?='all' OR (?='library' AND t.kind<>'channel') OR t.kind=?) AND t.title LIKE ? ESCAPE '\\'
-    GROUP BY t.id ORDER BY t.title COLLATE NOCASE LIMIT 250
-  `).all(userId, userId, kind, kind, kind, search);
+      AND (?='all' OR (?='favourites' AND f.title_id IS NOT NULL) OR (?='continue' AND p.position_seconds>0))
+    GROUP BY t.id ORDER BY ${order} LIMIT ?
+  `).all(userId, userId, kind, kind, kind, search,view,view,view,Math.min(250,Math.max(1,limit)));
 }
 
 export function titleExists(id: number): boolean {
@@ -426,6 +430,25 @@ export function getTitleDetail(id:number,userId:number): unknown | undefined {
     LEFT JOIN progress p ON p.title_id=t.id AND p.user_id=?
     WHERE t.id=? AND EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id)`)
     .get(userId,userId,id);
+}
+
+/** Explicit provider metadata refresh; blank fields never erase previously indexed information. */
+export function enrichTitleMetadata(titleId:number,info:Partial<ImportItem>):boolean {
+  const description=typeof info.description==='string'?info.description.trim().slice(0,4000):'';
+  const genres=typeof info.genres==='string'?info.genres.trim().slice(0,250):'';
+  const artwork=typeof info.artwork==='string' && /^https?:\/\//i.test(info.artwork)?info.artwork.slice(0,2048):'';
+  const year=Number.isInteger(info.year) && (info.year as number)>=1880 && (info.year as number)<=2100 ? info.year : null;
+  const rating=typeof info.rating==='number' && Number.isFinite(info.rating) && info.rating>0 && info.rating<=10?info.rating:null;
+  const duration=Number.isInteger(info.durationSeconds) && (info.durationSeconds as number)>0 && (info.durationSeconds as number)<=172800?info.durationSeconds:null;
+  const imdb=/^tt\d{5,12}$/i.test(info.imdbId || '')?info.imdbId!.toLowerCase():'';
+  const tmdb=/^[1-9]\d{0,11}$/.test(info.tmdbId || '')?info.tmdbId!:'';
+  if (![description,genres,artwork,year,rating,duration,imdb,tmdb].some(value=>value!=null && value!=='')) return false;
+  return db.prepare(`UPDATE titles SET year=COALESCE(year,?),
+    artwork=COALESCE(NULLIF(?,''),artwork),description=COALESCE(NULLIF(?,''),description),
+    genres=COALESCE(NULLIF(?,''),genres),rating=COALESCE(?,rating),
+    duration_seconds=COALESCE(?,duration_seconds),
+    imdb_id=COALESCE(NULLIF(imdb_id,''),?),tmdb_id=COALESCE(NULLIF(tmdb_id,''),?)
+    WHERE id=? AND kind IN ('film','series')`).run(year,artwork,description,genres,rating,duration,imdb,tmdb,titleId).changes>0;
 }
 
 const upsertEpisodeVariant = db.prepare(`
@@ -464,17 +487,17 @@ export function listSeriesEpisodes(seriesId: number, userId: number): unknown[] 
   `).all(userId,userId,seriesId);
 }
 
-export interface VariantRow { id: number; title_id: number; source_id: number; source_name: string; source_type: string; source_location: string; url: string; quality: string; group_name: string }
+export interface VariantRow { id: number; title_id: number; source_id: number; source_ref: string; source_name: string; source_type: string; source_location: string; url: string; quality: string; group_name: string }
 
 export function listVariants(titleId: number): VariantRow[] {
-  const rows = db.prepare(`SELECT v.id,v.title_id,v.source_id,s.name AS source_name,s.type AS source_type,s.location AS source_location,v.url,v.quality,v.group_name
+  const rows = db.prepare(`SELECT v.id,v.title_id,v.source_id,v.source_ref,s.name AS source_name,s.type AS source_type,s.location AS source_location,v.url,v.quality,v.group_name
     FROM variants v JOIN sources s ON s.id=v.source_id WHERE v.title_id=? ORDER BY CASE WHEN v.quality IN ('4K','UHD') THEN 0 WHEN v.quality IN ('FHD','1080P') THEN 1 WHEN v.quality='HD' THEN 2 ELSE 3 END, s.id`)
     .all(titleId) as unknown as VariantRow[];
   return rows.map(v => ({ ...v, url: secrets.open(v.url), source_location: secrets.open(v.source_location) }));
 }
 
 export function getVariant(id: number): VariantRow | undefined {
-  const variant = db.prepare(`SELECT v.id,v.title_id,v.source_id,s.name AS source_name,s.type AS source_type,s.location AS source_location,v.url,v.quality,v.group_name
+  const variant = db.prepare(`SELECT v.id,v.title_id,v.source_id,v.source_ref,s.name AS source_name,s.type AS source_type,s.location AS source_location,v.url,v.quality,v.group_name
     FROM variants v JOIN sources s ON s.id=v.source_id WHERE v.id=?`).get(id) as VariantRow | undefined;
   return variant ? { ...variant, url: secrets.open(variant.url), source_location: secrets.open(variant.source_location) } : undefined;
 }

@@ -6,7 +6,7 @@ Hearthwave is a new, self-hosted home entertainment platform. Instead of opening
 
 This repository is a fresh implementation, not a fork of Vaultcast. The initial milestone targets low-resource ARM64 and x64 NAS devices with one Node.js process and an embedded SQLite database. There is no PHP, Docker, Redis, separate database server or external scheduler in the runtime.
 
-## Current status — smarter Library and local subtitles (0.6.0)
+## Current status — provider details and playback recovery (0.7.0)
 
 Working now:
 
@@ -33,6 +33,10 @@ Working now:
 - More reliable film/series grouping: IMDb/TMDB IDs when a provider supplies them, then normalized names and non-conflicting release years. Known different release years remain distinct; one-time database reconciliation preserves favourites, progress and series episode links.
 - Adjacent `.vtt` and `.srt` subtitles for local video files, including simple language-suffixed sidecars such as `Film.en.srt`. SRT is converted to WebVTT only when selected, with a 2 MiB file cap and no video conversion.
 - Previous/next Live channel controls in the player, following the visible lineup.
+- Explicit administrator-triggered provider detail fetch for individual films and series (Xtream VOD/series and best-effort Stalker info), including artwork, description, rating, runtime and external identifiers when offered. The server never fetches these on passive page loads, limits work to three sources, and applies a per-title cooldown.
+- Database-backed Library views for all media, favourites and Continue watching; sorting by title, release year, recent additions or recent playback. The Home page now shows recent resume positions.
+- Browser-side playback stall detection and automatic fallback after a bounded startup/buffering timeout; the manual source button can cycle back to the first variant. No NAS transcoding or mandatory playback proxy.
+- Provider source references are consistently included in backend variant records, repairing the reference used by short provider EPG lookups.
 
 Provider integration is an **early compatibility implementation**, not a fully tested release: portal variants differ, and no live provider account has yet been used for end-to-end verification. Episodes are fetched when a viewer opens a series, rather than during bulk catalogue scans. Some Stalker portals may expose episodes in unsupported forms. No transcoding or guaranteed browser codec support is included.
 
@@ -64,6 +68,10 @@ No `npm install` is required to start this preview because it uses Node built-in
 Open a series in **Library** to retrieve its episodes on demand. Use **Refresh episodes** if provider contents change. In **Live**, choose **Guide** on a channel for programme details or **Programme guide** for the combined XMLTV lineup.
 
 Choose **Details** on a Library item to view available metadata and select an individual source. Where one provider offers no artwork or description, Hearthwave uses what another source supplied for the shared title; it does not make an external lookup.
+
+Administrators can choose **Fetch provider details** on a film or series page to request richer information directly from up to three of its configured providers. This is manual and rate-limited to once per title per minute, with no automatic NAS metadata scraper. Not every Stalker portal supports the same detail endpoint.
+
+Use **Favourites** or **Continue watching** in Library to see matching media across the full database. The sort menu offers title, release year, newest indexed titles and most recent playback.
 
 For local files, place `.vtt` or `.srt` subtitles next to the video with the same basename, optionally adding a language code (`Movie.en.srt`, `Movie.fr.vtt`). The player shows a subtitle selector when it finds a supported file. Only subtitles are converted on demand; the video is never transcoded. In Live, the player also has previous/next channel controls for the current lineup.
 
@@ -103,13 +111,13 @@ Provider requests block localhost and link-local/cloud-metadata destinations. Pr
 - The app creates its own schema, runs SQLite in WAL mode, and never requires the user to install MariaDB or Redis.
 - Keep the whole data directory together when backing up or moving an installation. Schema v1–v5 databases migrate to v6 on startup. The v6 upgrade conservatively merges duplicate film/series titles (preserving personal data and episode links) only where the known release years do not conflict. Online database backup, rollback controls and a built-in updater are **next milestones**, not features of this preview.
 - Local file streams are served from the configured folder only; symbolic-link escapes are rejected at playback time.
-- M3U and direct channels currently use browser-native playback. Some HLS or codec combinations require later compatibility work; the app surfaces an error and tries another available source rather than silently hanging.
+- M3U and direct channels currently use browser-native playback. The browser tries another available source after a playback error or sustained stall, but this cannot make an unsupported HLS/codec combination play on an incompatible device. The app never transcodes the stream on the NAS.
 
 ## Planned delivery order
 
 1. **Foundation:** shared UI, accounts, content identity and source setup (delivered as the first preview).
 2. **Source adapters:** initial Xtream/Stalker connections, selected imports and playback resolution (delivered in v0.2).
-3. **Core media:** on-demand provider series episode browsing (v0.3), Library details and explicit source choice (v0.5), identity matching and local sidecar subtitles (v0.6); richer external metadata, remote subtitles, requests and downloads remain planned.
+3. **Core media:** on-demand provider series episode browsing (v0.3), Library details and explicit source choice (v0.5), identity matching and local sidecar subtitles (v0.6), manual provider metadata refresh and saved Library views (v0.7); external metadata services, remote subtitles, requests and downloads remain planned.
 4. **Live:** provider guide lookup (v0.3), normalized channel matching and manual unified XMLTV (v0.4), manual channel mapping (v0.5); timeline navigation, broader portal compatibility, radio and personal channels remain planned.
 5. **Extended:** games, arcade, creative studio, worker pairing, Community and My Space.
 6. **Hardening:** on-device installer/updater, 1 GB RAM profiling, TV/remote controls, security audit, backups and rollback.

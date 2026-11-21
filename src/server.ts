@@ -5,8 +5,8 @@ import { dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
 import { parseM3u, scanFolder } from './catalogue.ts';
-import { abortGuideImport, addGuideFeed, addSource, completeImport, createUser, dashboardStats, db, deleteGuideFeed, deleteSource, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getVariant, guideGrid, hasUsers, importBatch, listCategories, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setFavourite, setGuideStatus, setSourceStatus, storedGuide, titleExists, type GuideFeed, type SourceRow } from './db.ts';
-import { discoverProvider, discoverSeriesEpisodes, importProvider, providerGuide, resolveProviderStream } from './adapters/providers.ts';
+import { abortGuideImport, addGuideFeed, addSource, completeImport, createUser, dashboardStats, db, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getVariant, guideGrid, hasUsers, importBatch, listCategories, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setFavourite, setGuideStatus, setSourceStatus, storedGuide, titleExists, type GuideFeed, type SourceRow } from './db.ts';
+import { discoverProvider, discoverSeriesEpisodes, fetchTitleMetadata, importProvider, providerGuide, resolveProviderStream } from './adapters/providers.ts';
 import { importXmltv } from './guide.ts';
 import { localSubtitles, subtitleVtt } from './subtitles.ts';
 import { ProviderError, validateProviderUrl } from './adapters/network.ts';
@@ -32,6 +32,8 @@ const failures = new Map<string, { count: number; until: number }>();
 const episodeJobs = new Map<number, {status:'running'|'ready'|'error';started:number;finished:number;error:string}>();
 const guideCache = new Map<number, {expires:number;programmes:GuideProgramme[];source:string}>();
 const importingGuides = new Set<number>();
+const refreshingMetadata=new Set<number>();
+const metadataLastAttempt=new Map<number,number>();
 
 class HttpError extends Error {
   status: number;
@@ -294,7 +296,7 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const path = url.pathname;
   const method = req.method || 'GET';
-  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.6.0' });
+  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.7.0' });
   if (path === '/api/session' && method === 'GET') {
     const current = session(req);
     return send(res, 200, { needsSetup: !hasUsers(), user: current?.user || null, csrf: current?.csrf || null });
@@ -486,13 +488,51 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     const kind = url.searchParams.get('kind') || 'all';
     if (!['all', 'library', 'film', 'series', 'episode', 'channel', 'music', 'photo'].includes(kind)) throw new HttpError(400, 'Unsupported media kind.');
     const query = (url.searchParams.get('q') || '').slice(0, 120);
-    return send(res, 200, { items: listTitles(kind as 'all' | 'library' | ImportItem['kind'], current.user.id, query), maxResults: 250 });
+    const view=url.searchParams.get('view') || 'all';
+    const sort=url.searchParams.get('sort') || 'title';
+    if(!['all','favourites','continue'].includes(view) || !['title','year','added','activity'].includes(sort)) throw new HttpError(400,'Unknown Library filter or sort order.');
+    const limit=Math.min(250,Math.max(1,Math.floor(Number(url.searchParams.get('limit') || 250) || 250)));
+    return send(res, 200, { items: listTitles(kind as 'all' | 'library' | ImportItem['kind'], current.user.id, query, view as 'all'|'favourites'|'continue',sort as 'title'|'year'|'added'|'activity',limit), maxResults: limit });
   }
   const detailMatch=/^\/api\/titles\/(\d+)$/.exec(path);
   if (detailMatch && method==='GET') {
     const title=getTitleDetail(positiveId(detailMatch[1]),current.user.id);
     if (!title) throw new HttpError(404,'Title not found.');
     return send(res,200,{title});
+  }
+  const metadataMatch=/^\/api\/titles\/(\d+)\/metadata\/refresh$/.exec(path);
+  if(metadataMatch && method==='POST') {
+    requireWrite(req,true);
+    const titleId=positiveId(metadataMatch[1]);
+    if(!['film','series'].includes(getTitle(titleId)?.kind || '')) throw new HttpError(404,'Film or series not found.');
+    if(refreshingMetadata.has(titleId) || refreshingMetadata.size>=2) throw new HttpError(409,'Another metadata refresh is already running.');
+    if(Date.now()-(metadataLastAttempt.get(titleId)||0)<60_000) throw new HttpError(429,'Wait one minute before refreshing this title again.');
+    refreshingMetadata.add(titleId);
+    try {
+      const seen=new Set<number>();
+      const variants=listVariants(titleId).filter(v=>{
+        if(!['xtream','stalker'].includes(v.source_type) || !/^(vod|series):/.test(v.source_ref) || seen.has(v.source_id)) return false;
+        seen.add(v.source_id);return true;
+      }).slice(0,3);
+      if(!variants.length) return send(res,200,{updated:false,providers:0,title:getTitleDetail(titleId,current.user.id)});
+      if(metadataLastAttempt.size>300) metadataLastAttempt.clear();
+      metadataLastAttempt.set(titleId,Date.now());
+      let updated=0;
+      const failures:Error[]=[];
+      for(const variant of variants) {
+        const source=getSource(variant.source_id);
+        if(!source) continue;
+        try {
+          const info=await fetchTitleMetadata(source,variant.source_ref);
+          if(info && enrichTitleMetadata(titleId,info)) updated++;
+        } catch(error) { failures.push(error instanceof Error?error:new Error('Provider metadata lookup failed.')); }
+      }
+      if(!updated && failures.length) {
+        const throttled=failures.every(error=>error instanceof ProviderError && error.status===429);
+        throw new HttpError(throttled?429:502,throttled?'A provider is rate-limiting metadata requests. Try later.':'Provider metadata lookup failed. Existing details were kept.');
+      }
+      return send(res,200,{updated:updated>0,providers:updated,title:getTitleDetail(titleId,current.user.id)});
+    } finally {refreshingMetadata.delete(titleId);}
   }
   const mappingMatch=/^\/api\/titles\/(\d+)\/guide\/mapping$/.exec(path);
   if (mappingMatch) {

@@ -29,6 +29,63 @@ function rating(value: unknown): number | null {
   const n=Number(value);
   return Number.isFinite(n) && n > 0 && n <= 10 ? Math.round(n*10)/10 : null;
 }
+function durationSeconds(value:unknown,unit:'seconds'|'minutes'|'clock'):number|null {
+  const raw=field(value);
+  let total=0;
+  if(unit==='clock') {
+    const parts=raw.split(':').map(Number);
+    if((parts.length!==2 && parts.length!==3) || parts.some(part=>!Number.isInteger(part)||part<0)) return null;
+    total=parts.reduce((sum,part)=>sum*60+part,0);
+  } else total=Number(raw)*(unit==='minutes'?60:1);
+  return Number.isFinite(total) && total>0 && total<=48*3600 ? Math.round(total) : null;
+}
+
+export type ProviderTitleMetadata=Pick<ImportItem,'year'|'artwork'|'description'|'genres'|'rating'|'durationSeconds'|'imdbId'|'tmdbId'>;
+function asObject(value:unknown):Entry {
+  const candidate=Array.isArray(value)?value[0]:value;
+  return candidate && typeof candidate==='object' && !Array.isArray(candidate)?candidate as Entry:{};
+}
+
+/** Parse provider detail payloads without requiring a TMDB account or loading cover images on the NAS. */
+export function parseTitleMetadata(payload:unknown):ProviderTitleMetadata {
+  const root=asObject(payload);
+  const entries=[asObject(root.info),asObject(asObject(root.data).info),asObject(root.data),asObject(root.movie_data),root];
+  const get=(...names:string[]):unknown=>{
+    for(const row of entries) for(const name of names) if(row[name]!=null && row[name]!=='') return row[name];
+    return '';
+  };
+  const duration=durationSeconds(get('duration_secs','duration_seconds'),'seconds')
+    || durationSeconds(get('runtime','runtime_minutes'),'minutes')
+    || durationSeconds(get('duration'),'clock');
+  const cover=get('movie_image','cover','cover_big','poster','stream_icon','screenshot_uri','logo');
+  const backdrop=get('backdrop_path','backdrop');
+  return {
+    year:yearFrom(get('releaseDate','release_date','releasedate','year','release')),
+    artwork:artwork(cover) || artwork(Array.isArray(backdrop)?backdrop[0]:backdrop),
+    description:description(get('plot','description','storyline','about')),
+    genres:genres(get('genre','genres','category_name')),
+    rating:rating(get('rating_imdb','rating','rating_10based')),
+    durationSeconds:duration,
+    imdbId:field(get('imdb_id','imdb')),
+    tmdbId:field(get('tmdb_id','tmdb')),
+  };
+}
+
+/** Explicit, one-title provider lookup. Never called by bulk scans or passive page loads. */
+export async function fetchTitleMetadata(source:SourceRow,sourceRef:string):Promise<ProviderTitleMetadata|null> {
+  const match=/^(vod|series):([a-zA-Z0-9_-]{1,100})$/.exec(sourceRef);
+  if(!match) return null;
+  const [kind,id]=[match[1],match[2]];
+  let response:unknown;
+  if(source.type==='xtream') {
+    if(!/^\d+$/.test(id)) return null;
+    response=await xtreamClient(source).action(kind==='vod'?'get_vod_info':'get_series_info',{[kind==='vod'?'vod_id':'series_id']:id});
+  } else if(source.type==='stalker') {
+    response=await new StalkerClient(source).call(kind==='vod'?'vod':'series','get_info',{video_id:id});
+  } else return null;
+  const data=parseTitleMetadata(response);
+  return Object.values(data).some(value=>value!=null && value!=='')?data:null;
+}
 
 export function providerKinds(): Kind[] { return ['live','vod','series']; }
 
