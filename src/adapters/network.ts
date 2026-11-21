@@ -160,3 +160,26 @@ async function streamCatalogue(address:string, onChunk:(chunk:Buffer)=>void|Prom
     } finally { response.destroy(); }
   });
 }
+
+/** Diagnose failed direct playback without consuming the stream or following a redirect. */
+export function checkMediaResponse(address: string, allowLan: boolean): Promise<string> {
+  return withSlot(async () => {
+    const url = validateProviderUrl(address);
+    const pinned = await pinnedAddress(url, allowLan);
+    const transport = url.protocol === 'https:' ? https : http;
+    return new Promise<string>((resolve, reject) => {
+      const request = transport.get(url, {
+        agent: false, autoSelectFamily: false, signal: AbortSignal.timeout(8000),
+        lookup: (_host, _options, done) => done(null, pinned.address, pinned.family),
+      }, response => {
+        const status = response.statusCode || 0;
+        const html = /^text\/html\b/i.test(String(response.headers['content-type'] || ''));
+        response.destroy();
+        if (status >= 400) resolve(`A fresh playback request to the provider returned HTTP ${status}.`);
+        else if (status >= 200 && status < 300 && html) resolve('The provider returned an HTML page when Hearthwave requested media.');
+        else resolve('');
+      });
+      request.once('error', reject);
+    });
+  });
+}
