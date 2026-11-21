@@ -5,7 +5,8 @@ import { dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
 import { liveGenres, parseM3u, scanFolder } from './catalogue.ts';
-import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, completeImport, countTitles, createUser, dashboardStats, db, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, listCategories, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setFavourite, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, type GuideFeed, type SourceRow } from './db.ts';
+import { BackupError, backupBusy, streamBackup } from './backup.ts';
+import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, completeImport, countTitles, createUser, dashboardStats, dataDir, db, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, listCategories, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setFavourite, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, type GuideFeed, type SourceRow } from './db.ts';
 import { discoverProvider, discoverSeriesEpisodes, fetchTitleMetadata, importProvider, providerGuide, resolveProviderStream, type ProviderScanProgress } from './adapters/providers.ts';
 import { importXmltv } from './guide.ts';
 import { localSubtitles, subtitleVtt } from './subtitles.ts';
@@ -327,7 +328,7 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const path = url.pathname;
   const method = req.method || 'GET';
-  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.11.0' });
+  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.12.0' });
   if (path === '/api/session' && method === 'GET') {
     const current = session(req);
     return send(res, 200, { needsSetup: !hasUsers(), user: current?.user || null, csrf: current?.csrf || null });
@@ -370,6 +371,15 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   }
 
   const current = requireUser(req);
+  if (path === '/api/system/status' && method === 'GET') {
+    if (current.user.role !== 'admin') throw new HttpError(403, 'Administrator access required.');
+    const databaseInfo = await stat(join(dataDir, 'hearthwave.sqlite'));
+    return send(res, 200, { version: '0.12.0', schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, databaseBytes: databaseInfo.size, rssBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(process.uptime()), backupBusy: backupBusy() });
+  }
+  if (path === '/api/system/backup' && method === 'POST') {
+    requireWrite(req, true);
+    return streamBackup(res);
+  }
   if (path === '/api/preferences' && method === 'GET') return send(res,200,getUserPreferences(current.user.id));
   if (path === '/api/preferences' && method === 'POST') {
     requireWrite(req);
@@ -745,7 +755,7 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': contentTypes[extname(name)] || 'application/octet-stream', 'Cache-Control': name === 'sw.js' ? 'no-cache' : 'no-store' });
     res.end(contents);
   } catch (error) {
-    const status = error instanceof HttpError || error instanceof ProviderError ? error.status : (error as NodeJS.ErrnoException).code === 'ENOENT' ? 404 : 500;
+    const status = error instanceof HttpError || error instanceof ProviderError || error instanceof BackupError ? error.status : (error as NodeJS.ErrnoException).code === 'ENOENT' ? 404 : 500;
     if (status === 500) console.error('Request failed:', error);
     const message = status === 500 ? 'The request could not be completed.' : error instanceof Error ? error.message : 'Request failed.';
     if (!res.headersSent) send(res, status, { error: message });

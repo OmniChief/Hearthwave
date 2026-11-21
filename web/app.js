@@ -6,6 +6,13 @@ function esc(input) {
   return String(input ?? '').replace(/[&<>"']/g, (ch) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[ch]);
 }
 
+function formatBytes(value) {
+  if (!Number.isFinite(value) || value < 0) return 'Unknown';
+  const unit = value >= 1024 ** 3 ? 'GiB' : value >= 1024 ** 2 ? 'MiB' : 'KiB';
+  const divisor = unit === 'GiB' ? 1024 ** 3 : unit === 'MiB' ? 1024 ** 2 : 1024;
+  return `${(value / divisor).toFixed(1)} ${unit}`;
+}
+
 async function api(path, options = {}) {
   const headers = { ...(options.body ? { 'Content-Type':'application/json' } : {}), ...(state.session?.csrf ? { 'X-CSRF-Token':state.session.csrf } : {}) };
   let response;
@@ -364,11 +371,22 @@ async function renderSettings() {
     const users = (await api('/api/users')).users;
     contents = `<div class="two-col"><section class="surface"><h2>Household accounts</h2><p class="field-note">Each account has its own favourites and playback positions, saved on this server.</p>${users.map(user => `<div class="list-row"><strong>${esc(user.username)}</strong><span class="tag">${esc(user.role)}</span></div>`).join('')}</section>
       <section class="surface"><h2>Add a viewer</h2><form id="user-form" class="field-stack"><label>Username<input name="username" minlength="3" maxlength="50" required></label><label>Temporary password<input name="password" type="password" minlength="12" maxlength="256" required autocomplete="new-password"></label><label>Role<select name="role"><option value="viewer">Viewer</option><option value="admin">Administrator</option></select></label><button class="button button-primary" type="submit">Create account</button></form></section></div>`;
+  } else if (state.settingsTab === 'system') {
+    const status = await api('/api/system/status');
+    const days = Math.floor(status.uptimeSeconds / 86400);
+    const hours = Math.floor(status.uptimeSeconds % 86400 / 3600);
+    contents = `<section class="surface"><h2>Server overview</h2><p class="field-note">Local diagnostics from this Hearthwave process. Memory measures the server, not your browser.</p>
+      <div class="stat-grid"><div class="stat"><small>Version</small><strong>${esc(status.version)}</strong><span>SQLite schema ${esc(status.schema)}</span></div><div class="stat"><small>Process memory</small><strong>${formatBytes(status.rssBytes)}</strong><span>Resident memory (RSS)</span></div><div class="stat"><small>Database file</small><strong>${formatBytes(status.databaseBytes)}</strong><span>Does not include active WAL</span></div></div>
+      <p class="field-note">Uptime: ${days ? `${days} day${days === 1 ? '' : 's'}, ` : ''}${hours}h ${Math.floor(status.uptimeSeconds % 3600 / 60)}m.</p></section>
+      <section class="surface"><h2>Download a backup</h2><p>Save a consistent snapshot of your Hearthwave accounts, catalogue, preferences and encrypted provider configuration.</p>
+      <div class="info-banner"><strong>Keep this archive private.</strong> It contains the SQLite database and its encryption key, which together expose account data and saved provider credentials. Store it somewhere secure. Local media files and external folders are not included.</div>
+      <button id="download-backup" class="button button-primary" ${status.backupBusy ? 'disabled' : ''}>${status.backupBusy ? 'Backup in progress…' : 'Download backup (.tar.gz)'}</button>
+      <p class="field-note">A temporary, consistent SQLite snapshot is created on the NAS, streamed to your browser and removed afterwards. No cloud upload or scheduler is involved. Restoring is an offline, administrator-managed operation.</p></section>
+      <section class="surface"><h2>Coming later</h2><p class="field-note">Installer and updater, resource budgeting, diagnostics history and guided restore/rollback are not yet implemented.</p></section>`;
   } else {
     const explanations = {
       workers:['Downloads & Workers','Acquisition queues, explicit file conversion and trusted paired worker computers will be managed here, without mandatory on-NAS transcoding.'],
       appearance:['Appearance & Playback','User themes, TV remote layouts, compatibility mode, quality preferences and subtitle defaults will be configured here.'],
-      system:['System','Updater, backups, runtime budgets, resource metrics, diagnostics and migration rollback controls belong here.'],
     };
     const [title,description] = explanations[state.settingsTab];
     contents = emptyState(title, `${description} This settings area is not active in the foundation milestone.`, '⚙');
@@ -784,6 +802,30 @@ page.addEventListener('click', async event => {
   if (target.dataset.kind) { state.kind = target.dataset.kind;state.libraryOffset=0; return renderPage(); }
   if (target.dataset.group) { state.liveGroup = target.dataset.group;state.liveOffset=0; return renderPage(); }
   if (target.dataset.settings) { state.settingsTab = target.dataset.settings; return renderPage(); }
+  if (target.id === 'download-backup') {
+    target.disabled = true;
+    target.textContent = 'Preparing backup…';
+    try {
+      const response = await fetch('/api/system/backup', { method:'POST', credentials:'same-origin', headers:{ 'X-CSRF-Token':state.session.csrf } });
+      if (!response.ok) {
+        const failure = await response.json().catch(() => ({}));
+        throw new Error(failure.error || `Backup failed (${response.status}).`);
+      }
+      const file = await response.blob();
+      const filename = /filename="([^"]+)"/.exec(response.headers.get('content-disposition') || '')?.[1] || 'hearthwave-backup.tar.gz';
+      const url = URL.createObjectURL(file);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      notify('Backup ready for download. Store the archive securely; it includes your encryption key.');
+    } catch (error) { notify(error.message, true); }
+    finally { target.disabled = false;target.textContent = 'Download backup (.tar.gz)'; }
+    return;
+  }
   if (target.dataset.play) {
     try { await startPlayback(target.dataset.play,target.dataset.preferred || null); }
     catch (error) { notify(error.message,true); }

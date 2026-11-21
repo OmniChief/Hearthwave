@@ -6,7 +6,7 @@ Hearthwave is a new, self-hosted home entertainment platform. Instead of opening
 
 This repository is a fresh implementation, not a fork of Vaultcast. The initial milestone targets low-resource ARM64 and x64 NAS devices with one Node.js process and an embedded SQLite database. There is no PHP, Docker, Redis, separate database server or external scheduler in the runtime.
 
-## Current status — provider scan progress and control (0.11.0)
+## Current status — administrator backup export (0.12.0)
 
 Working now:
 
@@ -48,10 +48,11 @@ Working now:
 - Provider-discovered episodes appear in the Library's explicit Episodes filter without crowding the default film/series view. Opening a title and returning to Library restores the previous page and scroll position.
 - Administrator-only source scan progress, showing items received/indexed, current Stalker/Xtream folder and Stalker page. The Sources list updates every few seconds only while a job is active, without replacing the add-source form.
 - An explicit **Cancel scan** action for M3U, folder and provider scans. It stops safely after the current bounded request, does not prune the last complete source catalogue, and marks interrupted scans as such after a server restart. Already committed partial new batches may remain visible until the next complete scan.
+- **Settings > System** now shows process memory, uptime, database size and schema version. Administrators can download a compressed backup containing a consistent, online SQLite snapshot and the matching encryption key. The archive is streamed from a temporary snapshot without loading the whole database into server memory; the snapshot is cleaned up afterwards.
 
 Provider integration is an **early compatibility implementation**, not a fully tested release: portal variants differ, and no live provider account has yet been used for end-to-end verification. Episodes are fetched when a viewer opens a series, rather than during bulk catalogue scans. Some Stalker portals may expose episodes in unsupported forms. No transcoding or guaranteed browser codec support is included.
 
-Designed but **not yet implemented**: automatically refreshed XMLTV schedules, external artwork/metadata enrichment beyond what providers supply, remote-provider subtitle discovery, downloads/acquisition, personal scheduled channels, emulation, games, AI generation, community, file sharing, pairing worker PCs, a full directional-TV-focus mode, complete installer/updater, backup and migration rollback. Navigation destinations for these capabilities are previews only.
+Designed but **not yet implemented**: automatically refreshed XMLTV schedules, external artwork/metadata enrichment beyond what providers supply, remote-provider subtitle discovery, downloads/acquisition, personal scheduled channels, emulation, games, AI generation, community, file sharing, pairing worker PCs, a full directional-TV-focus mode, complete installer/updater, guided backup restore and migration rollback. Navigation destinations for these capabilities are previews only.
 
 ## Run locally
 
@@ -126,7 +127,17 @@ Provider requests block localhost and link-local/cloud-metadata destinations. Pr
 
 - Data lives in `data/hearthwave.sqlite` unless `HEARTHWAVE_DATA_DIR` is set. `data/` is Git-ignored. Provider URLs, configuration and stored stream commands are encrypted in SQLite; keep `secret.key` from the same directory when backing up. This protects database-only exports, not a completely compromised server.
 - The app creates its own schema, runs SQLite in WAL mode, and never requires the user to install MariaDB or Redis.
-- Keep the whole data directory together when backing up or moving an installation. Older databases migrate to schema v8 on startup; v8 indexes Live genre classification in batches, and v7 stores user playback preferences. The earlier v6 upgrade conservatively merges duplicate film/series titles (preserving personal data and episode links) only where the known release years do not conflict. Online database backup, rollback controls and a built-in updater are **next milestones**, not features of this preview.
+- In **Settings > System**, administrators can download a `.tar.gz` backup with `manifest.json`, `hearthwave.sqlite` (a WAL-consistent online snapshot) and `secret.key`. Only one backup runs at a time, CSRF protection is required, and the NAS needs free disk space for a temporary database snapshot. The archive contains sensitive account data and, with the included key, decryptable provider credentials: store and transfer it securely. External media folders, local video files and media paths referenced by catalogue entries are **not** included.
+- To restore to a **new data directory**, stop Hearthwave or use a different port, then extract the archive to an empty directory and point `HEARTHWAVE_DATA_DIR` at it. For example:
+
+  ```bash
+  mkdir -p /path/to/restored-data
+  tar -xzf hearthwave-backup-YYYYMMDDHHMM.tar.gz -C /path/to/restored-data
+  HEARTHWAVE_DATA_DIR=/path/to/restored-data PORT=9998 npm start
+  ```
+
+  Check the restored account and catalogue before switching traffic. Do **not** extract over a running installation or replace a live SQLite/WAL file. The download is not a substitute for preserving your actual media and any other external files.
+- Older databases migrate to schema v8 on startup; v8 indexes Live genre classification in batches, and v7 stores user playback preferences. The earlier v6 upgrade conservatively merges duplicate film/series titles (preserving personal data and episode links) only where the known release years do not conflict. Guided restore, migration rollback and a built-in updater are **future milestones**.
 - Local file streams are served from the configured folder only; symbolic-link escapes are rejected at playback time.
 - M3U and direct channels currently use browser-native playback. The browser tries another available source after a playback error or sustained stall, but this cannot make an unsupported HLS/codec combination play on an incompatible device. The app never transcodes the stream on the NAS.
 
@@ -137,6 +148,6 @@ Provider requests block localhost and link-local/cloud-metadata destinations. Pr
 3. **Core media:** on-demand provider series episode browsing (v0.3), Library details and explicit source choice (v0.5), identity matching and local sidecar subtitles (v0.6), manual provider metadata refresh and saved Library views (v0.7), season accordions and next-episode controls (v0.8), full-catalogue paging (v0.10); external metadata services, remote subtitles, requests and downloads remain planned.
 4. **Live:** provider guide lookup (v0.3), normalized channel matching and manual unified XMLTV (v0.4), manual channel mapping (v0.5), a paginated multi-day guide timeline (v0.9), server-indexed region/genre filters (v0.10); automated guide refresh, broader portal compatibility, radio and personal channels remain planned.
 5. **Extended:** games, arcade, creative studio, worker pairing, Community and My Space.
-6. **Hardening:** on-device installer/updater, 1 GB RAM profiling, full directional-TV-focus/navigation (basic fullscreen/channel keys in v0.8), security audit, backups and rollback.
+6. **Hardening:** administrator backup export and basic process metrics (v0.12); on-device installer/updater, 1 GB RAM profiling, full directional-TV-focus/navigation (basic fullscreen/channel keys in v0.8), security audit, guided restore and rollback remain planned.
 
 The guiding product requirements are captured in the original *Unified Home Entertainment Platform* brief. Hearthwave will develop those requirements iteratively; these previews do not claim to fulfil the entire brief.
