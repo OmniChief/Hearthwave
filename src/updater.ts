@@ -123,6 +123,7 @@ async function expectedTree(treeSha:string):Promise<ExpectedFile[]> {
   for(const entry of result.tree) {
     if(!entry || typeof entry!=='object') continue;
     const item=entry as {path?:unknown;type?:unknown;mode?:unknown;sha?:unknown;size?:unknown};
+    if(item.type==='tree' && item.mode==='040000') continue;
     if(typeof item.path!=='string' || !managedFile(item.path)) continue;
     if(item.type!=='blob' || !['100644','100755'].includes(String(item.mode)) || !validSha(item.sha) ||
       !Number.isSafeInteger(item.size) || (item.size as number)<0 || (item.size as number)>16*1024*1024)
