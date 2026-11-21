@@ -1,4 +1,4 @@
-const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', librarySort: 'title', liveGroup: 'all', liveCountry: 'all', guideView: false, guideCountry: '', query: '', items: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackGeneration: 0, recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
+const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', librarySort: 'title', liveGroup: 'all', liveCountry: 'all', guideView: false, guideCountry: '', query: '', items: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackGeneration: 0, recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
 const $ = (selector) => document.querySelector(selector);
 const page = $('#page');
 
@@ -47,6 +47,14 @@ function showShell() {
   $('#current-role').textContent = state.session.user.role;
   $('#avatar').textContent = state.session.user.username.charAt(0).toUpperCase();
   document.querySelectorAll('[data-page="settings"]').forEach(button => { button.hidden = state.session.user.role !== 'admin'; });
+  state.autoplayNext=false;
+  const userId=state.session.user.id;
+  api('/api/preferences').then(preferences=>{
+    if(state.session?.user.id!==userId) return;
+    state.autoplayNext=preferences.autoplayNext===true;
+    const checkbox=$('#autoplay-next');
+    if(checkbox) checkbox.checked=state.autoplayNext;
+  }).catch(()=>{});
   navigate('home');
 }
 
@@ -143,9 +151,10 @@ async function renderTitleDetail() {
   const art=typeof title.artwork==='string' && /^https?:\/\//i.test(title.artwork)
     ? `<img src="${esc(title.artwork)}" alt="" referrerpolicy="no-referrer">` : '';
   const facts=[title.year,title.genres,title.rating ? `★ ${title.rating}/10` : '',title.duration_seconds ? `${Math.round(title.duration_seconds/60)} min` : '',title.imdb_id ? `IMDb ${title.imdb_id}` : '',title.tmdb_id ? `TMDB ${title.tmdb_id}` : ''].filter(Boolean);
-  page.innerHTML=`<section class="surface"><button class="button button-quiet button-small" data-detail-back>← Back to Library</button>
+  page.innerHTML=`<section class="surface"><button class="button button-quiet button-small" data-detail-back>← ${state.seriesDetail?'Back to episodes':'Back to Library'}</button>
     <div class="detail-layout"><div class="detail-poster media-art tone-${Number(title.id)%4}"><span class="art-initial">${esc(Array.from(title.title||'?')[0].toUpperCase())}</span>${art}</div>
-    <div><span class="eyebrow">${esc(title.kind.toUpperCase())} · ${title.source_count} SOURCE${title.source_count===1?'':'S'}</span><h2 class="detail-title">${esc(title.title)}</h2>
+    <div><span class="eyebrow">${esc(title.kind.toUpperCase())} · ${title.source_count} SOURCE${title.source_count===1?'':'S'}</span><h2 class="detail-title">${esc(title.title)}${title.kind==='episode'?` · S${esc(title.season||'?')}E${esc(title.episode||'?')}`:''}</h2>
+    ${title.episode_name?`<p class="detail-episode-name">${esc(title.episode_name)}</p>`:''}
     <p class="detail-facts">${facts.map(esc).join(' · ') || 'No metadata supplied yet'}</p>
     <p class="detail-description">${esc(title.description || 'A description has not been supplied by your sources yet.')}</p>
     <div class="row-actions">${title.kind==='series' ? `<button class="button button-primary" data-series="${title.id}">Browse episodes</button>` : versions.variants.some(v=>v.playable) ? `<button class="button button-primary" data-play="${title.id}">Play best available</button>` : ''}
@@ -167,12 +176,16 @@ async function renderSeriesDetail() {
   }
   const seasons = [...new Set(result.items.map(row => row.season || 0))].sort((a,b)=>b-a);
   page.innerHTML = `<section class="surface"><button class="button button-quiet button-small" data-series-back>← Back to Library</button><div class="section-heading"><div><span class="eyebrow">SERIES</span><h2>${esc(result.series.title)}</h2><p>${esc(result.series.year || 'Year unknown')} · ${result.items.length} episode${result.items.length === 1 ? '' : 's'} across ${seasons.length} season${seasons.length === 1 ? '' : 's'}</p>${detail.title.description ? `<p class="detail-description">${esc(detail.title.description)}</p>`:''}</div><div class="row-actions">${state.session.user.role==='admin'?`<button class="button button-quiet button-small" data-metadata-refresh="${seriesId}">Fetch provider details</button>`:''}<button class="button button-quiet button-small" data-series-refresh="${seriesId}" ${status.status === 'running' ? 'disabled':''}>${status.status === 'running' ? 'Loading…':'Refresh episodes'}</button></div></div>
+  <label class="autoplay-setting"><input type="checkbox" id="autoplay-next" ${state.autoplayNext?'checked':''}> Automatically play the next episode when one finishes <small>Saved to your household profile</small></label>
   ${status.status === 'running' ? '<p class="field-note">Retrieving episode information from the configured providers. This runs only when requested.</p>':''}
   ${status.error ? `<p class="field-note alert-note">${esc(status.error)}</p>`:''}
-  ${seasons.map(season => `<div class="episode-season"><h3>${season ? `Season ${season}` : 'Unknown season'}</h3><div class="episode-list">${result.items.filter(row => (row.season || 0) === season).map(row => `<div class="episode-row"><div><strong>${row.episode ? `Episode ${row.episode}` : 'Episode'}</strong>${row.episode_name ? `<span>${esc(row.episode_name)}</span>` : ''}<small>${row.source_count} source${row.source_count === 1 ? '' : 's'}</small></div><button class="button button-quiet button-small" data-play="${row.id}">Play</button></div>`).join('')}</div></div>`).join('')}
+  ${seasons.map(season => `<details class="season-accordion" ${season===seasons[0]?'open':''}><summary>${season ? `Season ${season}` : 'Unknown season'} <small>${result.items.filter(row => (row.season||0)===season).length} episodes</small></summary><div class="episode-list">${result.items.filter(row => (row.season || 0) === season).map(row => {
+    const image=typeof (row.artwork||detail.title.artwork)==='string' && /^https?:\/\//i.test(row.artwork||detail.title.artwork)?`<img src="${esc(row.artwork||detail.title.artwork)}" loading="lazy" referrerpolicy="no-referrer" alt="">`:'';
+    return `<div class="episode-row"><div class="episode-thumbnail">${image||'<span>▻</span>'}</div><div class="episode-copy"><strong>${row.episode ? `Episode ${row.episode}` : 'Episode'}${row.episode_name?` · ${esc(row.episode_name)}`:''}</strong>${row.description?`<span class="episode-summary">${esc(row.description)}</span>`:''}<small>${row.source_count} source${row.source_count === 1 ? '' : 's'}${Number(row.position_seconds)>10?` · ${Math.floor(row.position_seconds/60)}m watched`:''}</small></div><div class="episode-controls"><button class="button button-quiet button-small" data-episode-detail="${row.id}">Details</button><button class="button button-primary button-small" data-play="${row.id}">Play</button></div></div>`;
+  }).join('')}</div></details>`).join('')}
   ${!result.items.length && status.status !== 'running' ? emptyState('No episodes found yet','Refresh this series to ask its providers for available seasons and episodes.','▣') : ''}</section>`;
   clearTimeout(state.seriesRefreshTimer);
-  if (status.status === 'running') state.seriesRefreshTimer = setTimeout(() => { if (state.page === 'library' && state.seriesDetail === seriesId) renderSeriesDetail().catch(error=>notify(error.message,true)); },2500);
+  if (status.status === 'running') state.seriesRefreshTimer = setTimeout(() => { if (state.page === 'library' && state.seriesDetail === seriesId && !state.detailId) renderSeriesDetail().catch(error=>notify(error.message,true)); },2500);
 }
 
 async function showLiveGuide(titleId) {
@@ -503,6 +516,7 @@ async function jumpChannel(direction) {
 function closePlayer() {
   state.playbackGeneration++;
   clearPlaybackRecovery();
+  if(document.fullscreenElement===$('#player-panel')) void document.exitFullscreen?.();
   state.resolvedUrl = null;
   const video = $('#player');
   video.pause();
@@ -546,6 +560,12 @@ $('#global-search').addEventListener('input', (event) => {
 page.addEventListener('change', event => {
   if (event.target?.id === 'source-type') syncSourceForm();
   if (event.target?.id === 'library-sort') { state.librarySort=event.target.value; void renderPage().catch(error=>notify(error.message,true)); }
+  if (event.target?.id === 'autoplay-next') {
+    const checkbox=event.target;
+    const next=checkbox.checked;
+    api('/api/preferences',{method:'POST',body:{autoplayNext:next}}).then(()=>{state.autoplayNext=next;notify(next?'Next-episode autoplay enabled.':'Next-episode autoplay disabled.');})
+      .catch(error=>{checkbox.checked=state.autoplayNext;notify(error.message,true);});
+  }
 });
 page.addEventListener('error', event => { if (event.target?.matches?.('.media-art img')) event.target.hidden=true; }, true);
 
@@ -632,6 +652,7 @@ page.addEventListener('click', async event => {
     return renderPage();
   }
   if (target.hasAttribute('data-series-back')) { state.seriesDetail = null; clearTimeout(state.seriesRefreshTimer); return renderPage(); }
+  if (target.dataset.episodeDetail) {state.detailId=Number(target.dataset.episodeDetail);clearTimeout(state.seriesRefreshTimer);return renderPage();}
   if (target.dataset.detail) {
     state.detailId=Number(target.dataset.detail);
     state.seriesDetail=null;
@@ -736,7 +757,24 @@ $('#player').addEventListener('timeupdate', () => {
   state.lastProgressSave = Date.now();
   api(`/api/titles/${state.activeTitle.id}/progress`, { method:'POST', body:{ seconds:video.currentTime } }).catch(() => {});
 });
-document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$('#player-overlay').hidden) closePlayer(); });
+$('#player').addEventListener('ended',()=>{
+  if(!$('#player-overlay').hidden && state.autoplayNext && state.activeTitle?.kind==='episode') void jumpEpisode(-1);
+});
+$('#player-fullscreen').addEventListener('click',()=>{
+  const target=$('#player-panel');
+  if(document.fullscreenElement) void document.exitFullscreen?.();
+  else target.requestFullscreen?.().catch(()=>notify('Fullscreen is not available on this device.',true));
+});
+document.addEventListener('keydown', event => {
+  if ($('#player-overlay').hidden || event.altKey || event.ctrlKey || event.metaKey) return;
+  if (event.key === 'Escape') return closePlayer();
+  const focused=document.activeElement;
+  if (['INPUT','TEXTAREA','SELECT'].includes(focused?.tagName) || focused?.isContentEditable) return;
+  if (state.activeTitle?.kind==='channel' && ['ArrowUp','ArrowDown'].includes(event.key)) {
+    event.preventDefault();
+    void jumpChannel(event.key==='ArrowUp'?-1:1);
+  }
+});
 
 try {
   state.session = await api('/api/session');

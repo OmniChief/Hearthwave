@@ -5,7 +5,7 @@ import { dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
 import { parseM3u, scanFolder } from './catalogue.ts';
-import { abortGuideImport, addGuideFeed, addSource, completeImport, createUser, dashboardStats, db, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getVariant, guideGrid, hasUsers, importBatch, listCategories, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setFavourite, setGuideStatus, setSourceStatus, storedGuide, titleExists, type GuideFeed, type SourceRow } from './db.ts';
+import { abortGuideImport, addGuideFeed, addSource, completeImport, createUser, dashboardStats, db, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, listCategories, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setFavourite, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, type GuideFeed, type SourceRow } from './db.ts';
 import { discoverProvider, discoverSeriesEpisodes, fetchTitleMetadata, importProvider, providerGuide, resolveProviderStream } from './adapters/providers.ts';
 import { importXmltv } from './guide.ts';
 import { localSubtitles, subtitleVtt } from './subtitles.ts';
@@ -219,6 +219,7 @@ function startEpisodeDiscovery(seriesId: number): void {
       try {
         const collected: ImportItem[] = [];
         for (const variant of sourceVariants) collected.push(...await discoverSeriesEpisodes(source,variant.url,show.title,show.year));
+        if (!collected.length) throw new ProviderError('Provider returned no playable episodes; existing episodes were kept.');
         replaceSeriesEpisodes(seriesId,sourceId,collected);
         successful++;
       } catch (error) {
@@ -296,7 +297,7 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const path = url.pathname;
   const method = req.method || 'GET';
-  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.7.0' });
+  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.8.0' });
   if (path === '/api/session' && method === 'GET') {
     const current = session(req);
     return send(res, 200, { needsSetup: !hasUsers(), user: current?.user || null, csrf: current?.csrf || null });
@@ -339,6 +340,13 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   }
 
   const current = requireUser(req);
+  if (path === '/api/preferences' && method === 'GET') return send(res,200,getUserPreferences(current.user.id));
+  if (path === '/api/preferences' && method === 'POST') {
+    requireWrite(req);
+    const input=await body(req);
+    if (typeof input.autoplayNext !== 'boolean') throw new HttpError(400,'Autoplay next must be true or false.');
+    return send(res,200,setUserPreferences(current.user.id,input.autoplayNext));
+  }
   if (path === '/api/stats' && method === 'GET') return send(res, 200, dashboardStats());
   if (path === '/api/users' && method === 'GET') {
     if (current.user.role !== 'admin') throw new HttpError(403, 'Administrator access required.');

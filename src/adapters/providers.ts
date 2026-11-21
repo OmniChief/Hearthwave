@@ -10,6 +10,35 @@ function objects(value: unknown): Entry[] {
   const values = Array.isArray(value) ? value : value && typeof value === 'object' ? Object.values(value) : [];
   return values.filter(row => row && typeof row === 'object' && !Array.isArray(row)) as Entry[];
 }
+/** Stalker/MAG portals vary between `data: []` and `data: { data: [], total_items }`. */
+export function stalkerPage(payload: unknown): { rows: Entry[]; total: number | null; pageSize: number } {
+  let current: unknown = payload;
+  const layers: Entry[] = [];
+  for (let depth=0;depth<5;depth++) {
+    if (Array.isArray(current)) return {rows:objects(current),total:pageTotal(layers,'total_items'),pageSize:pageTotal(layers,'max_page_items') || current.length};
+    if (!current || typeof current!=='object') break;
+    const row=current as Entry;
+    layers.push(row);
+    const next=row.data ?? row.items ?? row.results;
+    if (next==null) {
+      // A few portals serialize list entries as numeric object properties.
+      const indexed=Object.entries(row).filter(([key,value])=>/^\d+$/.test(key) && value && typeof value==='object' && !Array.isArray(value)).map(([,value])=>value);
+      if (indexed.length) return {rows:objects(indexed),total:pageTotal(layers,'total_items'),pageSize:pageTotal(layers,'max_page_items') || indexed.length};
+      break;
+    }
+    current=next;
+  }
+  return {rows:[],total:pageTotal(layers,'total_items'),pageSize:pageTotal(layers,'max_page_items') || 0};
+}
+function pageTotal(layers:Entry[],key:string):number|null {
+  for (const layer of [...layers].reverse()) {
+    const value=layer[key];
+    if (value==null || value==='') continue;
+    const number=Number(value);
+    if (Number.isSafeInteger(number) && number>=0) return number;
+  }
+  return null;
+}
 function field(value: unknown): string { return value == null ? '' : String(value).trim(); }
 function truthy(value: unknown): boolean { return value === true || value === 1 || (typeof value === 'string' && !['','0','false','no'].includes(value.toLowerCase())); }
 function yearFrom(value: unknown): number | null {
@@ -286,20 +315,32 @@ export async function* importProvider(source: SourceRow, categories: ProviderCat
         ? {sortby:'number',genre:category.category_id,search:'',fav:0}
         : {sortby:'name',category:category.category_id,search:''};
       let previousPage = '';
-      for (let page = 0; page < 200; page++) {
+      let scanned=0;
+      let complete=false;
+      let advertisedTotal:number|null=null;
+      for (let page = 0; page < 1000; page++) {
         const response = await client.call(type,'get_ordered_list',{...params,p:page});
-        const rows = objects(response.data);
+        const {rows,total,pageSize}=stalkerPage(response);
+        if (total !== null && (total>0 || rows.length===0)) advertisedTotal=total;
         if (!rows.length) {
-          if (page === 0) continue; // Some portals number their first page 1.
+          if (page === 0 && advertisedTotal !== 0) continue; // Some portals number their first page 1.
+          if (advertisedTotal !== null && advertisedTotal > scanned) throw new ProviderError('Portal returned an incomplete category page. Existing items were kept.');
+          complete=true;
           break;
         }
         const signature = rows.map(row => field(row.id)).join('|');
-        if (signature === previousPage) break;
+        if (signature === previousPage) {
+          if (advertisedTotal !== null && advertisedTotal > scanned) throw new ProviderError('Portal repeated a category page before all advertised items were scanned.');
+          complete=true;
+          break;
+        }
         previousPage = signature;
         for (const item of stalkerRows(rows,category)) yield item;
-        const total = Number(response.total_items);
-        if (Number.isFinite(total) && total > 0 && (page + 1) * rows.length >= total) break;
+        scanned+=rows.length;
+        if (advertisedTotal !== null && scanned >= advertisedTotal) { complete=true;break; }
+        if (pageSize > 0 && rows.length < pageSize && advertisedTotal === null) {complete=true;break;}
       }
+      if (!complete) throw new ProviderError('Portal category exceeded the 1,000-page safety limit. The previous catalogue was preserved.');
     }
   } else throw new ProviderError('This source cannot be scanned with a provider adapter.',400);
 }
@@ -316,6 +357,31 @@ export async function resolveProviderStream(source: SourceRow, encoded: string):
 function episodeNumber(value: unknown): number {
   const number = Number(value);
   return Number.isInteger(number) && number > 0 && number <= 10000 ? number : 0;
+}
+
+/** Provider `series` fields can be arrays, comma lists, ranges or numeric-key maps. */
+export function stalkerEpisodeNumbers(value: unknown): number[] {
+  if (typeof value==='string' && value.length<=4096 && value.trimStart().startsWith('[')) {
+    try {const decoded:unknown=JSON.parse(value);if (Array.isArray(decoded)) value=decoded;}
+    catch { /* Treat unknown provider formats as ordinary delimited lists. */ }
+  }
+  const parts=Array.isArray(value)?value : value && typeof value==='object'?Object.keys(value):typeof value==='string'?value.slice(0,4096).split(/[,;\s]+/):[];
+  const numbers=new Set<number>();
+  for (const raw of parts.slice(0,1000)) {
+    const item:Entry=raw && typeof raw==='object' && !Array.isArray(raw)?raw as Entry:{};
+    const token=field(item.episode_num ?? item.series_number ?? item.episode ?? raw);
+    const range=/^(\d{1,4})-(\d{1,4})$/.exec(token);
+    if (range) {
+      const first=episodeNumber(range[1]),last=episodeNumber(range[2]);
+      if (!first || last<first || last-first>999) continue;
+      for(let number=first;number<=last;number++) numbers.add(number);
+    } else {
+      const number=episodeNumber(token);
+      if(number) numbers.add(number);
+    }
+    if(numbers.size>1000) break;
+  }
+  return [...numbers].slice(0,1000);
 }
 
 /** Load an individual show's episodes on demand, not during every category scan. */
@@ -346,36 +412,45 @@ export async function discoverSeriesEpisodes(source: SourceRow, encoded: string,
   } else if (source.type === 'stalker' && /^stalker-series:[^:]{1,100}$/.test(encoded)) {
     const root = encoded.slice('stalker-series:'.length);
     const client = new StalkerClient(source);
-    const queue = [root];
+    const queue: Array<{id:string;season:number}> = [{id:root,season:0}];
     const visited = new Set<string>();
     const seen = new Set<string>();
     const deadline = Date.now() + 45_000;
     let calls = 0;
     while (queue.length) {
       const parent = queue.shift()!;
-      if (visited.has(parent)) continue;
-      visited.add(parent);
+      if (visited.has(parent.id)) continue;
+      visited.add(parent.id);
       if (visited.size > 80) throw new ProviderError('Provider series exceeds the folder depth safety limit.');
       let previous = '';
+      let scanned=0;
+      let advertisedTotal:number|null=null;
       for (let page = 0; page < 150; page++) {
         if (++calls > 80 || Date.now() > deadline) throw new ProviderError('Episode lookup reached its request/time budget. Try again when the portal is responsive.');
-        const response = await client.call('series','get_ordered_list',{sortby:'name',category:'*',search:'',movie_id:parent,p:page});
-        const rows = objects(response.data);
-        if (!rows.length) { if (page === 0) continue; break; }
+        const response = await client.call('series','get_ordered_list',{sortby:'name',category:'*',search:'',movie_id:parent.id,p:page});
+        const {rows,total,pageSize}=stalkerPage(response);
+        if (total !== null && (total>0 || rows.length===0)) advertisedTotal=total;
+        if (!rows.length) {
+          if (page === 0 && advertisedTotal !== 0) continue;
+          if (advertisedTotal !== null && advertisedTotal>scanned) throw new ProviderError('Portal did not return the advertised episode folders.');
+          break;
+        }
         const signature = rows.map(row => field(row.id)).join('|');
-        if (signature === previous) break;
+        if (signature === previous) {
+          if (advertisedTotal !== null && advertisedTotal>scanned) throw new ProviderError('Portal repeated an episode page before the listing was complete.');
+          break;
+        }
         previous = signature;
         for (const row of rows) {
           const id = field(row.id);
           if (!id) continue;
           const cmd = field(row.cmd);
           if (cmd.length > 4096) continue;
-          const season = episodeNumber(row.season_number ?? row.season) || episodeNumber(/\bseason\s+(\d+)\b/i.exec(field(row.name))?.[1]);
-          const numbers = Array.isArray(row.series) ? row.series : [];
+          const season = episodeNumber(row.season_number ?? row.season) || episodeNumber(/\bseason\s+(\d+)\b/i.exec(field(row.name))?.[1]) || (truthy(row.is_series)?episodeNumber(row.name):0) || parent.season;
+          const numbers = stalkerEpisodeNumbers(row.series);
           if (cmd && season && numbers.length) {
-            for (const raw of numbers.slice(0,1000)) {
-              const episode = episodeNumber(raw);
-              const key = `${id}:${episode}`;
+            for (const episode of numbers) {
+              const key = `${season}:${id}:${episode}`;
               if (!episode || seen.has(key)) continue;
               seen.add(key);
               episodes.push({kind:'episode',title:seriesTitle,year,season,episode,
@@ -384,19 +459,19 @@ export async function discoverSeriesEpisodes(source: SourceRow, encoded: string,
             }
           } else if (cmd && season && episodeNumber(row.series_number || row.episode)) {
             const episode = episodeNumber(row.series_number || row.episode);
-            const key = `${id}:${episode}`;
+            const key = `${season}:${id}:${episode}`;
             if (!seen.has(key)) {
               seen.add(key);
               episodes.push({kind:'episode',title:seriesTitle,year,season,episode,
                 episodeName:field(row.episode_title || row.name),sourceRef:`episode:stalker:${root}:${key}`,
                 url:`stalker:${JSON.stringify({kind:'series',cmd,series:String(episode)})}`,group:'Series'});
             }
-          } else if (truthy(row.is_series) && !visited.has(id) && !queue.includes(id)) queue.push(id);
+          } else if ((truthy(row.is_series) || /\bseason\s+\d+\b/i.test(field(row.name))) && !visited.has(id) && !queue.some(item=>item.id===id)) queue.push({id,season});
           if (episodes.length > 1000) throw new ProviderError('This show exceeds the 1,000-episode safety limit.');
         }
-        const total = Number(response.total_items);
-        const pageSize = Number(response.max_page_items) || rows.length;
-        if (Number.isFinite(total) && total > 0 && (page + 1) * pageSize >= total) break;
+        scanned+=rows.length;
+        if (advertisedTotal !== null && scanned>=advertisedTotal) break;
+        if (advertisedTotal===null && pageSize>0 && rows.length<pageSize) break;
       }
     }
   } else throw new ProviderError('This provider series reference is not supported.',400);

@@ -16,7 +16,7 @@ const secrets = secretStore(dataDir);
 export const db = new DatabaseSync(join(dataDir, 'hearthwave.sqlite'), { enableForeignKeyConstraints: true });
 db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 3000; PRAGMA synchronous = NORMAL;');
 const schemaVersion = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
-if (schemaVersion > 6) throw new Error(`Database schema ${schemaVersion} requires a newer Hearthwave version.`);
+if (schemaVersion > 7) throw new Error(`Database schema ${schemaVersion} requires a newer Hearthwave version.`);
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -188,6 +188,17 @@ if (schemaVersion < 6) {
     db.exec('PRAGMA user_version = 6; COMMIT;');
   } catch(error) { db.exec('ROLLBACK'); throw error; }
 }
+if (schemaVersion < 7) {
+  db.exec(`
+    BEGIN IMMEDIATE;
+    CREATE TABLE user_preferences (
+      user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      autoplay_next INTEGER NOT NULL DEFAULT 0 CHECK(autoplay_next IN (0,1))
+    );
+    PRAGMA user_version = 7;
+    COMMIT;
+  `);
+}
 db.prepare("UPDATE sources SET status='interrupted',last_error='Previous source operation was interrupted; run it again.' WHERE status IN ('scanning','discovering')").run();
 db.prepare("UPDATE guide_feeds SET status='interrupted',last_error='Previous guide import was interrupted; import again.' WHERE status='importing'").run();
 
@@ -212,6 +223,17 @@ export function findUser(username: string): (User & { password_hash: string }) |
 
 export function publicUsers(): User[] {
   return db.prepare('SELECT id,username,role FROM users ORDER BY id').all() as unknown as User[];
+}
+
+export function getUserPreferences(userId:number): {autoplayNext:boolean} {
+  const row=db.prepare('SELECT autoplay_next FROM user_preferences WHERE user_id=?').get(userId) as {autoplay_next:number}|undefined;
+  return {autoplayNext:row?.autoplay_next===1};
+}
+
+export function setUserPreferences(userId:number,autoplayNext:boolean): {autoplayNext:boolean} {
+  db.prepare(`INSERT INTO user_preferences(user_id,autoplay_next) VALUES (?,?)
+    ON CONFLICT(user_id) DO UPDATE SET autoplay_next=excluded.autoplay_next`).run(userId,autoplayNext?1:0);
+  return {autoplayNext};
 }
 
 export function saveSession(hash: string, userId: number, csrf: string, expiry: number): void {
@@ -424,7 +446,8 @@ export function getTitle(id: number): { id: number; title: string; kind: MediaKi
 export function getTitleDetail(id:number,userId:number): unknown | undefined {
   return db.prepare(`SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,t.artwork,
     t.description,t.genres,t.rating,t.duration_seconds,t.imdb_id,t.tmdb_id,t.channel_country,
-    (SELECT COUNT(*) FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL) AS source_count,
+    (SELECT COUNT(*) FROM variants v WHERE v.title_id=t.id) AS source_count,
+    (SELECT MAX(v.episode_name) FROM variants v WHERE v.title_id=t.id) AS episode_name,
     CASE WHEN f.title_id IS NULL THEN 0 ELSE 1 END AS favourite,p.position_seconds
     FROM titles t LEFT JOIN favourites f ON f.title_id=t.id AND f.user_id=?
     LEFT JOIN progress p ON p.title_id=t.id AND p.user_id=?
@@ -476,7 +499,7 @@ export function replaceSeriesEpisodes(seriesId: number, sourceId: number, items:
 
 export function listSeriesEpisodes(seriesId: number, userId: number): unknown[] {
   return db.prepare(`
-    SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,MAX(v.episode_name) AS episode_name,
+    SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,t.artwork,t.description,MAX(v.episode_name) AS episode_name,
       COUNT(v.id) AS source_count,
       CASE WHEN f.title_id IS NULL THEN 0 ELSE 1 END AS favourite,p.position_seconds
     FROM variants v JOIN titles t ON t.id=v.title_id
