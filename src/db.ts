@@ -18,7 +18,7 @@ const secrets = secretStore(dataDir);
 export const db = new DatabaseSync(join(dataDir, 'hearthwave.sqlite'), { enableForeignKeyConstraints: true });
 db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 3000; PRAGMA synchronous = NORMAL;');
 const schemaVersion = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
-if (schemaVersion > 10) throw new Error(`Database schema ${schemaVersion} requires a newer Hearthwave version.`);
+if (schemaVersion > 11) throw new Error(`Database schema ${schemaVersion} requires a newer Hearthwave version.`);
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -249,6 +249,26 @@ if (schemaVersion < 10) {
     ALTER TABLE user_preferences ADD COLUMN quality_preference TEXT NOT NULL DEFAULT 'auto'
       CHECK(quality_preference IN ('auto','fhd','hd','sd'));
     PRAGMA user_version = 10;
+    COMMIT;
+  `);
+}
+if (schemaVersion < 11) {
+  db.exec(`
+    BEGIN IMMEDIATE;
+    CREATE TABLE collections (
+      id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL COLLATE NOCASE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(user_id,name)
+    );
+    CREATE INDEX collections_owner ON collections(user_id,name COLLATE NOCASE);
+    CREATE TABLE collection_items (
+      collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+      title_id INTEGER NOT NULL REFERENCES titles(id) ON DELETE CASCADE,
+      added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY(collection_id,title_id)
+    );
+    CREATE INDEX collection_items_title ON collection_items(title_id,collection_id);
+    PRAGMA user_version = 11;
     COMMIT;
   `);
 }
@@ -488,7 +508,7 @@ export function completeImport(sourceId: number, generation: string): void {
 
 export type CatalogueView='all'|'favourites'|'continue';
 export type CatalogueSort='title'|'year'|'added'|'activity';
-export function listTitles(kind: MediaKind | 'all' | 'library', userId: number, query = '', view:CatalogueView='all', sort:CatalogueSort='title', limit=250,offset=0,country='',genre='',libraryGenre=''): unknown[] {
+export function listTitles(kind: MediaKind | 'all' | 'library', userId: number, query = '', view:CatalogueView='all', sort:CatalogueSort='title', limit=250,offset=0,country='',genre='',libraryGenre='',collectionId=0): unknown[] {
   const search = `%${query.replace(/[\\%_]/g, '\\$&')}%`;
   const order=kind==='channel' ? `CASE t.channel_country WHEN 'GB' THEN 0 WHEN 'US' THEN 1 ELSE 2 END,
     CASE t.live_genre WHEN 'General' THEN 0 WHEN 'Entertainment' THEN 1 WHEN 'Sports' THEN 2
@@ -500,7 +520,7 @@ export function listTitles(kind: MediaKind | 'all' | 'library', userId: number, 
       COUNT(v.id) AS source_count,
       CASE WHEN f.title_id IS NULL THEN 0 ELSE 1 END AS favourite,
       p.position_seconds
-    FROM titles t JOIN variants v ON v.title_id=t.id AND (v.series_parent_id IS NULL OR ?='episode')
+    FROM titles t JOIN variants v ON v.title_id=t.id AND (v.series_parent_id IS NULL OR ?='episode' OR ?>0)
     LEFT JOIN favourites f ON f.title_id=t.id AND f.user_id=?
     LEFT JOIN progress p ON p.title_id=t.id AND p.user_id=?
     WHERE (?='all' OR (?='library' AND t.kind<>'channel') OR t.kind=?) AND t.title LIKE ? ESCAPE '\\'
@@ -508,11 +528,12 @@ export function listTitles(kind: MediaKind | 'all' | 'library', userId: number, 
       AND (?='' OR (?='other' AND t.channel_country NOT IN ('GB','US')) OR t.channel_country=?)
       AND (?='' OR t.live_genre=?)
       AND (?='' OR EXISTS (SELECT 1 FROM library_genres lg WHERE lg.title_id=t.id AND lg.genre=?))
+      AND (?=0 OR EXISTS (SELECT 1 FROM collection_items ci WHERE ci.collection_id=? AND ci.title_id=t.id))
     GROUP BY t.id ORDER BY ${order} LIMIT ? OFFSET ?
-  `).all(kind,userId,userId,kind,kind,kind,search,view,view,view,country,country,country,genre,genre,libraryGenre,libraryGenre,Math.min(250,Math.max(1,limit)),Math.max(0,offset));
+  `).all(kind,collectionId,userId,userId,kind,kind,kind,search,view,view,view,country,country,country,genre,genre,libraryGenre,libraryGenre,collectionId,collectionId,Math.min(250,Math.max(1,limit)),Math.max(0,offset));
 }
 
-export function countTitles(kind: MediaKind | 'all' | 'library',userId:number,query='',view:CatalogueView='all',country='',genre='',libraryGenre=''):number {
+export function countTitles(kind: MediaKind | 'all' | 'library',userId:number,query='',view:CatalogueView='all',country='',genre='',libraryGenre='',collectionId=0):number {
   const search=`%${query.replace(/[\\%_]/g,'\\$&')}%`;
   return Number((db.prepare(`SELECT COUNT(*) AS total FROM titles t
     LEFT JOIN favourites f ON f.title_id=t.id AND f.user_id=?
@@ -522,8 +543,50 @@ export function countTitles(kind: MediaKind | 'all' | 'library',userId:number,qu
       AND (?='' OR (?='other' AND t.channel_country NOT IN ('GB','US')) OR t.channel_country=?)
       AND (?='' OR t.live_genre=?)
       AND (?='' OR EXISTS (SELECT 1 FROM library_genres lg WHERE lg.title_id=t.id AND lg.genre=?))
-      AND EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id AND (v.series_parent_id IS NULL OR ?='episode'))`)
-      .get(userId,userId,kind,kind,kind,search,view,view,view,country,country,country,genre,genre,libraryGenre,libraryGenre,kind) as {total:number}).total);
+      AND (?=0 OR EXISTS (SELECT 1 FROM collection_items ci WHERE ci.collection_id=? AND ci.title_id=t.id))
+      AND EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id AND (v.series_parent_id IS NULL OR ?='episode' OR ?>0))`)
+      .get(userId,userId,kind,kind,kind,search,view,view,view,country,country,country,genre,genre,libraryGenre,libraryGenre,collectionId,collectionId,kind,collectionId) as {total:number}).total);
+}
+
+export interface CollectionRow {id:number;name:string;created_at:string;item_count:number;included:number}
+export function listCollections(userId:number,titleId=0):CollectionRow[] {
+  return db.prepare(`SELECT c.id,c.name,c.created_at,
+    (SELECT COUNT(*) FROM collection_items ci JOIN titles t ON t.id=ci.title_id
+      WHERE ci.collection_id=c.id AND EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id)) AS item_count,
+    CASE WHEN ? > 0 AND EXISTS (SELECT 1 FROM collection_items ci WHERE ci.collection_id=c.id AND ci.title_id=?) THEN 1 ELSE 0 END AS included
+    FROM collections c WHERE c.user_id=? ORDER BY c.name COLLATE NOCASE,c.id LIMIT 64`).all(titleId,titleId,userId) as CollectionRow[];
+}
+
+export function ownedCollection(userId:number,id:number):{id:number;name:string}|undefined {
+  return db.prepare('SELECT id,name FROM collections WHERE id=? AND user_id=?').get(id,userId) as {id:number;name:string}|undefined;
+}
+
+export function createCollection(userId:number,name:string):number {
+  const count=Number((db.prepare('SELECT COUNT(*) AS total FROM collections WHERE user_id=?').get(userId) as {total:number}).total);
+  if(count>=64) throw new Error('Each household member may create up to 64 collections.');
+  return Number(db.prepare('INSERT INTO collections(user_id,name) VALUES (?,?)').run(userId,name).lastInsertRowid);
+}
+
+export function renameCollection(userId:number,id:number,name:string):boolean {
+  return Number(db.prepare('UPDATE collections SET name=? WHERE id=? AND user_id=?').run(name,id,userId).changes)>0;
+}
+
+export function deleteCollection(userId:number,id:number):boolean {
+  return Number(db.prepare('DELETE FROM collections WHERE id=? AND user_id=?').run(id,userId).changes)>0;
+}
+
+export function setCollectionMembership(userId:number,collectionId:number,titleId:number,include:boolean):boolean {
+  if(!ownedCollection(userId,collectionId)) return false;
+  const item=getTitle(titleId);
+  if(!item || item.kind==='channel') return false;
+  if(include) {
+    if(!db.prepare('SELECT 1 FROM collection_items WHERE collection_id=? AND title_id=?').get(collectionId,titleId)) {
+      const total=Number((db.prepare('SELECT COUNT(*) AS total FROM collection_items WHERE collection_id=?').get(collectionId) as {total:number}).total);
+      if(total>=2000) throw new Error('Collections are limited to 2,000 items.');
+      db.prepare('INSERT INTO collection_items(collection_id,title_id) VALUES (?,?)').run(collectionId,titleId);
+    }
+  } else db.prepare('DELETE FROM collection_items WHERE collection_id=? AND title_id=?').run(collectionId,titleId);
+  return true;
 }
 
 export function libraryGenreCounts(kind:'library'|'film'|'series',userId:number,query='',view:CatalogueView='all'):Array<{name:string;count:number}> {

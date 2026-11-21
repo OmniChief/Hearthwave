@@ -75,7 +75,7 @@ export async function streamBackup(res: ServerResponse): Promise<void> {
     const now = new Date();
     const manifest = Buffer.from(JSON.stringify({
       format: 'hearthwave-backup', formatVersion: 1,
-      createdAt: now.toISOString(), appVersion: '0.18.0',
+      createdAt: now.toISOString(), appVersion: '0.19.0',
       schemaVersion: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
       files: ['hearthwave.sqlite', 'secret.key'],
     }, null, 2) + '\n');

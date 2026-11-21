@@ -8,7 +8,7 @@ import { liveGenres, parseM3u, scanFolder } from './catalogue.ts';
 import { libraryGenres } from './library-genres.ts';
 import { qualityPreferences, type QualityPreference } from './quality.ts';
 import { BackupError, backupBusy, streamBackup } from './backup.ts';
-import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, completeImport, countTitles, createUser, dashboardStats, dataDir, db, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, libraryGenreCounts, listCategories, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setFavourite, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, type GuideFeed, type SourceRow } from './db.ts';
+import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, completeImport, countTitles, createCollection, createUser, dashboardStats, dataDir, db, deleteCollection, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, libraryGenreCounts, listCategories, listCollections, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, ownedCollection, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, renameCollection, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setCollectionMembership, setFavourite, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, type GuideFeed, type SourceRow } from './db.ts';
 import { discoverProvider, discoverSeriesEpisodes, fetchTitleMetadata, importProvider, providerGuide, resolveProviderStream, type ProviderScanProgress } from './adapters/providers.ts';
 import { importXmltv } from './guide.ts';
 import { localSubtitles, subtitleVtt } from './subtitles.ts';
@@ -330,7 +330,7 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const path = url.pathname;
   const method = req.method || 'GET';
-  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.18.0' });
+  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.19.0' });
   if (path === '/api/session' && method === 'GET') {
     const current = session(req);
     return send(res, 200, { needsSetup: !hasUsers(), user: current?.user || null, csrf: current?.csrf || null });
@@ -376,7 +376,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   if (path === '/api/system/status' && method === 'GET') {
     if (current.user.role !== 'admin') throw new HttpError(403, 'Administrator access required.');
     const databaseInfo = await stat(join(dataDir, 'hearthwave.sqlite'));
-    return send(res, 200, { version: '0.18.0', schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, databaseBytes: databaseInfo.size, rssBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(process.uptime()), backupBusy: backupBusy() });
+    return send(res, 200, { version: '0.19.0', schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, databaseBytes: databaseInfo.size, rssBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(process.uptime()), backupBusy: backupBusy() });
   }
   if (path === '/api/system/backup' && method === 'POST') {
     requireWrite(req, true);
@@ -392,6 +392,62 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     if (qualityChanged && (typeof input.qualityPreference !== 'string' || !qualityPreferences.includes(input.qualityPreference as QualityPreference))) throw new HttpError(400,'Unknown playback quality preference.');
     const previous=getUserPreferences(current.user.id);
     return send(res,200,setUserPreferences(current.user.id,autoChanged?input.autoplayNext as boolean:previous.autoplayNext,qualityChanged?input.qualityPreference as QualityPreference:previous.qualityPreference));
+  }
+  if (path === '/api/collections') {
+    if(method==='GET') {
+      const titleId=url.searchParams.has('titleId')?positiveId(url.searchParams.get('titleId')!):0;
+      return send(res,200,{collections:listCollections(current.user.id,titleId)});
+    }
+    if(method==='POST') {
+      requireWrite(req);
+      const input=await body(req);
+      const name=textField(input.name,'collection name',70);
+      if(/[\p{Cc}\p{Cf}]/u.test(name)) throw new HttpError(400,'Collection names cannot include control characters.');
+      try {return send(res,201,{id:createCollection(current.user.id,name),name});}
+      catch(error) {
+        if(error instanceof Error && /UNIQUE constraint|up to 64 collections/i.test(error.message)) throw new HttpError(409,'A collection with that name already exists, or your collection limit has been reached.');
+        throw error;
+      }
+    }
+  }
+  const collectionMatch=/^\/api\/collections\/(\d+)(?:\/items(?:\/(\d+))?)?$/.exec(path);
+  if(collectionMatch) {
+    const id=positiveId(collectionMatch[1]);
+    if(!ownedCollection(current.user.id,id)) throw new HttpError(404,'Collection not found.');
+    if(method==='PATCH' && collectionMatch[2]===undefined && !path.endsWith('/items')) {
+      requireWrite(req);
+      const input=await body(req);
+      const name=textField(input.name,'collection name',70);
+      if(/[\p{Cc}\p{Cf}]/u.test(name)) throw new HttpError(400,'Collection names cannot include control characters.');
+      try {renameCollection(current.user.id,id,name);return send(res,200,{id,name});}
+      catch(error) {
+        if(error instanceof Error && /UNIQUE constraint/i.test(error.message)) throw new HttpError(409,'You already have a collection with that name.');
+        throw error;
+      }
+    }
+    if(method==='DELETE' && collectionMatch[2]===undefined && !path.endsWith('/items')) {
+      requireWrite(req);
+      deleteCollection(current.user.id,id);
+      return send(res,200,{deleted:true});
+    }
+    if(method==='POST' && path.endsWith('/items')) {
+      requireWrite(req);
+      const input=await body(req);
+      const titleId=positiveId(String(input.titleId));
+      try {
+        if(!setCollectionMembership(current.user.id,id,titleId,true)) throw new HttpError(404,'Library title not found.');
+      } catch(error) {
+        if(error instanceof Error && /limited to 2,000 items/i.test(error.message)) throw new HttpError(409,error.message);
+        throw error;
+      }
+      return send(res,200,{included:true});
+    }
+    if(method==='DELETE' && collectionMatch[2]!==undefined) {
+      requireWrite(req);
+      const titleId=positiveId(collectionMatch[2]);
+      if(!setCollectionMembership(current.user.id,id,titleId,false)) throw new HttpError(404,'Library title not found.');
+      return send(res,200,{included:false});
+    }
   }
   if (path === '/api/stats' && method === 'GET') return send(res, 200, dashboardStats());
   if (path === '/api/users' && method === 'GET') {
@@ -572,6 +628,8 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     if(!Number.isSafeInteger(offset) || offset<0 || offset>1_000_000) throw new HttpError(400,'Invalid catalogue page.');
     const country=url.searchParams.get('country') || '';
     const genre=url.searchParams.get('genre') || '';
+    const collectionId=url.searchParams.has('collection')?positiveId(url.searchParams.get('collection')!):0;
+    if(collectionId && (!ownedCollection(current.user.id,collectionId) || kind==='channel')) throw new HttpError(404,'Collection not found.');
     if (country && kind!=='channel') throw new HttpError(400,'Country filters apply only to Live channels.');
     if (!['','GB','US','other'].includes(country)) throw new HttpError(400,'Unknown Live country filter.');
     if (genre && (kind==='channel' ? !liveGenres.includes(genre as typeof liveGenres[number]) : !['library','film','series'].includes(kind) || !libraryGenres.includes(genre as typeof libraryGenres[number]))) throw new HttpError(400,'Unknown genre filter for this catalogue.');
@@ -579,10 +637,10 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     const typedView=view as 'all'|'favourites'|'continue',typedSort=sort as 'title'|'year'|'added'|'activity';
     const liveGenre=kind==='channel'?genre:'',libraryGenre=kind==='channel'?'':genre;
     return send(res,200,{
-      items:listTitles(typedKind,current.user.id,query,typedView,typedSort,limit,offset,country,liveGenre,libraryGenre),
-      total:countTitles(typedKind,current.user.id,query,typedView,country,liveGenre,libraryGenre),
+      items:listTitles(typedKind,current.user.id,query,typedView,typedSort,limit,offset,country,liveGenre,libraryGenre,collectionId),
+      total:countTitles(typedKind,current.user.id,query,typedView,country,liveGenre,libraryGenre,collectionId),
       offset,limit,maxResults:limit,
-      genres:kind==='channel'?channelGenreCounts(country,query):['library','film','series'].includes(kind)?libraryGenreCounts(kind as 'library'|'film'|'series',current.user.id,query,typedView):[],
+      genres:collectionId?[]:kind==='channel'?channelGenreCounts(country,query):['library','film','series'].includes(kind)?libraryGenreCounts(kind as 'library'|'film'|'series',current.user.id,query,typedView):[],
     });
   }
   const detailMatch=/^\/api\/titles\/(\d+)$/.exec(path);

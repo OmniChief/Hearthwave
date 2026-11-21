@@ -4,7 +4,7 @@ import { prepareMedia } from './hls-playback.js';
 import { browserPlaybackCapabilities, connectionAdvice, nativeMediaFailure, playbackReport, streamFormat } from './playback-diagnostics.js';
 import { adjacentMedia, mediaQueue, presentation } from './local-media.js';
 
-const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', libraryGenre: '', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], browseItems: [], mediaQueue: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], sourceJobs: {}, sourcePollTimer: null, detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, qualityPreference: 'auto', activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackRequest: 0, playbackGeneration: 0, playbackAttempts: [], recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
+const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', libraryGenre: '', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, collectionOverview: false, collectionId: 0, collectionName: '', liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], browseItems: [], mediaQueue: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], sourceJobs: {}, sourcePollTimer: null, detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, qualityPreference: 'auto', activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackRequest: 0, playbackGeneration: 0, playbackAttempts: [], recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
 let releaseMedia = () => {};
 let failedPlaybackGeneration = -1;
 const $ = (selector) => document.querySelector(selector);
@@ -170,12 +170,29 @@ async function renderHome() {
     ${live.items.length ? `<div class="live-list">${live.items.slice(0, 6).map(liveCard).join('')}</div>` : emptyState('No channels yet', 'Add a direct channel or import an M3U playlist in Settings > Sources.', '▻')}`;
 }
 
+function collectionControls(titleId,collections) {
+  return `<section class="collection-membership"><h3>Your collections</h3><div class="collection-tags">${collections.map(collection=>`<button class="pill ${collection.included?'active':''}" data-collection-membership="${collection.id}" data-title-id="${titleId}" data-next="${collection.included?'0':'1'}" aria-label="${collection.included?'Remove from':'Add to'} ${esc(collection.name)}">${collection.included?'✓ ':'＋ '}${esc(collection.name)}</button>`).join('')||'<span class="field-note">Create a collection to organise this title alongside your other media.</span>'}</div><button class="button button-quiet button-small" data-library-collections>Manage collections</button></section>`;
+}
+
+async function renderCollectionsOverview() {
+  const request=++state.libraryRequest;
+  const result=await api('/api/collections');
+  if(request!==state.libraryRequest || state.page!=='library' || !state.collectionOverview || state.detailId || state.seriesDetail) return;
+  state.items=[];
+  page.innerHTML=`<section class="surface"><div class="row-actions collection-header"><button class="button button-quiet" data-collection-exit>← Back to Library</button></div>
+    ${heading('Your collections','Personal shelves for films, series, music, photos and episodes. Each household account manages its own.')}
+    <form id="collection-create-form" class="collection-create-form"><label for="collection-name">New collection</label><input id="collection-name" name="name" maxlength="70" placeholder="e.g. Family film night" required><button class="button button-primary" type="submit">Create collection</button></form>
+    ${result.collections.length?`<div class="collection-grid">${result.collections.map(collection=>`<article class="collection-card"><button class="collection-open" data-collection-open="${collection.id}" data-name="${esc(collection.name)}"><span class="collection-icon">▣</span><strong>${esc(collection.name)}</strong><small>${collection.item_count} item${collection.item_count===1?'':'s'}</small></button><form class="collection-rename-form" data-collection-rename-form="${collection.id}"><input name="name" value="${esc(collection.name)}" maxlength="70" aria-label="Rename ${esc(collection.name)}" required><button class="button button-quiet button-small" type="submit">Rename</button></form><button class="button button-danger button-small" data-collection-delete="${collection.id}" data-name="${esc(collection.name)}">Delete</button></article>`).join('')}</div>`:emptyState('No collections yet','Create a collection, then add items from their Library detail pages.','▣')}
+    <p class="field-note">Collections are private to each household account. Removing a collection does not delete your media.</p></section>`;
+}
+
 async function renderLibrary() {
   if (state.detailId) return renderTitleDetail();
   if (state.seriesDetail) return renderSeriesDetail();
+  if (state.collectionOverview) return renderCollectionsOverview();
   const request=++state.libraryRequest;
   const types = [{key:'all',name:'All media'}, {key:'film',name:'Films'}, {key:'series',name:'Series'}, {key:'episode',name:'Episodes'}, {key:'music',name:'Music'}, {key:'photo',name:'Photos'}];
-  const result = await api(`/api/catalogue?kind=${encodeURIComponent(state.kind === 'all' ? 'library' : state.kind)}&q=${encodeURIComponent(state.query)}&view=${encodeURIComponent(state.libraryView)}&genre=${encodeURIComponent(state.libraryGenre)}&sort=${encodeURIComponent(state.librarySort)}&limit=48&offset=${state.libraryOffset}`);
+  const result = await api(`/api/catalogue?kind=${encodeURIComponent(state.kind === 'all' ? 'library' : state.kind)}&q=${encodeURIComponent(state.query)}&view=${encodeURIComponent(state.libraryView)}&genre=${encodeURIComponent(state.collectionId?'':state.libraryGenre)}&sort=${encodeURIComponent(state.librarySort)}&limit=48&offset=${state.libraryOffset}${state.collectionId?`&collection=${state.collectionId}`:''}`);
   if (state.page!=='library' || state.detailId || state.seriesDetail || request!==state.libraryRequest) return;
   if(state.libraryOffset && state.libraryOffset>=result.total) {state.libraryOffset=Math.max(0,Math.ceil(result.total/48)-1)*48;return renderLibrary();}
   state.items = result.items;
@@ -184,18 +201,18 @@ async function renderLibrary() {
   const genreChoices = [...result.genres];
   if(state.libraryGenre && !genreChoices.some(item=>item.name===state.libraryGenre)) genreChoices.push({name:state.libraryGenre,count:0});
   genreChoices.sort((a,b)=>a.name==='Other'?1:b.name==='Other'?-1:b.count-a.count||a.name.localeCompare(b.name));
-  page.innerHTML = `<div class="preview-banner">One title across your sources, with provider artwork and descriptions when available. Choose Details to see editions and start a specific version; series episodes load only when opened.</div>
+  page.innerHTML = `${state.collectionId?`<div class="collection-active"><span>▣ ${esc(state.collectionName)} · Your collection</span><div><button class="button button-quiet button-small" data-collection-back>All collections</button><button class="button button-quiet button-small" data-collection-exit>Full Library</button></div></div>`:'<div class="preview-banner">One title across your sources, with provider artwork and descriptions when available. Choose Details to see editions and start a specific version; series episodes load only when opened.</div>'}
     <div class="toolbar">${types.map(type => `<button class="pill ${state.kind === type.key ? 'active':''}" data-kind="${type.key}">${type.name}</button>`).join('')}</div>
-    <div class="toolbar"><button class="pill ${state.libraryView==='all'?'active':''}" data-library-view="all">Everything</button><button class="pill ${state.libraryView==='favourites'?'active':''}" data-library-view="favourites">★ Favourites</button><button class="pill ${state.libraryView==='continue'?'active':''}" data-library-view="continue">Continue watching</button><label class="library-sort">Sort <select id="library-sort" aria-label="Sort library"><option value="title" ${state.librarySort==='title'?'selected':''}>Title A–Z</option><option value="year" ${state.librarySort==='year'?'selected':''}>Newest release</option><option value="added" ${state.librarySort==='added'?'selected':''}>Recently added</option><option value="activity" ${state.librarySort==='activity'?'selected':''}>Recently watched</option></select></label></div>
-    ${['all','film','series'].includes(state.kind)?`<div class="toolbar genre-rail" role="group" aria-label="Filter Library by genre"><button class="pill ${state.libraryGenre===''?'active':''}" data-library-genre="">All genres</button>${genreChoices.map(item=>`<button class="pill ${state.libraryGenre===item.name?'active':''}" data-library-genre="${esc(item.name)}">${esc(item.name)} (${item.count})</button>`).join('')}</div>`:''}
-    ${heading(state.kind === 'all' ? 'Your collection' : types.find(t => t.key === state.kind).name, `${result.total} item${result.total===1?'':'s'} match this view${state.libraryGenre?` · ${esc(state.libraryGenre)}`:''}`)}
-    ${items.length ? `<div class="cards">${items.map(mediaCard).join('')}</div>` : emptyState('No matching media', state.libraryView==='favourites'?'Star a film, show or song to see it here.':state.libraryView==='continue'?'Play a film or episode to start a resume position.':'Try another filter, or add a folder in Settings > Sources.', '▣')}
+    <div class="toolbar"><button class="pill ${state.libraryView==='all'?'active':''}" data-library-view="all">Everything</button><button class="pill ${state.libraryView==='favourites'?'active':''}" data-library-view="favourites">★ Favourites</button><button class="pill ${state.libraryView==='continue'?'active':''}" data-library-view="continue">Continue watching</button><button class="pill ${state.collectionId?'active':''}" data-library-collections>▣ Collections</button><label class="library-sort">Sort <select id="library-sort" aria-label="Sort library"><option value="title" ${state.librarySort==='title'?'selected':''}>Title A–Z</option><option value="year" ${state.librarySort==='year'?'selected':''}>Newest release</option><option value="added" ${state.librarySort==='added'?'selected':''}>Recently added</option><option value="activity" ${state.librarySort==='activity'?'selected':''}>Recently watched</option></select></label></div>
+    ${!state.collectionId&&['all','film','series'].includes(state.kind)?`<div class="toolbar genre-rail" role="group" aria-label="Filter Library by genre"><button class="pill ${state.libraryGenre===''?'active':''}" data-library-genre="">All genres</button>${genreChoices.map(item=>`<button class="pill ${state.libraryGenre===item.name?'active':''}" data-library-genre="${esc(item.name)}">${esc(item.name)} (${item.count})</button>`).join('')}</div>`:''}
+    ${heading(state.kind === 'all' ? state.collectionId ? state.collectionName : 'Your collection' : types.find(t => t.key === state.kind).name, `${result.total} item${result.total===1?'':'s'} match this view${!state.collectionId&&state.libraryGenre?` · ${esc(state.libraryGenre)}`:''}`)}
+    ${items.length ? `<div class="cards">${items.map(mediaCard).join('')}</div>` : emptyState('No matching media', state.libraryView==='favourites'?'Star a film, show or song to see it here.':state.libraryView==='continue'?'Play a film or episode to start a resume position.':state.collectionId?'Add titles from their detail pages, or choose another filter.':'Try another filter, or add a folder in Settings > Sources.', '▣')}
     ${cataloguePager(result,'library')}`;
 }
 
 async function renderTitleDetail() {
   const titleId=state.detailId;
-  const [result,versions]=await Promise.all([api(`/api/titles/${titleId}`),api(`/api/titles/${titleId}/variants`)]);
+  const [result,versions,collectionList]=await Promise.all([api(`/api/titles/${titleId}`),api(`/api/titles/${titleId}/variants`),api(`/api/collections?titleId=${titleId}`)]);
   if (state.detailId!==titleId || state.page!=='library') return;
   const title=result.title;
   state.items=[title];
@@ -211,12 +228,13 @@ async function renderTitleDetail() {
     <div class="row-actions">${title.kind==='series' ? `<button class="button button-primary" data-series="${title.id}">Browse episodes</button>` : versions.variants.some(v=>v.playable) ? `<button class="button button-primary" data-play="${title.id}">${title.kind==='photo'?'View photo':title.kind==='music'?'Listen now':'Play best available'}</button>` : ''}
     <button class="button button-quiet" data-favourite="${title.id}" data-next="${title.favourite?'0':'1'}">${title.favourite?'★ In favourites':'☆ Add to favourites'}</button>${state.session.user.role==='admin' && ['film','series'].includes(title.kind)?`<button class="button button-quiet" data-metadata-refresh="${title.id}">Fetch provider details</button>`:''}</div></div></div>
     ${heading('Available sources',`${versions.variants.length} connection${versions.variants.length===1?'':'s'} across your providers. Choose a particular version or let Hearthwave try alternatives if playback fails.`)}
-    ${sourceOptions(versions.variants,title.id,title.kind)}</section>`;
+    ${sourceOptions(versions.variants,title.id,title.kind)}
+    ${collectionControls(title.id,collectionList.collections)}</section>`;
 }
 
 async function renderSeriesDetail() {
   const seriesId = state.seriesDetail;
-  const [result,detail]=await Promise.all([api(`/api/titles/${seriesId}/episodes`),api(`/api/titles/${seriesId}`)]);
+  const [result,detail,collectionList]=await Promise.all([api(`/api/titles/${seriesId}/episodes`),api(`/api/titles/${seriesId}`),api(`/api/collections?titleId=${seriesId}`)]);
   if (state.seriesDetail !== seriesId || state.page !== 'library') return;
   state.items = [result.series,...result.items];
   state.seriesEpisodes = result.items;
@@ -227,6 +245,7 @@ async function renderSeriesDetail() {
   }
   const seasons = [...new Set(result.items.map(row => row.season || 0))].sort((a,b)=>b-a);
   page.innerHTML = `<section class="surface"><button class="button button-quiet button-small" data-series-back>← Back to Library</button><div class="section-heading"><div><span class="eyebrow">SERIES</span><h2>${esc(result.series.title)}</h2><p>${esc(result.series.year || 'Year unknown')} · ${result.items.length} episode${result.items.length === 1 ? '' : 's'} across ${seasons.length} season${seasons.length === 1 ? '' : 's'}</p>${detail.title.description ? `<p class="detail-description">${esc(detail.title.description)}</p>`:''}</div><div class="row-actions">${state.session.user.role==='admin'?`<button class="button button-quiet button-small" data-metadata-refresh="${seriesId}">Fetch provider details</button>`:''}<button class="button button-quiet button-small" data-series-refresh="${seriesId}" ${status.status === 'running' ? 'disabled':''}>${status.status === 'running' ? 'Loading…':'Refresh episodes'}</button></div></div>
+  ${collectionControls(seriesId,collectionList.collections)}
   <label class="autoplay-setting"><input type="checkbox" id="autoplay-next" ${state.autoplayNext?'checked':''}> Automatically play the next episode when one finishes <small>Saved to your household profile</small></label>
   ${status.status === 'running' ? '<p class="field-note">Retrieving episode information from the configured providers. This runs only when requested.</p>':''}
   ${status.error ? `<p class="field-note alert-note">${esc(status.error)}</p>`:''}
@@ -861,6 +880,20 @@ page.addEventListener('error', event => { if (event.target?.matches?.('.media-ar
 
 page.addEventListener('submit', async event => {
   const form = event.target;
+  if(form.id==='collection-create-form' || form.dataset.collectionRenameForm) {
+    event.preventDefault();
+    const name=String(new FormData(form).get('name') || '').trim();
+    if(!name || name.length>70) return notify('Enter a collection name of up to 70 characters.',true);
+    const submit=form.querySelector('button[type=submit]');
+    submit.disabled=true;
+    try {
+      if(form.id==='collection-create-form') await api('/api/collections',{method:'POST',body:{name}});
+      else await api(`/api/collections/${form.dataset.collectionRenameForm}`,{method:'PATCH',body:{name}});
+      notify(form.id==='collection-create-form'?'Collection created. Add titles from their Library detail pages.':'Collection renamed.');
+      await renderPage();
+    } catch(error) {notify(error.message,true);submit.disabled=false;}
+    return;
+  }
   if (form.id==='library-pager' || form.id==='live-pager') {
     event.preventDefault();
     const requested=Number(new FormData(form).get('page'));
@@ -914,6 +947,29 @@ page.addEventListener('submit', async event => {
 page.addEventListener('click', async event => {
   const target = event.target.closest('button');
   if (!target) return;
+  if(target.hasAttribute('data-library-collections')) {
+    state.detailId=null;state.seriesDetail=null;state.collectionId=0;state.collectionName='';state.collectionOverview=true;state.libraryOffset=0;state.libraryGenre='';
+    state.page='library';$('#page-title').textContent='Library';document.querySelectorAll('[data-page]').forEach(el=>el.classList.toggle('selected',el.dataset.page==='library'));
+    return renderPage();
+  }
+  if(target.hasAttribute('data-collection-exit')) {state.collectionId=0;state.collectionName='';state.collectionOverview=false;state.libraryOffset=0;return renderPage();}
+  if(target.hasAttribute('data-collection-back')) {state.collectionId=0;state.collectionName='';state.collectionOverview=true;state.libraryOffset=0;return renderPage();}
+  if(target.dataset.collectionOpen) {
+    state.collectionId=Number(target.dataset.collectionOpen);state.collectionName=target.dataset.name || 'Collection';state.collectionOverview=false;state.libraryOffset=0;state.libraryGenre='';state.libraryView='all';state.kind='all';return renderPage();
+  }
+  if(target.dataset.collectionDelete) {
+    if(!window.confirm(`Delete “${target.dataset.name}”? Your media files will not be deleted.`)) return;
+    try {await api(`/api/collections/${target.dataset.collectionDelete}`,{method:'DELETE'});notify('Collection deleted. Your media remains available.');await renderPage();}
+    catch(error){notify(error.message,true);}return;
+  }
+  if(target.dataset.collectionMembership) {
+    target.disabled=true;
+    try {
+      const id=target.dataset.collectionMembership,titleId=Number(target.dataset.titleId),include=target.dataset.next==='1';
+      await api(include?`/api/collections/${id}/items`:`/api/collections/${id}/items/${titleId}`,include?{method:'POST',body:{titleId}}:{method:'DELETE'});
+      notify(include?'Added to collection.':'Removed from collection.');await renderPage();
+    }catch(error){target.disabled=false;notify(error.message,true);}return;
+  }
   if (target.hasAttribute('data-continue')) {state.libraryView='continue';state.librarySort='activity';state.libraryOffset=0;return navigate('library');}
   if (target.dataset.page) return navigate(target.dataset.page);
   if (target.dataset.libraryView) {state.libraryView=target.dataset.libraryView;state.libraryOffset=0;if(state.libraryView==='continue') state.librarySort='activity';return renderPage();}
@@ -1175,6 +1231,8 @@ function tvBack(inPlayer) {
   if (inPlayer) return closePlayer();
   if (state.detailId && $('[data-detail-back]')) return $('[data-detail-back]').click();
   if (state.seriesDetail && $('[data-series-back]')) return $('[data-series-back]').click();
+  if(state.page==='library' && state.collectionId) {state.collectionId=0;state.collectionName='';state.collectionOverview=true;state.libraryOffset=0;void renderPage().catch(error=>notify(error.message,true));return;}
+  if(state.page==='library' && state.collectionOverview) {state.collectionOverview=false;void renderPage().catch(error=>notify(error.message,true));return;}
   if (state.guideView) {state.guideView=false;state.guideRequest++;void renderPage().catch(error=>notify(error.message,true));return;}
   const guide=$('#guide-panel');
   if (guide && !guide.hidden) {guide.hidden=true;guide.innerHTML='';return;}
