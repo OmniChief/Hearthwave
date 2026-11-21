@@ -2,8 +2,9 @@ import { installTvNavigation } from './tv-navigation.js';
 import { orderPlaybackVariants, playbackVariantLabel } from './playback-variants.js';
 import { prepareMedia } from './hls-playback.js';
 import { browserPlaybackCapabilities, connectionAdvice, nativeMediaFailure, playbackReport, streamFormat } from './playback-diagnostics.js';
+import { adjacentMedia, mediaQueue, presentation } from './local-media.js';
 
-const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', libraryGenre: '', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], sourceJobs: {}, sourcePollTimer: null, detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, qualityPreference: 'auto', activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackRequest: 0, playbackGeneration: 0, playbackAttempts: [], recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
+const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', libraryGenre: '', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], browseItems: [], mediaQueue: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], sourceJobs: {}, sourcePollTimer: null, detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, qualityPreference: 'auto', activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackRequest: 0, playbackGeneration: 0, playbackAttempts: [], recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
 let releaseMedia = () => {};
 let failedPlaybackGeneration = -1;
 const $ = (selector) => document.querySelector(selector);
@@ -125,8 +126,9 @@ function mediaCard(item) {
   const tone = Number(item.id) % 4;
   const detail = [item.year, item.kind === 'episode' ? `S${item.season || '?'}E${item.episode || '?'}` : null, `${item.source_count} source${item.source_count === 1 ? '' : 's'}`].filter(Boolean).join(' · ');
   const cover = typeof item.artwork === 'string' && /^https?:\/\//i.test(item.artwork) ? `<img src="${esc(item.artwork)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '';
-  const resume=Number(item.position_seconds)>10 && item.kind!=='channel';
-  return `<article class="media-card"><button class="media-art media-art-button tone-${tone}" data-card-detail="${item.id}" aria-label="Details for ${esc(item.title)}"><span class="art-initial">${esc(initial)}</span>${cover}<span class="media-kind">${esc(item.kind)}</span>${resume?`<span class="resume-label">${Math.max(1,Math.floor(item.position_seconds/60))}m watched</span>`:''}</button><div class="media-info"><strong title="${esc(item.title)}">${esc(item.title)}</strong><small>${esc(detail)}</small><div class="media-actions"><button class="button button-quiet button-small" data-detail="${item.id}">Details</button>${item.kind === 'series' ? `<button class="button button-quiet button-small" data-series="${item.id}">Episodes</button>` : `<button class="button button-quiet button-small" data-play="${item.id}">${resume?'Resume':'Play'}</button>`}<button class="star-button ${item.favourite ? 'is-favourite':''}" data-favourite="${item.id}" data-next="${item.favourite ? '0':'1'}" aria-label="${item.favourite ? 'Remove from' : 'Add to'} favourites">${item.favourite ? '★':'☆'}</button></div></div></article>`;
+  const resume=Number(item.position_seconds)>10 && !['channel','photo'].includes(item.kind);
+  const action=item.kind==='photo'?'View':item.kind==='music'?(resume?'Resume':'Listen'):(resume?'Resume':'Play');
+  return `<article class="media-card"><button class="media-art media-art-button tone-${tone}" data-card-detail="${item.id}" aria-label="Details for ${esc(item.title)}"><span class="art-initial">${esc(initial)}</span>${cover}<span class="media-kind">${esc(item.kind)}</span>${resume?`<span class="resume-label">${Math.max(1,Math.floor(item.position_seconds/60))}m watched</span>`:''}</button><div class="media-info"><strong title="${esc(item.title)}">${esc(item.title)}</strong><small>${esc(detail)}</small><div class="media-actions"><button class="button button-quiet button-small" data-detail="${item.id}">Details</button>${item.kind === 'series' ? `<button class="button button-quiet button-small" data-series="${item.id}">Episodes</button>` : `<button class="button button-quiet button-small" data-play="${item.id}">${action}</button>`}<button class="star-button ${item.favourite ? 'is-favourite':''}" data-favourite="${item.id}" data-next="${item.favourite ? '0':'1'}" aria-label="${item.favourite ? 'Remove from' : 'Add to'} favourites">${item.favourite ? '★':'☆'}</button></div></div></article>`;
 }
 
 function liveCard(item) {
@@ -134,12 +136,12 @@ function liveCard(item) {
   return `<div class="channel-row"><button class="channel-play" data-play="${item.id}"><span class="channel-icon">${artwork}</span><span><strong>${esc(item.title)}</strong><small>${esc(liveGenre(item))} · ${item.source_count} source${item.source_count === 1 ? '' : 's'}</small></span></button><button class="button button-quiet button-small" data-guide="${item.id}" aria-label="Programme guide for ${esc(item.title)}">Guide</button></div>`;
 }
 
-function sourceOptions(variants,titleId) {
-  const tiers=['4K','FHD','HD','SD','Unknown'];
+function sourceOptions(variants,titleId,kind='film') {
+  const tiers=['music','photo'].includes(kind)?['All']:['4K','FHD','HD','SD','Unknown'];
   return tiers.map(tier=>{
-    const entries=variants.filter(variant=>variant.qualityTier===tier);
+    const entries=tier==='All'?variants:variants.filter(variant=>variant.qualityTier===tier);
     if(!entries.length) return '';
-    return `<section class="source-quality-group"><h3>${tier==='Unknown'?'Unspecified quality':tier} <span class="tag">${entries.length} connection${entries.length===1?'':'s'}</span></h3><div class="episode-list">${entries.map(variant=>`<div class="episode-row"><div><strong>${esc(variant.name)}</strong><small>${esc(variant.type)}${variant.group?` · ${esc(variant.group)}`:''}${variant.quality?` · Label: ${esc(variant.quality)}`:''}</small></div>${variant.playable?`<button class="button button-quiet button-small" data-play="${titleId}" data-preferred="${variant.id}">Play this version</button>`:'<span class="field-note">Open series episodes to play</span>'}</div>`).join('')}</div></section>`;
+    return `<section class="source-quality-group"><h3>${tier==='All'?(kind==='photo'?'Photo files':'Audio files'):tier==='Unknown'?'Unspecified quality':tier} <span class="tag">${entries.length} connection${entries.length===1?'':'s'}</span></h3><div class="episode-list">${entries.map(variant=>`<div class="episode-row"><div><strong>${esc(variant.name)}</strong><small>${esc(variant.type)}${variant.group?` · ${esc(variant.group)}`:''}${variant.quality?` · Label: ${esc(variant.quality)}`:''}</small></div>${variant.playable?`<button class="button button-quiet button-small" data-play="${titleId}" data-preferred="${variant.id}">${kind==='photo'?'View this file':kind==='music'?'Listen to this file':'Play this version'}</button>`:'<span class="field-note">Open series episodes to play</span>'}</div>`).join('')}</div></section>`;
   }).join('');
 }
 
@@ -156,6 +158,7 @@ async function renderHome() {
   const [stats, library, live, continueWatching] = await Promise.all([api('/api/stats'), api('/api/catalogue?kind=library&limit=6&sort=added'), api('/api/catalogue?kind=channel&limit=6'), api('/api/catalogue?kind=library&view=continue&sort=activity&limit=6')]);
   state.stats = stats;
   state.items = [...continueWatching.items,...library.items, ...live.items];
+  state.browseItems=state.items;
   state.channelQueue = live.items.slice(0,6).map(item=>item.id);
   const recent = library.items.filter(item => item.kind !== 'channel').slice(0, 6);
   page.innerHTML = `<section class="hero"><div><span class="eyebrow">WELCOME TO HEARTHWAVE</span><h2>All your entertainment.<br>One happy place.</h2><p>Movies, music and live television belong together. Your own server, your sources and your choices.</p><button class="button button-primary" data-page="library">Explore your library <span>↗</span></button></div><div class="hero-art"><div class="hero-disc"></div></div></section>
@@ -176,6 +179,7 @@ async function renderLibrary() {
   if (state.page!=='library' || state.detailId || state.seriesDetail || request!==state.libraryRequest) return;
   if(state.libraryOffset && state.libraryOffset>=result.total) {state.libraryOffset=Math.max(0,Math.ceil(result.total/48)-1)*48;return renderLibrary();}
   state.items = result.items;
+  state.browseItems=result.items;
   const items = result.items.filter(item => item.kind !== 'channel');
   const genreChoices = [...result.genres];
   if(state.libraryGenre && !genreChoices.some(item=>item.name===state.libraryGenre)) genreChoices.push({name:state.libraryGenre,count:0});
@@ -204,10 +208,10 @@ async function renderTitleDetail() {
     ${title.episode_name?`<p class="detail-episode-name">${esc(title.episode_name)}</p>`:''}
     <p class="detail-facts">${facts.map(esc).join(' · ') || 'No metadata supplied yet'}</p>
     <p class="detail-description">${esc(title.description || 'A description has not been supplied by your sources yet.')}</p>
-    <div class="row-actions">${title.kind==='series' ? `<button class="button button-primary" data-series="${title.id}">Browse episodes</button>` : versions.variants.some(v=>v.playable) ? `<button class="button button-primary" data-play="${title.id}">Play best available</button>` : ''}
+    <div class="row-actions">${title.kind==='series' ? `<button class="button button-primary" data-series="${title.id}">Browse episodes</button>` : versions.variants.some(v=>v.playable) ? `<button class="button button-primary" data-play="${title.id}">${title.kind==='photo'?'View photo':title.kind==='music'?'Listen now':'Play best available'}</button>` : ''}
     <button class="button button-quiet" data-favourite="${title.id}" data-next="${title.favourite?'0':'1'}">${title.favourite?'★ In favourites':'☆ Add to favourites'}</button>${state.session.user.role==='admin' && ['film','series'].includes(title.kind)?`<button class="button button-quiet" data-metadata-refresh="${title.id}">Fetch provider details</button>`:''}</div></div></div>
     ${heading('Available sources',`${versions.variants.length} connection${versions.variants.length===1?'':'s'} across your providers. Choose a particular version or let Hearthwave try alternatives if playback fails.`)}
-    ${sourceOptions(versions.variants,title.id)}</section>`;
+    ${sourceOptions(versions.variants,title.id,title.kind)}</section>`;
 }
 
 async function renderSeriesDetail() {
@@ -511,6 +515,14 @@ function beginPlaybackAttempt(generation,item) {
   renderPlaybackDiagnostics();
 }
 
+function currentMedia() {return presentation(state.activeTitle?.kind)==='audio' ? $('#music-player') : $('#player');}
+
+function resetMediaElement(media) {
+  media.pause();
+  media.removeAttribute('src');
+  media.load();
+}
+
 async function startPlayback(titleId,preferredId=null) {
   const request=++state.playbackRequest;
   const result = await api(`/api/titles/${titleId}/variants`);
@@ -520,11 +532,33 @@ async function startPlayback(titleId,preferredId=null) {
   const title = state.items.find(item => Number(item.id) === Number(titleId)) || (await api(`/api/titles/${titleId}`)).title;
   if(request!==state.playbackRequest) return;
   state.activeTitle = title;
+  const kind=presentation(title.kind);
   state.variants = playable;
   state.variantIndex = 0;
   state.playbackAttempts=[];
+  const queued=mediaQueue(state.browseItems,title.kind);
+  state.mediaQueue=queued.includes(Number(title.id)) ? queued : kind==='video'?[]:[Number(title.id)];
   renderVariantPicker();
-  state.pendingSeek = Number(title.position_seconds) || 0;
+  state.pendingSeek = kind==='photo' ? 0 : Number(title.position_seconds) || 0;
+  $('#player').hidden=kind!=='video';
+  $('#music-panel').hidden=kind!=='audio';
+  $('#photo-viewer').hidden=kind!=='photo';
+  $('#photo-viewer').alt=title.title;
+  $('#music-caption').textContent=title.title;
+  $('#player-quality-picker').hidden=kind!=='video';
+  $('#player-diagnostics-toggle').hidden=kind!=='video';
+  $('#open-stream').hidden=kind!=='video';
+  if(kind!=='video') {
+    $('#player-diagnostics').hidden=true;
+    $('#player-diagnostics-toggle').setAttribute('aria-expanded','false');
+  }
+  const mediaIndex=state.mediaQueue.indexOf(Number(title.id));
+  for(const [selector,direction] of [['#previous-media',-1],['#next-media',1]]) {
+    const button=$(selector);
+    button.hidden=kind==='video' || mediaIndex<0;
+    button.disabled=adjacentMedia(state.mediaQueue,title.id,direction)==null;
+    button.textContent=direction<0 ? (kind==='audio'?'← Previous track':'← Previous photo') : (kind==='audio'?'Next track →':'Next photo →');
+  }
   $('#player-title').textContent = title.kind === 'episode' ? `${title.title} · S${title.season || '?'}E${title.episode || '?'}${title.episode_name ? ` · ${title.episode_name}`:''}` : title.title;
   const index = state.seriesEpisodes.findIndex(item => Number(item.id) === Number(titleId));
   $('#previous-episode').hidden = index < 0 || index === state.seriesEpisodes.length - 1;
@@ -539,7 +573,8 @@ async function startPlayback(titleId,preferredId=null) {
 
 function renderVariantPicker() {
   const picker=$('#player-variant');
-  picker.replaceChildren(...state.variants.map((variant,index)=>new Option(`${playbackVariantLabel(variant)} · ${variant.type}${variant.group?` · ${variant.group}`:''}`,String(index))));
+  const video=presentation(state.activeTitle?.kind)==='video';
+  picker.replaceChildren(...state.variants.map((variant,index)=>new Option(`${video?playbackVariantLabel(variant):(variant.name||'Local file')} · ${variant.type}${variant.group?` · ${variant.group}`:''}`,String(index))));
   picker.disabled=state.variants.length<2;
   picker.value=String(state.variantIndex);
 }
@@ -593,8 +628,8 @@ function clearPlaybackRecovery() {
 function schedulePlaybackRecovery(generation,delay,startup=false) {
   clearPlaybackRecovery();
   state.recoveryTimer=setTimeout(()=>{
-    if(generation!==state.playbackGeneration || $('#player-overlay').hidden || $('#player').ended) return;
-    if(!startup && $('#player').paused) return;
+    if(generation!==state.playbackGeneration || $('#player-overlay').hidden || (presentation(state.activeTitle?.kind)!=='photo' && currentMedia().ended)) return;
+    if(!startup && currentMedia().paused) return;
     failSource(generation,'The stream did not start or has stalled. Try another connection or open it externally.',startup?'startup':'stall');
   },delay);
 }
@@ -612,8 +647,29 @@ function failSource(generation,message,code='unknown') {
   clearPlaybackRecovery();
   if(state.variantIndex+1<state.variants.length) {nextSource();return;}
   disposeMedia();
-  $('#player').pause();
+  if(presentation(state.activeTitle?.kind)!=='photo') currentMedia().pause();
   $('#player-message').textContent=message;
+}
+
+/** An authenticated <img> only decodes the one selected photo in the viewer. */
+function preparePhoto(address,generation) {
+  const image=$('#photo-viewer');
+  const alive=()=>generation===state.playbackGeneration && !$('#player-overlay').hidden;
+  const loaded=()=>{
+    if(!alive()) return;
+    clearPlaybackRecovery();
+    $('#player-message').textContent='';
+    setPlaybackStatus(generation,'Displaying');
+  };
+  const failed=()=>{if(alive()) failSource(generation,'This photo could not be displayed. Try another connection or a browser-supported image format.','unsupported');};
+  image.addEventListener('load',loaded);
+  image.addEventListener('error',failed);
+  image.src=address;
+  return ()=>{
+    image.removeEventListener('load',loaded);
+    image.removeEventListener('error',failed);
+    image.removeAttribute('src');
+  };
 }
 
 async function playVariant() {
@@ -621,21 +677,22 @@ async function playVariant() {
   failedPlaybackGeneration=-1;
   const item = state.variants[state.variantIndex];
   beginPlaybackAttempt(generation,item);
-  const video = $('#player');
+  const kind=presentation(state.activeTitle?.kind);
+  const media=currentMedia();
   const alive=()=>generation===state.playbackGeneration && !$('#player-overlay').hidden;
   clearPlaybackRecovery();
   state.playbackStarted=false;
   state.lastMediaTime=0;
   state.resolvedUrl = null;
   $('#player-message').textContent = item.resolve ? 'Connecting to your provider…' : '';
-  $('#player-source').textContent = `${playbackVariantLabel(item)} (${state.variantIndex + 1}/${state.variants.length})`;
+  $('#player-source').textContent = `${kind==='video'?playbackVariantLabel(item):(item.name||'Local file')} (${state.variantIndex + 1}/${state.variants.length})`;
   $('#player-variant').value=String(state.variantIndex);
   $('#try-next').disabled = state.variants.length < 2;
   disposeMedia();
-  video.pause();
+  resetMediaElement($('#player'));
+  resetMediaElement($('#music-player'));
   clearSubtitles();
-  video.removeAttribute('src');
-  video.load();
+  $('#photo-viewer').removeAttribute('src');
   let failureStage='provider';
   try {
     const url = item.resolve ? (await api(`/api/variants/${item.id}/resolve`, { method:'POST' })).url : item.url;
@@ -651,7 +708,14 @@ async function playVariant() {
     setPlaybackStatus(generation,'Preparing');
     schedulePlaybackRecovery(generation,20000,true);
     failureStage='unsupported';
-    const dispose=await prepareMedia(video,url,{
+    if(kind==='photo') {
+      if(attempt?.generation===generation) attempt.engine='Image viewer';
+      const dispose=preparePhoto(url,generation);
+      if(!alive() || failedPlaybackGeneration===generation) dispose();
+      else releaseMedia=dispose;
+      return;
+    }
+    const dispose=await prepareMedia(media,url,{
       alive,
       onEngine:name=>{if(attempt?.generation===generation){attempt.engine=name;renderPlaybackDiagnostics();}},
       fatal:(message,code)=>failSource(generation,message,code),
@@ -659,8 +723,8 @@ async function playVariant() {
         if(!alive()) return;
         $('#player-message').textContent='';
         setPlaybackStatus(generation,'Starting');
-        void loadSubtitles(item,generation);
-        video.play().catch(error=>{
+        if(kind==='video') void loadSubtitles(item,generation);
+        media.play().catch(error=>{
           if(!alive() || failedPlaybackGeneration===generation) return;
           if(error.name==='NotAllowedError') {clearPlaybackRecovery();$('#player-message').textContent='Press Play to start this stream.';setPlaybackStatus(generation,'Paused','autoplay');}
           else if(error.name!=='AbortError') failSource(generation,'This format could not play in your browser. Try opening the stream externally.','unsupported');
@@ -684,7 +748,7 @@ function nextSource(manual=false) {
     }
     state.variantIndex=-1;
   }
-  if(state.activeTitle?.kind!=='channel') state.pendingSeek = $('#player').currentTime || state.pendingSeek;
+  if(!['channel','photo'].includes(state.activeTitle?.kind)) state.pendingSeek = currentMedia().currentTime || state.pendingSeek;
   state.variantIndex += 1;
   void playVariant();
 }
@@ -721,6 +785,14 @@ async function jumpChannel(direction) {
   catch(error) { notify(error.message,true); }
 }
 
+async function jumpLocalMedia(direction) {
+  if(!['music','photo'].includes(state.activeTitle?.kind)) return;
+  const next=adjacentMedia(state.mediaQueue,state.activeTitle.id,direction);
+  if(next==null) return;
+  try {await startPlayback(next);}
+  catch(error) {notify(error.message,true);}
+}
+
 function closePlayer() {
   state.playbackRequest++;
   state.playbackGeneration++;
@@ -728,14 +800,14 @@ function closePlayer() {
   disposeMedia();
   if(document.fullscreenElement===$('#player-panel')) void document.exitFullscreen?.();
   state.resolvedUrl = null;
-  const video = $('#player');
-  video.pause();
+  resetMediaElement($('#player'));
+  resetMediaElement($('#music-player'));
+  $('#photo-viewer').removeAttribute('src');
   clearSubtitles();
-  video.removeAttribute('src');
-  video.load();
   $('#player-overlay').hidden = true;
   state.activeTitle = null;
   state.variants = [];
+  state.mediaQueue = [];
   state.playbackAttempts=[];
   $('#player-diagnostics').hidden=true;
   $('#player-diagnostics-toggle').setAttribute('aria-expanded','false');
@@ -1017,7 +1089,7 @@ $('#try-next').addEventListener('click',()=>nextSource(true));
 $('#player-variant').addEventListener('change',event=>{
   const index=Number(event.target.value);
   if(!Number.isSafeInteger(index) || index<0 || index>=state.variants.length || index===state.variantIndex) return;
-  if(state.activeTitle?.kind!=='channel') state.pendingSeek=$('#player').currentTime || state.pendingSeek;
+  if(!['channel','photo'].includes(state.activeTitle?.kind)) state.pendingSeek=currentMedia().currentTime || state.pendingSeek;
   state.variantIndex=index;
   void playVariant();
 });
@@ -1025,6 +1097,8 @@ $('#player-quality-preference').addEventListener('change',event=>{void updateQua
 $('#player-subtitles').addEventListener('change', event=>setSubtitle(Number(event.target.value)));
 $('#previous-channel').addEventListener('click',()=>jumpChannel(-1));
 $('#next-channel').addEventListener('click',()=>jumpChannel(1));
+$('#previous-media').addEventListener('click',()=>jumpLocalMedia(-1));
+$('#next-media').addEventListener('click',()=>jumpLocalMedia(1));
 $('#previous-episode').addEventListener('click', () => jumpEpisode(1));
 $('#next-episode').addEventListener('click', () => jumpEpisode(-1));
 $('#open-stream').addEventListener('click', () => {
@@ -1044,39 +1118,54 @@ $('#player-diagnostics-copy').addEventListener('click',()=>{
   if(!copy) return notify('Clipboard access is not available on this device.',true);
   Promise.resolve(copy).then(()=>notify('Safe playback report copied. Provider URLs and tokens were excluded.')).catch(()=>notify('Clipboard access is not available on this device.',true));
 });
-$('#player').addEventListener('error', () => {
-  if(!state.resolvedUrl || currentPlaybackAttempt()?.engine==='HLS.js') return;
-  const failure=nativeMediaFailure($('#player').error?.code);
-  failSource(state.playbackGeneration,failure.message,failure.code);
-});
-$('#player').addEventListener('playing',()=>{state.playbackStarted=true;clearPlaybackRecovery();$('#player-message').textContent='';setPlaybackStatus(state.playbackGeneration,'Playing');});
-for(const eventName of ['waiting','stalled']) $('#player').addEventListener(eventName,()=>{
-  if(state.playbackStarted && !$('#player').paused && !$('#player-overlay').hidden) {
-    setPlaybackStatus(state.playbackGeneration,'Buffering');
-    if(!state.recoveryTimer) schedulePlaybackRecovery(state.playbackGeneration,25000);
-  }
-});
-$('#player').addEventListener('pause',()=>{
-  clearPlaybackRecovery();
-  if(state.playbackStarted && ['Playing','Buffering'].includes(currentPlaybackAttempt()?.status)) setPlaybackStatus(state.playbackGeneration,'Paused');
-});
-$('#player').addEventListener('loadedmetadata', () => {
-  const video = $('#player');
-  if (state.pendingSeek > 5 && Number.isFinite(video.duration) && state.pendingSeek < video.duration - 5) {
-    try { video.currentTime = state.pendingSeek; } catch { /* Some live formats reject seeking. */ }
-  }
-  state.pendingSeek = 0;
-});
-$('#player').addEventListener('timeupdate', () => {
-  const video = $('#player');
-  if(Math.abs(video.currentTime-state.lastMediaTime)>0.25) {state.lastMediaTime=video.currentTime;if(state.playbackStarted) {clearPlaybackRecovery();if(currentPlaybackAttempt()?.status==='Buffering') setPlaybackStatus(state.playbackGeneration,'Playing');}}
-  if (!state.activeTitle || state.activeTitle.kind === 'channel' || Date.now() - state.lastProgressSave < 10000) return;
-  state.lastProgressSave = Date.now();
-  api(`/api/titles/${state.activeTitle.id}/progress`, { method:'POST', body:{ seconds:video.currentTime } }).catch(() => {});
-});
-$('#player').addEventListener('ended',()=>{
-  if(!$('#player-overlay').hidden && state.autoplayNext && state.activeTitle?.kind==='episode') void jumpEpisode(-1);
-});
+for(const media of [$('#player'),$('#music-player')]) {
+  const active=()=>!$('#player-overlay').hidden && currentMedia()===media;
+  media.addEventListener('error',()=>{
+    if(!active() || !state.resolvedUrl || currentPlaybackAttempt()?.engine==='HLS.js') return;
+    const failure=nativeMediaFailure(media.error?.code);
+    failSource(state.playbackGeneration,failure.message,failure.code);
+  });
+  media.addEventListener('playing',()=>{
+    if(!active()) return;
+    state.playbackStarted=true;
+    clearPlaybackRecovery();
+    $('#player-message').textContent='';
+    setPlaybackStatus(state.playbackGeneration,'Playing');
+  });
+  for(const eventName of ['waiting','stalled']) media.addEventListener(eventName,()=>{
+    if(active() && state.playbackStarted && !media.paused) {
+      setPlaybackStatus(state.playbackGeneration,'Buffering');
+      if(!state.recoveryTimer) schedulePlaybackRecovery(state.playbackGeneration,25000);
+    }
+  });
+  media.addEventListener('pause',()=>{
+    if(!active() || !state.playbackStarted) return;
+    clearPlaybackRecovery();
+    if(state.playbackStarted && ['Playing','Buffering'].includes(currentPlaybackAttempt()?.status)) setPlaybackStatus(state.playbackGeneration,'Paused');
+  });
+  media.addEventListener('loadedmetadata',()=>{
+    if(!active()) return;
+    if(state.pendingSeek>5 && Number.isFinite(media.duration) && state.pendingSeek<media.duration-5) {
+      try {media.currentTime=state.pendingSeek;} catch { /* Live streams may not allow seeking. */ }
+    }
+    state.pendingSeek=0;
+  });
+  media.addEventListener('timeupdate',()=>{
+    if(!active()) return;
+    if(Math.abs(media.currentTime-state.lastMediaTime)>0.25) {
+      state.lastMediaTime=media.currentTime;
+      if(state.playbackStarted) {clearPlaybackRecovery();if(currentPlaybackAttempt()?.status==='Buffering') setPlaybackStatus(state.playbackGeneration,'Playing');}
+    }
+    if(!state.activeTitle || state.activeTitle.kind==='channel' || Date.now()-state.lastProgressSave<10000) return;
+    state.lastProgressSave=Date.now();
+    api(`/api/titles/${state.activeTitle.id}/progress`,{method:'POST',body:{seconds:media.currentTime}}).catch(()=>{});
+  });
+  media.addEventListener('ended',()=>{
+    if(!active()) return;
+    if(state.activeTitle?.kind==='music') void jumpLocalMedia(1);
+    else if(state.autoplayNext && state.activeTitle?.kind==='episode') void jumpEpisode(-1);
+  });
+}
 $('#player-fullscreen').addEventListener('click',()=>{
   const target=$('#player-panel');
   if(document.fullscreenElement) void document.exitFullscreen?.();

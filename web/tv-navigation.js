@@ -111,7 +111,7 @@ export function installTvNavigation({ onBack, onChannel }) {
       if (key === 'Escape' || key === 'Back' || key === 'BrowserBack' || key === 'GoBack') { event.preventDefault(); focused.blur(); }
       return;
     }
-    if (focused?.tagName === 'VIDEO' && !isBack && key !== 'ArrowUp' && key !== 'ArrowDown') return;
+    if (['VIDEO','AUDIO'].includes(focused?.tagName) && !isBack && key !== 'ArrowUp' && key !== 'ArrowDown') return;
     active = true;
     document.body.classList.add('tv-navigation');
     if (isBack) { event.preventDefault(); if (scope() !== auth) onBack(!player.hidden); return; }

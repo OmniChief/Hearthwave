@@ -63,8 +63,8 @@ export function playbackReport(attempts,capabilities) {
   attempts.forEach((attempt,index)=>{
     const safeQuality=['4K','FHD','HD','SD','Unknown'].includes(attempt.quality) ? attempt.quality : 'Unknown';
     const safeFormat=['HLS','MP4','Matroska','WebM','MPEG-TS','MP3','FLAC','Unknown'].includes(attempt.format) ? attempt.format : 'Unknown';
-    const safeEngine=['HLS.js','Native HLS','Native video','Unresolved'].includes(attempt.engine) ? attempt.engine : 'Unresolved';
-    const safeStatus=['Connecting','Preparing','Starting','Playing','Buffering','Failed','Switched','Paused'].includes(attempt.status) ? attempt.status : 'Unknown';
+    const safeEngine=['HLS.js','Native HLS','Native video','Native audio','Image viewer','Unresolved'].includes(attempt.engine) ? attempt.engine : 'Unresolved';
+    const safeStatus=['Connecting','Preparing','Starting','Playing','Displaying','Buffering','Failed','Switched','Paused'].includes(attempt.status) ? attempt.status : 'Unknown';
     const safeFailure=['interrupted','network','hls-network','decode','unsupported','startup','stall','provider','autoplay','unknown','none'].includes(attempt.failure) ? attempt.failure : 'unknown';
     lines.push(`${index+1}. Connection ${attempt.index+1} · ${safeQuality} · ${safeFormat} · ${safeEngine} · ${safeStatus}${safeStatus==='Failed' ? ` (${safeFailure})` : ''}`);
   });

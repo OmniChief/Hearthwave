@@ -30,7 +30,7 @@ async function hlsConstructor() {
 /** Returns a cleanup function. The caller owns playback-generation checks and source fallback. */
 export async function prepareMedia(video,address,{ready,fatal,alive,onEngine=()=>{}}) {
   if (!isHlsUrl(address)) {
-    onEngine('Native video');
+    onEngine(video.tagName==='AUDIO'?'Native audio':'Native video');
     video.src=address;
     video.load();
     ready();
