@@ -1,8 +1,9 @@
 import { installTvNavigation } from './tv-navigation.js';
 import { orderPlaybackVariants, playbackVariantLabel } from './playback-variants.js';
 import { prepareMedia } from './hls-playback.js';
+import { browserPlaybackCapabilities, connectionAdvice, nativeMediaFailure, playbackReport, streamFormat } from './playback-diagnostics.js';
 
-const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', libraryGenre: '', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], sourceJobs: {}, sourcePollTimer: null, detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, qualityPreference: 'auto', activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackRequest: 0, playbackGeneration: 0, recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
+const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', libraryGenre: '', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], sourceJobs: {}, sourcePollTimer: null, detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, qualityPreference: 'auto', activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackRequest: 0, playbackGeneration: 0, playbackAttempts: [], recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
 let releaseMedia = () => {};
 let failedPlaybackGeneration = -1;
 const $ = (selector) => document.querySelector(selector);
@@ -480,6 +481,36 @@ async function renderPage() {
   }
 }
 
+function currentPlaybackAttempt() {return state.playbackAttempts.at(-1);}
+
+function setPlaybackStatus(generation,status,failure='none') {
+  const attempt=currentPlaybackAttempt();
+  if(!attempt || attempt.generation!==generation || failedPlaybackGeneration===generation && status!=='Failed') return;
+  attempt.status=status;
+  if(failure!=='none') attempt.failure=failure;
+  renderPlaybackDiagnostics();
+}
+
+function renderPlaybackDiagnostics() {
+  if($('#player-diagnostics').hidden) return;
+  const attempts=state.playbackAttempts;
+  const failed=attempts.filter(attempt=>attempt.status==='Failed').length;
+  $('#player-diagnostics-summary').textContent=`${attempts.length} connection attempt${attempts.length===1?'':'s'} · ${failed} failed`;
+  $('#player-attempts').innerHTML=attempts.map(attempt=>`<li><strong>Connection ${attempt.index+1} · ${esc(attempt.quality)}</strong><span class="diagnostic-status" data-status="${esc(attempt.status)}">${esc(attempt.status)}</span><small>${esc(attempt.format)} · ${esc(attempt.engine)}${attempt.failure!=='none' ? ` · ${esc(attempt.failure)}`:''}</small>${attempt.status==='Failed'?`<small>${esc(connectionAdvice(attempt.failure,attempt.format,attempt.mixedContent))}</small>`:''}</li>`).join('');
+  const current=currentPlaybackAttempt();
+  $('#player-advice').textContent=current?.status==='Playing' ? 'This connection is playing. Browser capability checks are hints, not a guarantee for every video.' : current?.failure!=='none' && current ? connectionAdvice(current.failure,current.format,current.mixedContent) : current?.mixedContent ? connectionAdvice('unknown',current.format,true) : 'If a connection fails, its cause and suggested next step will appear here.';
+  const caps=browserPlaybackCapabilities($('#player'));
+  $('#player-browser-support').innerHTML=caps.map(([label,value])=>`<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join('');
+}
+
+function beginPlaybackAttempt(generation,item) {
+  const previous=currentPlaybackAttempt();
+  if(previous && !['Failed','Switched'].includes(previous.status)) previous.status='Switched';
+  state.playbackAttempts.push({generation,index:state.variantIndex,quality:item.qualityTier || 'Unknown',format:'Unknown',engine:'Unresolved',status:'Connecting',failure:'none',mixedContent:false});
+  if(state.playbackAttempts.length>12) state.playbackAttempts.shift();
+  renderPlaybackDiagnostics();
+}
+
 async function startPlayback(titleId,preferredId=null) {
   const request=++state.playbackRequest;
   const result = await api(`/api/titles/${titleId}/variants`);
@@ -491,6 +522,7 @@ async function startPlayback(titleId,preferredId=null) {
   state.activeTitle = title;
   state.variants = playable;
   state.variantIndex = 0;
+  state.playbackAttempts=[];
   renderVariantPicker();
   state.pendingSeek = Number(title.position_seconds) || 0;
   $('#player-title').textContent = title.kind === 'episode' ? `${title.title} · S${title.season || '?'}E${title.episode || '?'}${title.episode_name ? ` · ${title.episode_name}`:''}` : title.title;
@@ -563,7 +595,7 @@ function schedulePlaybackRecovery(generation,delay,startup=false) {
   state.recoveryTimer=setTimeout(()=>{
     if(generation!==state.playbackGeneration || $('#player-overlay').hidden || $('#player').ended) return;
     if(!startup && $('#player').paused) return;
-    failSource(generation,'The stream did not start or has stalled. Try another connection or open it externally.');
+    failSource(generation,'The stream did not start or has stalled. Try another connection or open it externally.',startup?'startup':'stall');
   },delay);
 }
 
@@ -573,9 +605,10 @@ function disposeMedia() {
   dispose();
 }
 
-function failSource(generation,message) {
+function failSource(generation,message,code='unknown') {
   if(generation!==state.playbackGeneration || $('#player-overlay').hidden || failedPlaybackGeneration===generation) return;
   failedPlaybackGeneration=generation;
+  setPlaybackStatus(generation,'Failed',code);
   clearPlaybackRecovery();
   if(state.variantIndex+1<state.variants.length) {nextSource();return;}
   disposeMedia();
@@ -587,6 +620,7 @@ async function playVariant() {
   const generation = ++state.playbackGeneration;
   failedPlaybackGeneration=-1;
   const item = state.variants[state.variantIndex];
+  beginPlaybackAttempt(generation,item);
   const video = $('#player');
   const alive=()=>generation===state.playbackGeneration && !$('#player-overlay').hidden;
   clearPlaybackRecovery();
@@ -602,24 +636,34 @@ async function playVariant() {
   clearSubtitles();
   video.removeAttribute('src');
   video.load();
+  let failureStage='provider';
   try {
     const url = item.resolve ? (await api(`/api/variants/${item.id}/resolve`, { method:'POST' })).url : item.url;
     if (!alive()) return;
     if (!url) throw new Error('No stream URL was returned.');
     state.resolvedUrl = url;
+    const attempt=currentPlaybackAttempt();
+    if(attempt?.generation===generation) {
+      attempt.format=streamFormat(url);
+      try {attempt.mixedContent=location.protocol==='https:' && new URL(url,location.href).protocol==='http:';} catch { /* Invalid URLs fail normally. */ }
+    }
     $('#player-message').textContent='Preparing stream…';
+    setPlaybackStatus(generation,'Preparing');
     schedulePlaybackRecovery(generation,20000,true);
+    failureStage='unsupported';
     const dispose=await prepareMedia(video,url,{
       alive,
-      fatal:message=>failSource(generation,message),
+      onEngine:name=>{if(attempt?.generation===generation){attempt.engine=name;renderPlaybackDiagnostics();}},
+      fatal:(message,code)=>failSource(generation,message,code),
       ready:()=>{
         if(!alive()) return;
         $('#player-message').textContent='';
+        setPlaybackStatus(generation,'Starting');
         void loadSubtitles(item,generation);
         video.play().catch(error=>{
           if(!alive() || failedPlaybackGeneration===generation) return;
-          if(error.name==='NotAllowedError') {clearPlaybackRecovery();$('#player-message').textContent='Press Play to start this stream.';}
-          else if(error.name!=='AbortError') failSource(generation,'This format could not play in your browser. Try opening the stream externally.');
+          if(error.name==='NotAllowedError') {clearPlaybackRecovery();$('#player-message').textContent='Press Play to start this stream.';setPlaybackStatus(generation,'Paused','autoplay');}
+          else if(error.name!=='AbortError') failSource(generation,'This format could not play in your browser. Try opening the stream externally.','unsupported');
         });
       }
     });
@@ -627,7 +671,7 @@ async function playVariant() {
     else releaseMedia=dispose;
   } catch (error) {
     if (!alive()) return;
-    failSource(generation,error instanceof Error ? error.message : 'Could not connect to your provider.');
+    failSource(generation,error instanceof Error ? error.message : 'Could not connect to your provider.',failureStage);
   }
 }
 
@@ -692,6 +736,9 @@ function closePlayer() {
   $('#player-overlay').hidden = true;
   state.activeTitle = null;
   state.variants = [];
+  state.playbackAttempts=[];
+  $('#player-diagnostics').hidden=true;
+  $('#player-diagnostics-toggle').setAttribute('aria-expanded','false');
   tvNavigation.exitPlayer();
 }
 
@@ -984,12 +1031,35 @@ $('#open-stream').addEventListener('click', () => {
   if (state.resolvedUrl && /^https?:\/\//i.test(state.resolvedUrl)) window.open(state.resolvedUrl, '_blank', 'noopener,noreferrer');
   else notify('The local stream is available only inside Hearthwave.');
 });
-$('#player').addEventListener('error', () => { if (state.resolvedUrl) failSource(state.playbackGeneration,'The browser could not play this stream. Try another connection or open it externally.'); });
-$('#player').addEventListener('playing',()=>{state.playbackStarted=true;clearPlaybackRecovery();$('#player-message').textContent='';});
-for(const eventName of ['waiting','stalled']) $('#player').addEventListener(eventName,()=>{
-  if(state.playbackStarted && !$('#player').paused && !$('#player-overlay').hidden && !state.recoveryTimer) schedulePlaybackRecovery(state.playbackGeneration,25000);
+$('#player-diagnostics-toggle').addEventListener('click',()=>{
+  const panel=$('#player-diagnostics');
+  panel.hidden=!panel.hidden;
+  $('#player-diagnostics-toggle').setAttribute('aria-expanded',String(!panel.hidden));
+  $('#player-diagnostics-copy').hidden=!navigator.clipboard?.writeText;
+  renderPlaybackDiagnostics();
 });
-$('#player').addEventListener('pause',clearPlaybackRecovery);
+$('#player-diagnostics-copy').addEventListener('click',()=>{
+  const report=playbackReport(state.playbackAttempts,browserPlaybackCapabilities($('#player')));
+  const copy=navigator.clipboard?.writeText?.(report);
+  if(!copy) return notify('Clipboard access is not available on this device.',true);
+  Promise.resolve(copy).then(()=>notify('Safe playback report copied. Provider URLs and tokens were excluded.')).catch(()=>notify('Clipboard access is not available on this device.',true));
+});
+$('#player').addEventListener('error', () => {
+  if(!state.resolvedUrl || currentPlaybackAttempt()?.engine==='HLS.js') return;
+  const failure=nativeMediaFailure($('#player').error?.code);
+  failSource(state.playbackGeneration,failure.message,failure.code);
+});
+$('#player').addEventListener('playing',()=>{state.playbackStarted=true;clearPlaybackRecovery();$('#player-message').textContent='';setPlaybackStatus(state.playbackGeneration,'Playing');});
+for(const eventName of ['waiting','stalled']) $('#player').addEventListener(eventName,()=>{
+  if(state.playbackStarted && !$('#player').paused && !$('#player-overlay').hidden) {
+    setPlaybackStatus(state.playbackGeneration,'Buffering');
+    if(!state.recoveryTimer) schedulePlaybackRecovery(state.playbackGeneration,25000);
+  }
+});
+$('#player').addEventListener('pause',()=>{
+  clearPlaybackRecovery();
+  if(state.playbackStarted && ['Playing','Buffering'].includes(currentPlaybackAttempt()?.status)) setPlaybackStatus(state.playbackGeneration,'Paused');
+});
 $('#player').addEventListener('loadedmetadata', () => {
   const video = $('#player');
   if (state.pendingSeek > 5 && Number.isFinite(video.duration) && state.pendingSeek < video.duration - 5) {
@@ -999,7 +1069,7 @@ $('#player').addEventListener('loadedmetadata', () => {
 });
 $('#player').addEventListener('timeupdate', () => {
   const video = $('#player');
-  if(Math.abs(video.currentTime-state.lastMediaTime)>0.25) {state.lastMediaTime=video.currentTime;if(state.playbackStarted) clearPlaybackRecovery();}
+  if(Math.abs(video.currentTime-state.lastMediaTime)>0.25) {state.lastMediaTime=video.currentTime;if(state.playbackStarted) {clearPlaybackRecovery();if(currentPlaybackAttempt()?.status==='Buffering') setPlaybackStatus(state.playbackGeneration,'Playing');}}
   if (!state.activeTitle || state.activeTitle.kind === 'channel' || Date.now() - state.lastProgressSave < 10000) return;
   state.lastProgressSave = Date.now();
   api(`/api/titles/${state.activeTitle.id}/progress`, { method:'POST', body:{ seconds:video.currentTime } }).catch(() => {});

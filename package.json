@@ -1,6 +1,6 @@
 {
   "name": "hearthwave",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "private": true,
   "description": "A self-hosted home entertainment hub, organised around what people want to enjoy.",
   "type": "module",

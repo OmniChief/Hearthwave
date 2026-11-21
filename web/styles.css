@@ -233,10 +233,26 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .player-picker[hidden] { display:none; }
 .player-picker select { max-width:min(320px,85vw); background:#101924; color:#f1f4f8; border:1px solid #465365; border-radius:8px; padding:6px 9px; }
 .player-buttons { display:flex; gap:8px; flex-wrap:wrap; }
+.player-diagnostics { margin-top:18px; padding:16px; border:1px solid #3d5365; border-radius:13px; background:#172331; font-size:12px; }
+.diagnostic-heading { display:flex; align-items:start; justify-content:space-between; gap:12px; }
+.diagnostic-heading h3 { margin:0 0 4px; font-size:15px; }
+.diagnostic-heading p,.diagnostic-footnote { margin:0; color:#9dafc2; line-height:1.5; }
+.connection-attempts { padding:0; margin:14px 0; list-style:none; display:grid; gap:7px; }
+.connection-attempts li { display:flex; justify-content:space-between; flex-wrap:wrap; gap:5px 12px; background:#111b27; padding:10px 12px; border-radius:8px; border:1px solid #34475a; }
+.connection-attempts small { flex-basis:100%; color:#aebdcd; line-height:1.5; }
+.diagnostic-status { font-weight:650; color:#cbdaf0; }
+.diagnostic-status[data-status="Failed"] { color:#ffaca4; }
+.diagnostic-status[data-status="Playing"] { color:#a6e5bb; }
+.diagnostic-advice { color:#f6cdab; background:#302b2a; border-radius:8px; padding:11px 12px; line-height:1.6; }
+.player-diagnostics h4 { margin:18px 0 9px; font-size:12px; }
+.player-diagnostics h4 span { color:#91a4b7; font-weight:400; }
+.browser-capabilities { display:grid; grid-template-columns:minmax(140px,1fr) minmax(145px,1fr); gap:7px 16px; margin:0 0 12px; }
+.browser-capabilities dt { color:#9bacc0; }
+.browser-capabilities dd { margin:0; color:#dce7f2; }
 .preview-banner { border:1px solid #5e4d43; background:#2f292d; padding:12px 17px; border-radius:11px; color:#f5ceac; font-size:12px; margin-bottom:22px; }
 @media (max-width:1120px) { .sidebar { flex-basis:205px; } .topbar { flex-wrap:wrap; } .topbar-controls { width:100%; } .search-wrap { width:min(500px,80%); } .feature-grid { grid-template-columns:repeat(2,1fr); } }
 @media (max-width:760px) { .shell { display:block; } .sidebar { width:100%; min-height:0; height:auto; position:relative; padding:14px 16px 10px; border-right:0; border-bottom:1px solid var(--stroke); } .sidebar .brand { margin:0 0 14px 3px; } .sidebar-caption { display:none; } .primary-nav { flex-direction:row; overflow-x:auto; padding-bottom:5px; } .mobile-settings { display:flex; } .nav-link { padding:10px 12px; min-height:0; width:auto; white-space:nowrap; gap:8px; font-size:12px; } .nav-icon { width:auto; font-size:19px; } .sidebar-footer { position:absolute; top:13px; right:16px; margin:0; } .sidebar-footer .nav-link,.subtle-button { display:none; } .sidebar-user { border:0; margin:0; padding:0; } .sidebar-user div:not(.avatar) { display:none; } .topbar { padding:22px 20px; } .topbar-leading h1 { font-size:26px; } .topbar-controls { justify-content:space-between; } .search-wrap { width:65%; } .page-content { padding:23px 18px 70px; } .hero { padding:28px; min-height:230px; grid-template-columns:1fr; } .hero-art { display:none; } .two-col,.settings-layout { grid-template-columns:1fr; } .settings-menu { flex-direction:row; overflow-x:auto; } .settings-menu button { white-space:nowrap; } .feature-grid { grid-template-columns:1fr; } .stat-grid { gap:8px; } .stat { padding:15px; } .stat strong { font-size:23px; } .connection-indicator { font-size:10px; } .site-footer { font-size:10px; } }
-@media (max-width:420px) { .cards { grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; } .media-card .button { padding:6px; font-size:11px; } .player-actions { display:block; } .player-buttons { margin-top:12px; } .auth-panel { padding:27px; } }
+@media (max-width:420px) { .cards { grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; } .media-card .button { padding:6px; font-size:11px; } .player-actions { display:block; } .player-buttons { margin-top:12px; } .browser-capabilities { grid-template-columns:1fr; } .browser-capabilities dd { margin-bottom:5px; } .auth-panel { padding:27px; } }
 @media (max-width:760px) { .guide-row { grid-template-columns:1fr; } .guide-ruler { grid-template-columns:1fr; } .guide-ruler > span { display:none; } .guide-channel { flex-direction:row; align-items:center; flex-wrap:wrap; } }
 @media (max-width:600px) { .detail-layout { grid-template-columns:1fr; } .detail-poster { max-width:200px; } }
 @media (max-width:600px) { .episode-row { flex-wrap:wrap; } .episode-controls { width:100%; justify-content:flex-end; } .autoplay-setting small { width:100%; margin-left:26px; } }
