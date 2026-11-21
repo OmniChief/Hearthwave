@@ -77,6 +77,7 @@ export async function providerJson(address: string, options: { headers?: Record<
     const transport = url.protocol === 'https:' ? https : http;
     const response = await new Promise<http.IncomingMessage>((resolve,reject) => {
       const req = transport.request(url, {
+        autoSelectFamily:false,
         method:'GET',signal:AbortSignal.timeout(15000),maxHeaderSize:16 * 1024,
         headers:{'User-Agent':'Hearthwave/0.7','Accept':'application/json','Accept-Encoding':'gzip, deflate, br',...(options.headers || {})},
         lookup:(_hostname,_options,callback) => callback(null,ip,family),
