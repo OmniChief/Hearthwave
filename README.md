@@ -6,7 +6,7 @@ Hearthwave is a new, self-hosted home entertainment platform. Instead of opening
 
 This repository is a fresh implementation, not a fork of Vaultcast. The initial milestone targets low-resource ARM64 and x64 NAS devices with one Node.js process and an embedded SQLite database. There is no PHP, Docker, Redis, separate database server or external scheduler in the runtime.
 
-## Current status — TV remote navigation (0.13.0)
+## Current status — Library genre browsing (0.14.0)
 
 Working now:
 
@@ -51,6 +51,8 @@ Working now:
 - **Settings > System** now shows process memory, uptime, database size and schema version. Administrators can download a compressed backup containing a consistent, online SQLite snapshot and the matching encryption key. The archive is streamed from a temporary snapshot without loading the whole database into server memory; the snapshot is cleaned up afterwards.
 - Directional **TV remote and keyboard navigation** across Home, Library, Live, guide controls, Settings and the media player. Arrow keys choose the nearest visible control, OK/Enter activates it, and Back/Escape returns from details, guide or player before stepping back through visited pages. The focused control is highlighted and scrolled into view; focus is recovered after list refreshes.
 - Native text entry and selection controls keep their normal keyboard behavior. While a Live channel is playing, Up/Down still changes channels; television-specific remote key codes used by Samsung/Tizen and LG/WebOS Back buttons are recognized when delivered as keyboard events. Actual remote/browser key mappings still depend on the device.
+- **Unified Library genres:** Films and series can be filtered by Action, Comedy, Drama, Sci-Fi and other familiar genres across all connected providers. Mixed-genre titles appear in each applicable genre without duplicate cards. The genre rail shows whole-catalogue counts for the selected media type, search and Favourites/Continue watching view, independently of pagination.
+- Provider genre labels are normalized into a fixed list; when a film or series lacks metadata, recognizable provider-folder genres can populate the filter. Unclassified items stay under Other. A small indexed SQLite genre table supports browsing without scanning provider JSON or loading the full catalogue into browser memory.
 
 Provider integration is an **early compatibility implementation**, not a fully tested release: portal variants differ, and no live provider account has yet been used for end-to-end verification. Episodes are fetched when a viewer opens a series, rather than during bulk catalogue scans. Some Stalker portals may expose episodes in unsupported forms. No transcoding or guaranteed browser codec support is included.
 
@@ -100,6 +102,8 @@ Administrators can choose **Fetch provider details** on a film or series page to
 
 Use **Favourites** or **Continue watching** in Library to see matching media across the full database. The sort menu offers title, release year, newest indexed titles and most recent playback.
 
+The **Library genre rail** narrows films and series to genres such as Action, Comedy and Sci-Fi. Counts include all matching titles, not just the current page, and follow search and favourite/resume filters. A title tagged Action and Thriller appears in both genres but remains a single Library tile. Select **All genres** to clear the genre filter. Music, photos and the explicit Episodes view remain available through the media-type buttons; those views do not use the film/series genre rail.
+
 Library and Live display the matching total and let you move forward/backward or jump directly to a page number. Live genre counts are calculated across the selected region, not merely the channels visible on the current page. The app never loads the full provider catalogue into browser memory just to filter it.
 
 For local files, place `.vtt` or `.srt` subtitles next to the video with the same basename, optionally adding a language code (`Movie.en.srt`, `Movie.fr.vtt`). The player shows a subtitle selector when it finds a supported file. Only subtitles are converted on demand; the video is never transcoded. In Live, the player also has previous/next channel controls for the current lineup.
@@ -148,7 +152,7 @@ Provider requests block localhost and link-local/cloud-metadata destinations. Pr
   ```
 
   Check the restored account and catalogue before switching traffic. Do **not** extract over a running installation or replace a live SQLite/WAL file. The download is not a substitute for preserving your actual media and any other external files.
-- Older databases migrate to schema v8 on startup; v8 indexes Live genre classification in batches, and v7 stores user playback preferences. The earlier v6 upgrade conservatively merges duplicate film/series titles (preserving personal data and episode links) only where the known release years do not conflict. Guided restore, migration rollback and a built-in updater are **future milestones**.
+- Older databases migrate to schema v9 on startup. The v9 migration indexes Library genres in bounded batches without external metadata lookups; v8 indexes Live genre classification, and v7 stores user playback preferences. The earlier v6 upgrade conservatively merges duplicate film/series titles (preserving personal data and episode links) only where the known release years do not conflict. Guided restore, migration rollback and a built-in updater are **future milestones**.
 - Local file streams are served from the configured folder only; symbolic-link escapes are rejected at playback time.
 - M3U and direct channels currently use browser-native playback. The browser tries another available source after a playback error or sustained stall, but this cannot make an unsupported HLS/codec combination play on an incompatible device. The app never transcodes the stream on the NAS.
 
@@ -156,7 +160,7 @@ Provider requests block localhost and link-local/cloud-metadata destinations. Pr
 
 1. **Foundation:** shared UI, accounts, content identity and source setup (delivered as the first preview).
 2. **Source adapters:** initial Xtream/Stalker connections, selected imports and playback resolution (delivered in v0.2).
-3. **Core media:** on-demand provider series episode browsing (v0.3), Library details and explicit source choice (v0.5), identity matching and local sidecar subtitles (v0.6), manual provider metadata refresh and saved Library views (v0.7), season accordions and next-episode controls (v0.8), full-catalogue paging (v0.10); external metadata services, remote subtitles, requests and downloads remain planned.
+3. **Core media:** on-demand provider series episode browsing (v0.3), Library details and explicit source choice (v0.5), identity matching and local sidecar subtitles (v0.6), manual provider metadata refresh and saved Library views (v0.7), season accordions and next-episode controls (v0.8), full-catalogue paging (v0.10), multi-source genre browsing (v0.14); external metadata services, remote subtitles, requests and downloads remain planned.
 4. **Live:** provider guide lookup (v0.3), normalized channel matching and manual unified XMLTV (v0.4), manual channel mapping (v0.5), a paginated multi-day guide timeline (v0.9), server-indexed region/genre filters (v0.10); automated guide refresh, broader portal compatibility, radio and personal channels remain planned.
 5. **Extended:** games, arcade, creative studio, worker pairing, Community and My Space.
 6. **Hardening:** administrator backup export and basic process metrics (v0.12), directional keyboard/TV-remote navigation (v0.13); on-device installer/updater, 1 GB RAM profiling, real-device remote compatibility, security audit, guided restore and rollback remain planned.

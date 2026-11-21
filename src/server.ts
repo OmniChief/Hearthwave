@@ -5,8 +5,9 @@ import { dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
 import { liveGenres, parseM3u, scanFolder } from './catalogue.ts';
+import { libraryGenres } from './library-genres.ts';
 import { BackupError, backupBusy, streamBackup } from './backup.ts';
-import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, completeImport, countTitles, createUser, dashboardStats, dataDir, db, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, listCategories, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setFavourite, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, type GuideFeed, type SourceRow } from './db.ts';
+import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, completeImport, countTitles, createUser, dashboardStats, dataDir, db, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, libraryGenreCounts, listCategories, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setFavourite, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, type GuideFeed, type SourceRow } from './db.ts';
 import { discoverProvider, discoverSeriesEpisodes, fetchTitleMetadata, importProvider, providerGuide, resolveProviderStream, type ProviderScanProgress } from './adapters/providers.ts';
 import { importXmltv } from './guide.ts';
 import { localSubtitles, subtitleVtt } from './subtitles.ts';
@@ -328,7 +329,7 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const path = url.pathname;
   const method = req.method || 'GET';
-  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.13.0' });
+  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.14.0' });
   if (path === '/api/session' && method === 'GET') {
     const current = session(req);
     return send(res, 200, { needsSetup: !hasUsers(), user: current?.user || null, csrf: current?.csrf || null });
@@ -374,7 +375,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   if (path === '/api/system/status' && method === 'GET') {
     if (current.user.role !== 'admin') throw new HttpError(403, 'Administrator access required.');
     const databaseInfo = await stat(join(dataDir, 'hearthwave.sqlite'));
-    return send(res, 200, { version: '0.13.0', schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, databaseBytes: databaseInfo.size, rssBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(process.uptime()), backupBusy: backupBusy() });
+    return send(res, 200, { version: '0.14.0', schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, databaseBytes: databaseInfo.size, rssBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(process.uptime()), backupBusy: backupBusy() });
   }
   if (path === '/api/system/backup' && method === 'POST') {
     requireWrite(req, true);
@@ -566,15 +567,17 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     if(!Number.isSafeInteger(offset) || offset<0 || offset>1_000_000) throw new HttpError(400,'Invalid catalogue page.');
     const country=url.searchParams.get('country') || '';
     const genre=url.searchParams.get('genre') || '';
-    if ((country || genre) && kind!=='channel') throw new HttpError(400,'Country and genre filters apply only to Live channels.');
-    if (!['','GB','US','other'].includes(country) || (genre && !liveGenres.includes(genre as typeof liveGenres[number]))) throw new HttpError(400,'Unknown Live filter.');
+    if (country && kind!=='channel') throw new HttpError(400,'Country filters apply only to Live channels.');
+    if (!['','GB','US','other'].includes(country)) throw new HttpError(400,'Unknown Live country filter.');
+    if (genre && (kind==='channel' ? !liveGenres.includes(genre as typeof liveGenres[number]) : !['library','film','series'].includes(kind) || !libraryGenres.includes(genre as typeof libraryGenres[number]))) throw new HttpError(400,'Unknown genre filter for this catalogue.');
     const typedKind=kind as 'all'|'library'|ImportItem['kind'];
     const typedView=view as 'all'|'favourites'|'continue',typedSort=sort as 'title'|'year'|'added'|'activity';
+    const liveGenre=kind==='channel'?genre:'',libraryGenre=kind==='channel'?'':genre;
     return send(res,200,{
-      items:listTitles(typedKind,current.user.id,query,typedView,typedSort,limit,offset,country,genre),
-      total:countTitles(typedKind,current.user.id,query,typedView,country,genre),
+      items:listTitles(typedKind,current.user.id,query,typedView,typedSort,limit,offset,country,liveGenre,libraryGenre),
+      total:countTitles(typedKind,current.user.id,query,typedView,country,liveGenre,libraryGenre),
       offset,limit,maxResults:limit,
-      genres:kind==='channel'?channelGenreCounts(country,query):[],
+      genres:kind==='channel'?channelGenreCounts(country,query):['library','film','series'].includes(kind)?libraryGenreCounts(kind as 'library'|'film'|'series',current.user.id,query,typedView):[],
     });
   }
   const detailMatch=/^\/api\/titles\/(\d+)$/.exec(path);

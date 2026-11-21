@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { canonicalKey, channelCountry, channelGenre, channelKey, cleanTitle, displayChannelTitle, displayLibraryTitle, libraryMatchKey } from './catalogue.ts';
+import { classifyLibraryGenres } from './library-genres.ts';
 import { secretStore } from './secrets.ts';
 import type { ImportItem, MediaKind, ProviderCategory, ProviderConfig, SourceInput, User } from './model.ts';
 
@@ -16,7 +17,7 @@ const secrets = secretStore(dataDir);
 export const db = new DatabaseSync(join(dataDir, 'hearthwave.sqlite'), { enableForeignKeyConstraints: true });
 db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 3000; PRAGMA synchronous = NORMAL;');
 const schemaVersion = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
-if (schemaVersion > 8) throw new Error(`Database schema ${schemaVersion} requires a newer Hearthwave version.`);
+if (schemaVersion > 9) throw new Error(`Database schema ${schemaVersion} requires a newer Hearthwave version.`);
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -218,6 +219,29 @@ if (schemaVersion < 8) {
     db.exec('PRAGMA user_version = 8; COMMIT;');
   } catch(error) {db.exec('ROLLBACK');throw error;}
 }
+if (schemaVersion < 9) {
+  db.exec(`
+    BEGIN IMMEDIATE;
+    CREATE TABLE library_genres (
+      title_id INTEGER NOT NULL REFERENCES titles(id) ON DELETE CASCADE,
+      genre TEXT NOT NULL,
+      PRIMARY KEY (title_id,genre)
+    );
+    CREATE INDEX library_genres_browse ON library_genres(genre,title_id);
+  `);
+  try {
+    const batch=db.prepare("SELECT id,genres,group_name FROM titles WHERE kind IN ('film','series') AND id>? ORDER BY id LIMIT 512");
+    const insert=db.prepare('INSERT OR IGNORE INTO library_genres(title_id,genre) VALUES (?,?)');
+    let cursor=0;
+    for (;;) {
+      const rows=batch.all(cursor) as Array<{id:number;genres:string;group_name:string}>;
+      if (!rows.length) break;
+      for (const row of rows) for (const genre of classifyLibraryGenres(row.genres || row.group_name || '')) insert.run(row.id,genre);
+      cursor=rows[rows.length-1].id;
+    }
+    db.exec('PRAGMA user_version = 9; COMMIT;');
+  } catch(error) {db.exec('ROLLBACK');throw error;}
+}
 db.prepare("UPDATE sources SET status='interrupted',last_error='Previous source operation was interrupted; run it again.' WHERE status IN ('scanning','discovering','cancelling')").run();
 db.prepare("UPDATE guide_feeds SET status='interrupted',last_error='Previous guide import was interrupted; import again.' WHERE status='importing'").run();
 
@@ -368,6 +392,19 @@ const updateMatchedChannel = db.prepare(`UPDATE titles SET
 const byImdb=db.prepare("SELECT id,year,imdb_id,tmdb_id FROM titles WHERE kind=? AND imdb_id=? LIMIT 3");
 const byTmdb=db.prepare("SELECT id,year,imdb_id,tmdb_id FROM titles WHERE kind=? AND tmdb_id=? LIMIT 3");
 const byLibraryName=db.prepare('SELECT id,year,imdb_id,tmdb_id FROM titles WHERE kind=? AND match_key=? LIMIT 40');
+const titleGenreInfo=db.prepare("SELECT genres,group_name FROM titles WHERE id=? AND kind IN ('film','series')");
+const existingTitleGenres=db.prepare('SELECT genre FROM library_genres WHERE title_id=?');
+const removeTitleGenres=db.prepare('DELETE FROM library_genres WHERE title_id=?');
+const addTitleGenre=db.prepare('INSERT INTO library_genres(title_id,genre) VALUES (?,?)');
+function syncLibraryGenres(titleId:number):void {
+  const row=titleGenreInfo.get(titleId) as {genres:string;group_name:string}|undefined;
+  if (!row) return;
+  const desired=classifyLibraryGenres(row.genres || row.group_name || '');
+  const existing=(existingTitleGenres.all(titleId) as Array<{genre:string}>).map(item=>item.genre);
+  if (existing.length===desired.length && desired.every(genre=>existing.includes(genre))) return;
+  removeTitleGenres.run(titleId);
+  for (const genre of desired) addTitleGenre.run(titleId,genre);
+}
 const updateMatchedLibrary=db.prepare(`UPDATE titles SET
   year=COALESCE(year,?),artwork=COALESCE(NULLIF(artwork,''),?),
   description=COALESCE(NULLIF(description,''),?),genres=COALESCE(NULLIF(genres,''),?),
@@ -424,6 +461,7 @@ export function importBatch(sourceId: number, items: ImportItem[], generation: s
         }
       }
       upsertVariant.run(titleId, sourceId, item.sourceRef, secrets.seal(item.url, true), item.quality || '', item.group || '', generation,(item.externalId || '').trim().toLowerCase().slice(0,200));
+      if (item.kind==='film' || item.kind==='series') syncLibraryGenres(titleId);
     }
   });
 }
@@ -440,7 +478,7 @@ export function completeImport(sourceId: number, generation: string): void {
 
 export type CatalogueView='all'|'favourites'|'continue';
 export type CatalogueSort='title'|'year'|'added'|'activity';
-export function listTitles(kind: MediaKind | 'all' | 'library', userId: number, query = '', view:CatalogueView='all', sort:CatalogueSort='title', limit=250,offset=0,country='',genre=''): unknown[] {
+export function listTitles(kind: MediaKind | 'all' | 'library', userId: number, query = '', view:CatalogueView='all', sort:CatalogueSort='title', limit=250,offset=0,country='',genre='',libraryGenre=''): unknown[] {
   const search = `%${query.replace(/[\\%_]/g, '\\$&')}%`;
   const order=kind==='channel' ? `CASE t.channel_country WHEN 'GB' THEN 0 WHEN 'US' THEN 1 ELSE 2 END,
     CASE t.live_genre WHEN 'General' THEN 0 WHEN 'Entertainment' THEN 1 WHEN 'Sports' THEN 2
@@ -459,11 +497,12 @@ export function listTitles(kind: MediaKind | 'all' | 'library', userId: number, 
       AND (?='all' OR (?='favourites' AND f.title_id IS NOT NULL) OR (?='continue' AND p.position_seconds>0))
       AND (?='' OR (?='other' AND t.channel_country NOT IN ('GB','US')) OR t.channel_country=?)
       AND (?='' OR t.live_genre=?)
+      AND (?='' OR EXISTS (SELECT 1 FROM library_genres lg WHERE lg.title_id=t.id AND lg.genre=?))
     GROUP BY t.id ORDER BY ${order} LIMIT ? OFFSET ?
-  `).all(kind,userId,userId,kind,kind,kind,search,view,view,view,country,country,country,genre,genre,Math.min(250,Math.max(1,limit)),Math.max(0,offset));
+  `).all(kind,userId,userId,kind,kind,kind,search,view,view,view,country,country,country,genre,genre,libraryGenre,libraryGenre,Math.min(250,Math.max(1,limit)),Math.max(0,offset));
 }
 
-export function countTitles(kind: MediaKind | 'all' | 'library',userId:number,query='',view:CatalogueView='all',country='',genre=''):number {
+export function countTitles(kind: MediaKind | 'all' | 'library',userId:number,query='',view:CatalogueView='all',country='',genre='',libraryGenre=''):number {
   const search=`%${query.replace(/[\\%_]/g,'\\$&')}%`;
   return Number((db.prepare(`SELECT COUNT(*) AS total FROM titles t
     LEFT JOIN favourites f ON f.title_id=t.id AND f.user_id=?
@@ -472,8 +511,21 @@ export function countTitles(kind: MediaKind | 'all' | 'library',userId:number,qu
       AND (?='all' OR (?='favourites' AND f.title_id IS NOT NULL) OR (?='continue' AND p.position_seconds>0))
       AND (?='' OR (?='other' AND t.channel_country NOT IN ('GB','US')) OR t.channel_country=?)
       AND (?='' OR t.live_genre=?)
+      AND (?='' OR EXISTS (SELECT 1 FROM library_genres lg WHERE lg.title_id=t.id AND lg.genre=?))
       AND EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id AND (v.series_parent_id IS NULL OR ?='episode'))`)
-      .get(userId,userId,kind,kind,kind,search,view,view,view,country,country,country,genre,genre,kind) as {total:number}).total);
+      .get(userId,userId,kind,kind,kind,search,view,view,view,country,country,country,genre,genre,libraryGenre,libraryGenre,kind) as {total:number}).total);
+}
+
+export function libraryGenreCounts(kind:'library'|'film'|'series',userId:number,query='',view:CatalogueView='all'):Array<{name:string;count:number}> {
+  const search=`%${query.replace(/[\\%_]/g,'\\$&')}%`;
+  return db.prepare(`SELECT lg.genre AS name,COUNT(*) AS count FROM library_genres lg
+    JOIN titles t ON t.id=lg.title_id
+    LEFT JOIN favourites f ON f.title_id=t.id AND f.user_id=?
+    LEFT JOIN progress p ON p.title_id=t.id AND p.user_id=?
+    WHERE t.kind IN ('film','series') AND (?='library' OR t.kind=?) AND t.title LIKE ? ESCAPE '\\'
+      AND (?='all' OR (?='favourites' AND f.title_id IS NOT NULL) OR (?='continue' AND p.position_seconds>0))
+      AND EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL)
+    GROUP BY lg.genre ORDER BY count DESC,lg.genre COLLATE NOCASE`).all(userId,userId,kind,kind,search,view,view,view) as Array<{name:string;count:number}>;
 }
 
 export function channelGenreCounts(country='',query=''):Array<{name:string;count:number}> {
@@ -516,12 +568,16 @@ export function enrichTitleMetadata(titleId:number,info:Partial<ImportItem>):boo
   const imdb=/^tt\d{5,12}$/i.test(info.imdbId || '')?info.imdbId!.toLowerCase():'';
   const tmdb=/^[1-9]\d{0,11}$/.test(info.tmdbId || '')?info.tmdbId!:'';
   if (![description,genres,artwork,year,rating,duration,imdb,tmdb].some(value=>value!=null && value!=='')) return false;
-  return db.prepare(`UPDATE titles SET year=COALESCE(year,?),
+  return transaction(()=>{
+    const updated=db.prepare(`UPDATE titles SET year=COALESCE(year,?),
     artwork=COALESCE(NULLIF(?,''),artwork),description=COALESCE(NULLIF(?,''),description),
     genres=COALESCE(NULLIF(?,''),genres),rating=COALESCE(?,rating),
     duration_seconds=COALESCE(?,duration_seconds),
     imdb_id=COALESCE(NULLIF(imdb_id,''),?),tmdb_id=COALESCE(NULLIF(tmdb_id,''),?)
     WHERE id=? AND kind IN ('film','series')`).run(year,artwork,description,genres,rating,duration,imdb,tmdb,titleId).changes>0;
+    if (updated) syncLibraryGenres(titleId);
+    return updated;
+  });
 }
 
 const upsertEpisodeVariant = db.prepare(`

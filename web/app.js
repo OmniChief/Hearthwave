@@ -1,6 +1,6 @@
 import { installTvNavigation } from './tv-navigation.js';
 
-const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], sourceJobs: {}, sourcePollTimer: null, detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackGeneration: 0, recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
+const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', libraryGenre: '', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], sourceJobs: {}, sourcePollTimer: null, detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackGeneration: 0, recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
 const $ = (selector) => document.querySelector(selector);
 const page = $('#page');
 
@@ -148,15 +148,19 @@ async function renderLibrary() {
   if (state.seriesDetail) return renderSeriesDetail();
   const request=++state.libraryRequest;
   const types = [{key:'all',name:'All media'}, {key:'film',name:'Films'}, {key:'series',name:'Series'}, {key:'episode',name:'Episodes'}, {key:'music',name:'Music'}, {key:'photo',name:'Photos'}];
-  const result = await api(`/api/catalogue?kind=${encodeURIComponent(state.kind === 'all' ? 'library' : state.kind)}&q=${encodeURIComponent(state.query)}&view=${encodeURIComponent(state.libraryView)}&sort=${encodeURIComponent(state.librarySort)}&limit=48&offset=${state.libraryOffset}`);
+  const result = await api(`/api/catalogue?kind=${encodeURIComponent(state.kind === 'all' ? 'library' : state.kind)}&q=${encodeURIComponent(state.query)}&view=${encodeURIComponent(state.libraryView)}&genre=${encodeURIComponent(state.libraryGenre)}&sort=${encodeURIComponent(state.librarySort)}&limit=48&offset=${state.libraryOffset}`);
   if (state.page!=='library' || state.detailId || state.seriesDetail || request!==state.libraryRequest) return;
   if(state.libraryOffset && state.libraryOffset>=result.total) {state.libraryOffset=Math.max(0,Math.ceil(result.total/48)-1)*48;return renderLibrary();}
   state.items = result.items;
   const items = result.items.filter(item => item.kind !== 'channel');
+  const genreChoices = [...result.genres];
+  if(state.libraryGenre && !genreChoices.some(item=>item.name===state.libraryGenre)) genreChoices.push({name:state.libraryGenre,count:0});
+  genreChoices.sort((a,b)=>a.name==='Other'?1:b.name==='Other'?-1:b.count-a.count||a.name.localeCompare(b.name));
   page.innerHTML = `<div class="preview-banner">One title across your sources, with provider artwork and descriptions when available. Choose Details to see editions and start a specific version; series episodes load only when opened.</div>
     <div class="toolbar">${types.map(type => `<button class="pill ${state.kind === type.key ? 'active':''}" data-kind="${type.key}">${type.name}</button>`).join('')}</div>
     <div class="toolbar"><button class="pill ${state.libraryView==='all'?'active':''}" data-library-view="all">Everything</button><button class="pill ${state.libraryView==='favourites'?'active':''}" data-library-view="favourites">★ Favourites</button><button class="pill ${state.libraryView==='continue'?'active':''}" data-library-view="continue">Continue watching</button><label class="library-sort">Sort <select id="library-sort" aria-label="Sort library"><option value="title" ${state.librarySort==='title'?'selected':''}>Title A–Z</option><option value="year" ${state.librarySort==='year'?'selected':''}>Newest release</option><option value="added" ${state.librarySort==='added'?'selected':''}>Recently added</option><option value="activity" ${state.librarySort==='activity'?'selected':''}>Recently watched</option></select></label></div>
-    ${heading(state.kind === 'all' ? 'Your collection' : types.find(t => t.key === state.kind).name, `${result.total} item${result.total===1?'':'s'} match this view`)}
+    ${['all','film','series'].includes(state.kind)?`<div class="toolbar genre-rail" role="group" aria-label="Filter Library by genre"><button class="pill ${state.libraryGenre===''?'active':''}" data-library-genre="">All genres</button>${genreChoices.map(item=>`<button class="pill ${state.libraryGenre===item.name?'active':''}" data-library-genre="${esc(item.name)}">${esc(item.name)} (${item.count})</button>`).join('')}</div>`:''}
+    ${heading(state.kind === 'all' ? 'Your collection' : types.find(t => t.key === state.kind).name, `${result.total} item${result.total===1?'':'s'} match this view${state.libraryGenre?` · ${esc(state.libraryGenre)}`:''}`)}
     ${items.length ? `<div class="cards">${items.map(mediaCard).join('')}</div>` : emptyState('No matching media', state.libraryView==='favourites'?'Star a film, show or song to see it here.':state.libraryView==='continue'?'Play a film or episode to start a resume position.':'Try another filter, or add a folder in Settings > Sources.', '▣')}
     ${cataloguePager(result,'library')}`;
 }
@@ -814,7 +818,8 @@ page.addEventListener('click', async event => {
   }
   if (target.dataset.guide) return showLiveGuide(target.dataset.guide);
   if (target.hasAttribute('data-guide-close')) {const guide=$('#guide-panel');if(guide){guide.hidden=true;guide.innerHTML='';}return;}
-  if (target.dataset.kind) { state.kind = target.dataset.kind;state.libraryOffset=0; return renderPage(); }
+  if (target.dataset.kind) { state.kind = target.dataset.kind; if(!['all','film','series'].includes(state.kind)) state.libraryGenre='';state.libraryOffset=0; return renderPage(); }
+  if (target.dataset.libraryGenre !== undefined) {state.libraryGenre=target.dataset.libraryGenre;state.libraryOffset=0;return renderPage();}
   if (target.dataset.group) { state.liveGroup = target.dataset.group;state.liveOffset=0; return renderPage(); }
   if (target.dataset.settings) { state.settingsTab = target.dataset.settings; return renderPage(); }
   if (target.id === 'download-backup') {
