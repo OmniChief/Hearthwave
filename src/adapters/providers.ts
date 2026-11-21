@@ -204,7 +204,7 @@ class StalkerClient {
     return this.request(type,action,params,this.token);
   }
   async resolve(kind: Kind, cmd: string, series = ''): Promise<string> {
-    const params = { cmd,series,forced_storage:'undefined',disable_ad:0,download:0 };
+    const params = { cmd, series, forced_storage:kind === 'live' ? 'false' : '', disable_ad:'false', download:'false', force_ch_link_check:'false' };
     const type = kind === 'live' ? 'itv' : 'vod';
     let matched: RegExpExecArray | null = null;
     for (const attempt of kind === 'series' ? ['vod','series'] : [type]) {
