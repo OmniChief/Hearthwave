@@ -1,6 +1,6 @@
 import { providerJson, ProviderError, validateProviderUrl } from './network.ts';
 import type { SourceRow } from '../db.ts';
-import type { ImportItem, ProviderCategory } from '../model.ts';
+import type { GuideProgramme, ImportItem, ProviderCategory } from '../model.ts';
 
 type Kind = ProviderCategory['kind'];
 type Category = { kind: Kind; id: string; name: string };
@@ -109,12 +109,20 @@ class StalkerClient {
     await this.session();
     return this.request(type,action,params,this.token);
   }
-  async resolve(kind: Kind, cmd: string): Promise<string> {
-    const result = await this.call(kind === 'live' ? 'itv' : 'vod','create_link',{
-      cmd,forced_storage:'undefined',disable_ad:0,download:0,
-    });
-    const value = field(result.cmd || result.url);
-    const matched = /(?:^|\s)(https?:\/\/[^\s]+)/i.exec(value);
+  async resolve(kind: Kind, cmd: string, series = ''): Promise<string> {
+    const params = { cmd,series,forced_storage:'undefined',disable_ad:0,download:0 };
+    const type = kind === 'live' ? 'itv' : 'vod';
+    let matched: RegExpExecArray | null = null;
+    for (const attempt of kind === 'series' ? ['vod','series'] : [type]) {
+      try {
+        const result = await this.call(attempt,'create_link',params);
+        matched = /(?:^|\s)(https?:\/\/[^\s]+)/i.exec(field(result.cmd || result.url));
+        if (matched) break;
+      } catch (error) {
+        if (error instanceof ProviderError && error.status === 429) throw error;
+      }
+    }
+    matched ||= /(?:^|\s)(https?:\/\/[^\s]+)/i.exec(cmd);
     if (!matched) throw new ProviderError('Portal did not provide a playable link.');
     return validateProviderUrl(matched[1]).toString();
   }
@@ -130,7 +138,7 @@ export async function discoverProvider(source: SourceRow): Promise<Category[]> {
       const response = await client.action(action);
       for (const row of objects(response)) {
         const id = field(row.category_id);
-        if (id) discovered.push({kind,id,name:field(row.category_name) || 'Other'});
+        if (id && id.length <= 80) discovered.push({kind,id,name:(field(row.category_name) || 'Other').slice(0,160)});
       }
     }
   } else if (source.type === 'stalker') {
@@ -139,7 +147,7 @@ export async function discoverProvider(source: SourceRow): Promise<Category[]> {
       const response = await client.call(kind === 'live' ? 'itv' : kind,kind === 'live' ? 'get_genres' : 'get_categories');
       for (const row of objects(response.data ?? response)) {
         const id = field(row.id);
-        if (id) discovered.push({kind,id,name:field(row.title || row.name) || 'Other'});
+        if (id && id.length <= 80) discovered.push({kind,id,name:(field(row.title || row.name) || 'Other').slice(0,160)});
       }
     }
   } else throw new ProviderError('This source does not have provider categories.',400);
@@ -154,7 +162,7 @@ function xtreamRows(rows: unknown, source: SourceRow, category: ProviderCategory
     const id = field(row.stream_id || row.series_id || row.id);
     if (!/^\d+$/.test(id)) continue;
     const name = field(row.name || row.title);
-    if (!name) continue;
+    if (!name || name.length > 300) continue;
     const kind = category.kind;
     const ext = field(row.container_extension || (kind === 'live' ? 'm3u8' : 'mp4')).replace(/^\./,'').toLowerCase();
     if (!/^[a-z0-9]{2,8}$/.test(ext)) continue;
@@ -176,10 +184,10 @@ function stalkerRows(rows: unknown, category: ProviderCategory): ImportItem[] {
     if (categoryValue && categoryValue !== category.category_id) continue;
     const id = field(row.id);
     const name = field(row.name || row.o_name);
-    if (!id || !name) continue;
+    if (!id || !name || name.length > 300 || id.length > 100) continue;
     const kind = category.kind;
     const cmd = field(row.cmd);
-    if (kind !== 'series' && !cmd) continue;
+    if (kind !== 'series' && (!cmd || cmd.length > 4096)) continue;
     items.push({kind:kind === 'live' ? 'channel' : kind === 'vod' ? 'film' : 'series',title:name,
       year:yearFrom(row.year || name),externalId:kind === 'live' ? field(row.xmltv_id || row.epg_id) : '',
       sourceRef:`${kind}:${id}`,url:kind === 'series' ? `stalker-series:${id}` : `stalker:${JSON.stringify({kind,cmd})}`,
@@ -227,9 +235,133 @@ export async function* importProvider(source: SourceRow, categories: ProviderCat
 
 export async function resolveProviderStream(source: SourceRow, encoded: string): Promise<string> {
   if (source.type !== 'stalker' || !encoded.startsWith('stalker:')) throw new ProviderError('This version is not a Stalker stream.',400);
-  let data: {kind:Kind;cmd:string};
+  let data: {kind:Kind;cmd:string;series?:string};
   try { data = JSON.parse(encoded.slice('stalker:'.length)); }
   catch { throw new ProviderError('Stored provider stream metadata is invalid.'); }
-  if (!['live','vod'].includes(data.kind) || !data.cmd) throw new ProviderError('Provider stream command is missing.');
-  return new StalkerClient(source).resolve(data.kind,data.cmd);
+  if (!['live','vod','series'].includes(data.kind) || !data.cmd || (data.series != null && !/^\d{1,4}$/.test(data.series))) throw new ProviderError('Provider stream command is missing or invalid.');
+  return new StalkerClient(source).resolve(data.kind,data.cmd,data.series || '');
+}
+
+function episodeNumber(value: unknown): number {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 && number <= 10000 ? number : 0;
+}
+
+/** Load an individual show's episodes on demand, not during every category scan. */
+export async function discoverSeriesEpisodes(source: SourceRow, encoded: string, seriesTitle: string, year: number | null): Promise<ImportItem[]> {
+  const episodes: ImportItem[] = [];
+  if (source.type === 'xtream' && /^xtream-series:\d+$/.test(encoded)) {
+    const root = encoded.slice('xtream-series:'.length);
+    const client = xtreamClient(source);
+    const response = await client.action('get_series_info',{series_id:root}) as Entry;
+    const groups = response?.episodes;
+    if (!groups || typeof groups !== 'object') throw new ProviderError('Xtream did not return episode information for this show.');
+    const seen = new Set<string>();
+    for (const [seasonKey,raw] of Object.entries(groups)) {
+      const rows = objects(raw && typeof raw === 'object' && !Array.isArray(raw) && ('id' in raw || 'stream_id' in raw) ? [raw] : raw);
+      for (const row of rows) {
+        const id = field(row.id || row.stream_id);
+        const season = episodeNumber(row.season ?? seasonKey);
+        const episode = episodeNumber(row.episode_num || row.episode);
+        const extension = field(row.container_extension || 'mp4').replace(/^\./,'').toLowerCase();
+        if (!/^\d+$/.test(id) || !season || !episode || !/^[a-z0-9]{2,8}$/.test(extension) || seen.has(id)) continue;
+        seen.add(id);
+        episodes.push({kind:'episode',title:seriesTitle,year,season,episode,
+          episodeName:field(row.title || row.name),sourceRef:`episode:xtream:${root}:${id}`,
+          url:client.url('series',id,extension),group:'Series'});
+        if (episodes.length > 1000) throw new ProviderError('This show exceeds the 1,000-episode safety limit.');
+      }
+    }
+  } else if (source.type === 'stalker' && /^stalker-series:[^:]{1,100}$/.test(encoded)) {
+    const root = encoded.slice('stalker-series:'.length);
+    const client = new StalkerClient(source);
+    const queue = [root];
+    const visited = new Set<string>();
+    const seen = new Set<string>();
+    const deadline = Date.now() + 45_000;
+    let calls = 0;
+    while (queue.length) {
+      const parent = queue.shift()!;
+      if (visited.has(parent)) continue;
+      visited.add(parent);
+      if (visited.size > 80) throw new ProviderError('Provider series exceeds the folder depth safety limit.');
+      let previous = '';
+      for (let page = 0; page < 150; page++) {
+        if (++calls > 80 || Date.now() > deadline) throw new ProviderError('Episode lookup reached its request/time budget. Try again when the portal is responsive.');
+        const response = await client.call('series','get_ordered_list',{sortby:'name',category:'*',search:'',movie_id:parent,p:page});
+        const rows = objects(response.data);
+        if (!rows.length) { if (page === 0) continue; break; }
+        const signature = rows.map(row => field(row.id)).join('|');
+        if (signature === previous) break;
+        previous = signature;
+        for (const row of rows) {
+          const id = field(row.id);
+          if (!id) continue;
+          const cmd = field(row.cmd);
+          if (cmd.length > 4096) continue;
+          const season = episodeNumber(row.season_number ?? row.season) || episodeNumber(/\bseason\s+(\d+)\b/i.exec(field(row.name))?.[1]);
+          const numbers = Array.isArray(row.series) ? row.series : [];
+          if (cmd && season && numbers.length) {
+            for (const raw of numbers.slice(0,1000)) {
+              const episode = episodeNumber(raw);
+              const key = `${id}:${episode}`;
+              if (!episode || seen.has(key)) continue;
+              seen.add(key);
+              episodes.push({kind:'episode',title:seriesTitle,year,season,episode,
+                episodeName:field(row.episode_title),sourceRef:`episode:stalker:${root}:${key}`,
+                url:`stalker:${JSON.stringify({kind:'series',cmd,series:String(episode)})}`,group:'Series'});
+            }
+          } else if (cmd && season && episodeNumber(row.series_number || row.episode)) {
+            const episode = episodeNumber(row.series_number || row.episode);
+            const key = `${id}:${episode}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              episodes.push({kind:'episode',title:seriesTitle,year,season,episode,
+                episodeName:field(row.episode_title || row.name),sourceRef:`episode:stalker:${root}:${key}`,
+                url:`stalker:${JSON.stringify({kind:'series',cmd,series:String(episode)})}`,group:'Series'});
+            }
+          } else if (truthy(row.is_series) && !visited.has(id) && !queue.includes(id)) queue.push(id);
+          if (episodes.length > 1000) throw new ProviderError('This show exceeds the 1,000-episode safety limit.');
+        }
+        const total = Number(response.total_items);
+        const pageSize = Number(response.max_page_items) || rows.length;
+        if (Number.isFinite(total) && total > 0 && (page + 1) * pageSize >= total) break;
+      }
+    }
+  } else throw new ProviderError('This provider series reference is not supported.',400);
+  return episodes;
+}
+
+function decodeEpg(value: unknown): string {
+  const input = field(value);
+  if (!input) return '';
+  if (/^[A-Za-z0-9+/]{8,}={0,2}$/.test(input)) {
+    const decoded = Buffer.from(input,'base64').toString('utf8');
+    if (decoded && !decoded.includes('\uFFFD') && !/[\x00-\x08]/.test(decoded)) return decoded.slice(0,500);
+  }
+  return input.slice(0,500);
+}
+
+export async function providerGuide(source: SourceRow, sourceRef: string): Promise<GuideProgramme[]> {
+  if (!/^live:[^:]{1,100}$/.test(sourceRef)) return [];
+  const id = sourceRef.slice('live:'.length);
+  let rows: Entry[] = [];
+  if (source.type === 'xtream' && /^\d+$/.test(id)) {
+    const data = await xtreamClient(source).action('get_short_epg',{stream_id:id,limit:'8'}) as Entry;
+    rows = objects(data?.epg_listings);
+  } else if (source.type === 'stalker') {
+    // Some Stalker portals expose EPG only as a full provider map.
+    // Request a single short period, then extract only this channel.
+    const data = await new StalkerClient(source).call('itv','get_epg_info',{period:1});
+    const guide = data.data ?? data;
+    const channel = guide && typeof guide === 'object' ? (guide as Entry)[id] : undefined;
+    const matched = channel ?? objects(guide).find(row => field(row.id || row.ch_id || row.channel_id) === id);
+    rows = objects(matched && typeof matched === 'object' && !Array.isArray(matched) ? (matched as Entry).data ?? (matched as Entry).events ?? (matched as Entry).epg ?? matched : matched);
+  }
+  return rows.slice(0,8).map(row => ({
+    title:decodeEpg(row.name || row.title) || 'Untitled programme',
+    description:decodeEpg(row.descr || row.description),
+    start:field(row.start_timestamp || row.start || row.time),
+    end:field(row.stop_timestamp || row.end || row.time_to),
+  }));
 }

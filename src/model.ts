@@ -30,6 +30,7 @@ export interface ImportItem {
   year?: number | null;
   season?: number | null;
   episode?: number | null;
+  episodeName?: string;
   externalId?: string;
   sourceRef: string;
   url: string;
@@ -45,6 +46,13 @@ export interface ProviderCategory {
   category_id: string;
   name: string;
   selected: number;
+}
+
+export interface GuideProgramme {
+  title: string;
+  description: string;
+  start: string;
+  end: string;
 }
 
 export interface MediaRow {

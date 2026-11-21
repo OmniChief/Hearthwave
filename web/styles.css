@@ -120,9 +120,20 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .live-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:12px; }
 .channel-row { text-align:left; width:100%; display:flex; gap:13px; align-items:center; border:1px solid var(--stroke); border-radius:13px; background:#17202d; padding:14px; color:inherit; }
 .channel-row:hover { border-color:#8e6165; }
+.channel-play { display:flex; gap:13px; text-align:left; align-items:center; flex:1; min-width:0; background:transparent; border:0; color:inherit; padding:0; }
+.channel-play > span:last-child { min-width:0; overflow-wrap:anywhere; }
 .channel-icon { width:48px; height:48px; display:grid; place-items:center; border-radius:12px; background:#2f3649; color:var(--peach); font-size:23px; flex:0 0 48px; }
 .channel-row strong { display:block; font-size:13px; }
 .channel-row small { display:block; font-size:11px; margin-top:5px; color:var(--muted); }
+.episode-season { margin-top:23px; }
+.episode-season h3 { color:#f7dbc7; font-size:16px; margin:0 0 11px; }
+.episode-list { display:grid; gap:8px; }
+.episode-row { display:flex; align-items:center; justify-content:space-between; gap:14px; border:1px solid var(--stroke); border-radius:12px; padding:13px 16px; background:#17212d; }
+.episode-row strong,.episode-row span,.episode-row small { display:block; }
+.episode-row strong { font-size:13px; }
+.episode-row span { color:#e0e4eb; font-size:12px; margin-top:5px; }
+.episode-row small { font-size:11px; color:var(--muted); margin-top:5px; }
+.alert-note { color:#f6b4ac; }
 .settings-layout { display:grid; grid-template-columns:200px minmax(0,1fr); gap:24px; }
 .settings-menu { display:flex; flex-direction:column; gap:7px; }
 .settings-menu button { border:0; background:transparent; border-radius:10px; color:#9baabb; text-align:left; padding:13px 14px; font-size:13px; font-weight:700; }

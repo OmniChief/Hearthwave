@@ -1,6 +1,7 @@
 import { mkdirSync, chmodSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { canonicalKey, cleanTitle } from './catalogue.ts';
 import { secretStore } from './secrets.ts';
@@ -15,7 +16,7 @@ const secrets = secretStore(dataDir);
 export const db = new DatabaseSync(join(dataDir, 'hearthwave.sqlite'), { enableForeignKeyConstraints: true });
 db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 3000; PRAGMA synchronous = NORMAL;');
 const schemaVersion = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
-if (schemaVersion > 2) throw new Error(`Database schema ${schemaVersion} requires a newer Hearthwave version.`);
+if (schemaVersion > 3) throw new Error(`Database schema ${schemaVersion} requires a newer Hearthwave version.`);
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -69,6 +70,16 @@ if (schemaVersion < 2) {
       PRIMARY KEY (source_id,kind,category_id)
     );
     PRAGMA user_version = 2;
+    COMMIT;
+  `);
+}
+if (schemaVersion < 3) {
+  db.exec(`
+    BEGIN IMMEDIATE;
+    ALTER TABLE variants ADD COLUMN series_parent_id INTEGER REFERENCES titles(id) ON DELETE SET NULL;
+    ALTER TABLE variants ADD COLUMN episode_name TEXT NOT NULL DEFAULT '';
+    CREATE INDEX variants_series_parent ON variants(series_parent_id,source_id);
+    PRAGMA user_version = 3;
     COMMIT;
   `);
 }
@@ -203,7 +214,10 @@ export function importBatch(sourceId: number, items: ImportItem[], generation: s
 
 export function completeImport(sourceId: number, generation: string): void {
   transaction(() => {
-    db.prepare('DELETE FROM variants WHERE source_id=? AND generation<>?').run(sourceId, generation);
+    db.prepare('DELETE FROM variants WHERE source_id=? AND series_parent_id IS NULL AND generation<>?').run(sourceId, generation);
+    db.prepare(`DELETE FROM variants WHERE source_id=? AND series_parent_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM variants root WHERE root.source_id=variants.source_id
+        AND root.title_id=variants.series_parent_id AND root.series_parent_id IS NULL)`).run(sourceId);
     setSourceStatus(sourceId, 'ready');
   });
 }
@@ -215,7 +229,7 @@ export function listTitles(kind: MediaKind | 'all' | 'library', userId: number, 
       COUNT(v.id) AS source_count,
       CASE WHEN f.title_id IS NULL THEN 0 ELSE 1 END AS favourite,
       p.position_seconds
-    FROM titles t JOIN variants v ON v.title_id=t.id
+    FROM titles t JOIN variants v ON v.title_id=t.id AND v.series_parent_id IS NULL
     LEFT JOIN favourites f ON f.title_id=t.id AND f.user_id=?
     LEFT JOIN progress p ON p.title_id=t.id AND p.user_id=?
     WHERE (?='all' OR (?='library' AND t.kind<>'channel') OR t.kind=?) AND t.title LIKE ? ESCAPE '\\'
@@ -225,6 +239,46 @@ export function listTitles(kind: MediaKind | 'all' | 'library', userId: number, 
 
 export function titleExists(id: number): boolean {
   return !!db.prepare('SELECT id FROM titles WHERE id=?').get(id);
+}
+
+export function getTitle(id: number): { id: number; title: string; kind: MediaKind; year: number | null } | undefined {
+  return db.prepare('SELECT id,title,kind,year FROM titles WHERE id=?').get(id) as { id:number; title:string; kind:MediaKind; year:number|null } | undefined;
+}
+
+const upsertEpisodeVariant = db.prepare(`
+  INSERT INTO variants (title_id,source_id,source_ref,url,quality,group_name,generation,series_parent_id,episode_name)
+  VALUES (?,?,?,?,?,?,?,?,?)
+  ON CONFLICT(source_id,source_ref) DO UPDATE SET
+    title_id=excluded.title_id,url=excluded.url,quality=excluded.quality,
+    group_name=excluded.group_name,generation=excluded.generation,series_parent_id=excluded.series_parent_id,
+    episode_name=excluded.episode_name
+`);
+
+/** Replace just one provider's children of one series; never prune unrelated titles or sources. */
+export function replaceSeriesEpisodes(seriesId: number, sourceId: number, items: ImportItem[]): void {
+  if (items.length > 1000 || items.some(item => item.kind !== 'episode' || !Number.isInteger(item.season) || !Number.isInteger(item.episode) || (item.episode || 0) < 1))
+    throw new Error('Provider returned an invalid or oversized episode collection.');
+  const generation = randomUUID();
+  transaction(() => {
+    for (const item of items) {
+      const titleId = Number((upsertTitle.get(canonicalKey(item), 'episode', cleanTitle(item.title), item.year || null, item.season || null, item.episode || null, item.group || '', item.artwork || '') as {id:number}).id);
+      upsertEpisodeVariant.run(titleId,sourceId,item.sourceRef,secrets.seal(item.url,true),item.quality || '',item.group || '',generation,seriesId,(item.episodeName || '').slice(0,250));
+    }
+    db.prepare('DELETE FROM variants WHERE series_parent_id=? AND source_id=? AND generation<>?').run(seriesId,sourceId,generation);
+  });
+}
+
+export function listSeriesEpisodes(seriesId: number, userId: number): unknown[] {
+  return db.prepare(`
+    SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,MAX(v.episode_name) AS episode_name,
+      COUNT(v.id) AS source_count,
+      CASE WHEN f.title_id IS NULL THEN 0 ELSE 1 END AS favourite,p.position_seconds
+    FROM variants v JOIN titles t ON t.id=v.title_id
+    LEFT JOIN favourites f ON f.title_id=t.id AND f.user_id=?
+    LEFT JOIN progress p ON p.title_id=t.id AND p.user_id=?
+    WHERE v.series_parent_id=? GROUP BY t.id
+    ORDER BY t.season DESC,t.episode DESC,t.id DESC LIMIT 1000
+  `).all(userId,userId,seriesId);
 }
 
 export interface VariantRow { id: number; title_id: number; source_id: number; source_name: string; source_type: string; source_location: string; url: string; quality: string; group_name: string }

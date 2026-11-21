@@ -5,10 +5,10 @@ import { dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
 import { parseM3u, scanFolder } from './catalogue.ts';
-import { addSource, completeImport, createUser, dashboardStats, db, deleteSource, findUser, getSource, getVariant, hasUsers, importBatch, listCategories, listSources, listTitles, listVariants, loadSession, publicSource, publicUsers, removeSession, saveCategories, saveProgress, saveSession, selectCategories, setFavourite, setSourceStatus, titleExists, type SourceRow } from './db.ts';
-import { discoverProvider, importProvider, resolveProviderStream } from './adapters/providers.ts';
+import { addSource, completeImport, createUser, dashboardStats, db, deleteSource, findUser, getSource, getTitle, getVariant, hasUsers, importBatch, listCategories, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, publicSource, publicUsers, removeSession, replaceSeriesEpisodes, saveCategories, saveProgress, saveSession, selectCategories, setFavourite, setSourceStatus, titleExists, type SourceRow } from './db.ts';
+import { discoverProvider, discoverSeriesEpisodes, importProvider, providerGuide, resolveProviderStream } from './adapters/providers.ts';
 import { ProviderError, validateProviderUrl } from './adapters/network.ts';
-import type { ImportItem, ProviderCategory, ProviderConfig, SourceType, User } from './model.ts';
+import type { GuideProgramme, ImportItem, ProviderCategory, ProviderConfig, SourceType, User } from './model.ts';
 
 const webRoot = join(dirname(fileURLToPath(import.meta.url)), '..', 'web');
 const allowedAssets: Record<string, string> = {
@@ -27,6 +27,8 @@ const contentTypes: Record<string, string> = {
 const allowedKinds = new Set<SourceType>(['folder', 'm3u', 'xtream', 'stalker', 'direct']);
 const inProgress = new Set<number>();
 const failures = new Map<string, { count: number; until: number }>();
+const episodeJobs = new Map<number, {status:'running'|'ready'|'error';started:number;finished:number;error:string}>();
+const guideCache = new Map<number, {expires:number;programmes:GuideProgramme[];source:string}>();
 
 class HttpError extends Error {
   status: number;
@@ -188,6 +190,40 @@ function startDiscovery(source: SourceRow): void {
   })();
 }
 
+function startEpisodeDiscovery(seriesId: number): void {
+  const current = episodeJobs.get(seriesId);
+  if (current?.status === 'running') throw new HttpError(409,'Episodes are already being retrieved.');
+  if (current && Date.now() - current.started < 60_000) throw new HttpError(429,'Wait one minute before refreshing this show again.');
+  if ([...episodeJobs.values()].filter(job=>job.status === 'running').length >= 3) throw new HttpError(429,'Episode lookups are busy. Please try again shortly.');
+  const show = getTitle(seriesId);
+  if (!show || show.kind !== 'series') throw new HttpError(404,'Series not found.');
+  const variants = listVariants(seriesId).filter(row=>row.url.startsWith('xtream-series:') || row.url.startsWith('stalker-series:')).slice(0,8);
+  if (!variants.length) throw new HttpError(404,'This series has no supported provider connection.');
+  episodeJobs.set(seriesId,{status:'running',started:Date.now(),finished:0,error:''});
+  if (episodeJobs.size > 500) {
+    for (const [id,job] of episodeJobs) { if (id !== seriesId && job.status !== 'running') { episodeJobs.delete(id); break; } }
+  }
+  void (async () => {
+    const grouped = new Map<number,typeof variants>();
+    for (const variant of variants) grouped.set(variant.source_id,[...(grouped.get(variant.source_id) || []),variant]);
+    let successful = 0;
+    const errors: string[] = [];
+    for (const [sourceId,sourceVariants] of grouped) {
+      const source = getSource(sourceId);
+      if (!source) continue;
+      try {
+        const collected: ImportItem[] = [];
+        for (const variant of sourceVariants) collected.push(...await discoverSeriesEpisodes(source,variant.url,show.title,show.year));
+        replaceSeriesEpisodes(seriesId,sourceId,collected);
+        successful++;
+      } catch (error) {
+        errors.push(`${source.name}: ${error instanceof Error ? error.message.slice(0,180) : 'Could not load episodes.'}`);
+      }
+    }
+    episodeJobs.set(seriesId,{status:successful ? 'ready' : 'error',started:episodeJobs.get(seriesId)?.started || Date.now(),finished:Date.now(),error:errors.join(' · ').slice(0,350)});
+  })();
+}
+
 async function* arrayItems(items: ImportItem[]): AsyncGenerator<ImportItem> {
   for (const item of items) yield item;
 }
@@ -232,7 +268,7 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const path = url.pathname;
   const method = req.method || 'GET';
-  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.2.0' });
+  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.3.0' });
   if (path === '/api/session' && method === 'GET') {
     const current = session(req);
     return send(res, 200, { needsSetup: !hasUsers(), user: current?.user || null, csrf: current?.csrf || null });
@@ -384,6 +420,44 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     if (!['all', 'library', 'film', 'series', 'episode', 'channel', 'music', 'photo'].includes(kind)) throw new HttpError(400, 'Unsupported media kind.');
     const query = (url.searchParams.get('q') || '').slice(0, 120);
     return send(res, 200, { items: listTitles(kind as 'all' | 'library' | ImportItem['kind'], current.user.id, query), maxResults: 250 });
+  }
+  const episodesMatch = /^\/api\/titles\/(\d+)\/episodes(?:\/(refresh))?$/.exec(path);
+  if (episodesMatch) {
+    const titleId = positiveId(episodesMatch[1]);
+    const title = getTitle(titleId);
+    if (!title || title.kind !== 'series') throw new HttpError(404,'Series not found.');
+    if (method === 'GET' && !episodesMatch[2]) {
+      return send(res,200,{series:title,items:listSeriesEpisodes(titleId,current.user.id),status:episodeJobs.get(titleId) || {status:'idle',error:''}});
+    }
+    if (method === 'POST' && episodesMatch[2] === 'refresh') {
+      requireWrite(req);
+      startEpisodeDiscovery(titleId);
+      return send(res,202,{status:'running'});
+    }
+  }
+  const guideMatch = /^\/api\/titles\/(\d+)\/guide$/.exec(path);
+  if (guideMatch && method === 'GET') {
+    const titleId = positiveId(guideMatch[1]);
+    if (getTitle(titleId)?.kind !== 'channel') throw new HttpError(404,'Live channel not found.');
+    const cached = guideCache.get(titleId);
+    if (cached && cached.expires > Date.now()) return send(res,200,{programmes:cached.programmes,source:cached.source,cached:true});
+    const variants = listVariants(titleId).filter(v=>['stalker','xtream'].includes(v.source_type)).slice(0,2);
+    let programmes: GuideProgramme[] = [];
+    let sourceName = '';
+    for (const variant of variants) {
+      const source = getSource(variant.source_id);
+      if (!source) continue;
+      try {
+        programmes = await providerGuide(source,variant.source_ref);
+        if (programmes.length) { sourceName = source.name; break; }
+      } catch (error) {
+        if (error instanceof ProviderError && error.status === 429) break;
+        console.error(`Guide lookup failed for source ${source.id}:`,error instanceof Error ? error.message : 'Unknown error');
+      }
+    }
+    guideCache.set(titleId,{expires:Date.now()+5*60_000,programmes,source:sourceName});
+    if (guideCache.size > 100) guideCache.delete(guideCache.keys().next().value!);
+    return send(res,200,{programmes,source:sourceName,cached:false});
   }
   const variantMatch = /^\/api\/titles\/(\d+)\/variants$/.exec(path);
   if (variantMatch && method === 'GET') {

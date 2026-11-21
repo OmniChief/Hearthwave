@@ -1,4 +1,4 @@
-const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', liveGroup: 'all', query: '', items: [], stats: null, sources: [], activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackGeneration: 0, lastProgressSave: 0 };
+const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', liveGroup: 'all', query: '', items: [], stats: null, sources: [], seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackGeneration: 0, lastProgressSave: 0 };
 const $ = (selector) => document.querySelector(selector);
 const page = $('#page');
 
@@ -53,6 +53,9 @@ function showShell() {
 const headings = { home:'Home', library:'Library', live:'Live', play:'Play', create:'Create', community:'Community', 'my-space':'My Space', settings:'Settings' };
 async function navigate(destination) {
   if (destination === 'settings' && state.session?.user.role !== 'admin') return;
+  state.seriesDetail = null;
+  state.seriesEpisodes = [];
+  clearTimeout(state.seriesRefreshTimer);
   state.page = headings[destination] ? destination : 'home';
   $('#page-title').textContent = headings[state.page];
   document.querySelectorAll('[data-page]').forEach(el => el.classList.toggle('selected', el.dataset.page === state.page));
@@ -74,11 +77,11 @@ function mediaCard(item) {
   const initial = Array.from(item.title || '?')[0].toUpperCase();
   const tone = Number(item.id) % 4;
   const detail = [item.year, item.kind === 'episode' ? `S${item.season || '?'}E${item.episode || '?'}` : null, `${item.source_count} source${item.source_count === 1 ? '' : 's'}`].filter(Boolean).join(' · ');
-  return `<article class="media-card"><div class="media-art tone-${tone}"><span class="art-initial">${esc(initial)}</span><span class="media-kind">${esc(item.kind)}</span></div><div class="media-info"><strong title="${esc(item.title)}">${esc(item.title)}</strong><small>${esc(detail)}</small><div class="media-actions">${item.kind === 'series' ? '<span class="tag" title="Series listing imported; episode discovery is coming later">Episodes coming later</span>' : `<button class="button button-quiet button-small" data-play="${item.id}">Play</button>`}<button class="star-button ${item.favourite ? 'is-favourite':''}" data-favourite="${item.id}" data-next="${item.favourite ? '0':'1'}" aria-label="${item.favourite ? 'Remove from' : 'Add to'} favourites">${item.favourite ? '★':'☆'}</button></div></div></article>`;
+  return `<article class="media-card"><div class="media-art tone-${tone}"><span class="art-initial">${esc(initial)}</span><span class="media-kind">${esc(item.kind)}</span></div><div class="media-info"><strong title="${esc(item.title)}">${esc(item.title)}</strong><small>${esc(detail)}</small><div class="media-actions">${item.kind === 'series' ? `<button class="button button-quiet button-small" data-series="${item.id}">Episodes</button>` : `<button class="button button-quiet button-small" data-play="${item.id}">Play</button>`}<button class="star-button ${item.favourite ? 'is-favourite':''}" data-favourite="${item.id}" data-next="${item.favourite ? '0':'1'}" aria-label="${item.favourite ? 'Remove from' : 'Add to'} favourites">${item.favourite ? '★':'☆'}</button></div></div></article>`;
 }
 
 function liveCard(item) {
-  return `<button class="channel-row" data-play="${item.id}"><span class="channel-icon">▻</span><span><strong>${esc(item.title)}</strong><small>${esc(item.group_name || 'Live channel')} · ${item.source_count} source${item.source_count === 1 ? '' : 's'}</small></span></button>`;
+  return `<div class="channel-row"><button class="channel-play" data-play="${item.id}"><span class="channel-icon">▻</span><span><strong>${esc(item.title)}</strong><small>${esc(item.group_name || 'Live channel')} · ${item.source_count} source${item.source_count === 1 ? '' : 's'}</small></span></button><button class="button button-quiet button-small" data-guide="${item.id}" aria-label="Programme guide for ${esc(item.title)}">Guide</button></div>`;
 }
 
 async function renderHome() {
@@ -95,15 +98,51 @@ async function renderHome() {
 }
 
 async function renderLibrary() {
+  if (state.seriesDetail) return renderSeriesDetail();
   const types = [{key:'all',name:'All media'}, {key:'film',name:'Films'}, {key:'series',name:'Series'}, {key:'episode',name:'Episodes'}, {key:'music',name:'Music'}, {key:'photo',name:'Photos'}];
   const result = await api(`/api/catalogue?kind=${encodeURIComponent(state.kind === 'all' ? 'library' : state.kind)}&q=${encodeURIComponent(state.query)}`);
   state.items = result.items;
   const items = result.items.filter(item => item.kind !== 'channel');
-  page.innerHTML = `<div class="preview-banner">Local folders and selected Xtream/Stalker VOD categories feed this shared collection. Series titles are listed for now; episode indexing, metadata enrichment, subtitles and downloads remain future work.</div>
+  page.innerHTML = `<div class="preview-banner">Local folders and selected Xtream/Stalker VOD categories feed this shared collection. Opening a provider series retrieves its seasons and episodes on demand. Metadata enrichment, subtitles and downloads remain future work.</div>
     <div class="toolbar">${types.map(type => `<button class="pill ${state.kind === type.key ? 'active':''}" data-kind="${type.key}">${type.name}</button>`).join('')}</div>
     ${heading(state.kind === 'all' ? 'Your collection' : types.find(t => t.key === state.kind).name, `${items.length} item${items.length===1?'':'s'} in this view`)}
     ${items.length ? `<div class="cards">${items.map(mediaCard).join('')}</div>` : emptyState('No matching media', 'Try another filter, or add a folder in Settings > Sources.', '▣')}
     ${result.items.length >= result.maxResults ? `<p class="field-note">Showing the first ${result.maxResults} results. Use search to narrow the list.</p>` : ''}`;
+}
+
+async function renderSeriesDetail() {
+  const seriesId = state.seriesDetail;
+  const result = await api(`/api/titles/${seriesId}/episodes`);
+  if (state.seriesDetail !== seriesId || state.page !== 'library') return;
+  state.items = [result.series,...result.items];
+  state.seriesEpisodes = result.items;
+  let status = result.status;
+  if (status.status === 'idle' && !result.items.length) {
+    try { await api(`/api/titles/${seriesId}/episodes/refresh`,{method:'POST'}); status = {status:'running',error:''}; }
+    catch (error) { status = {status:'error',error:error.message}; }
+  }
+  const seasons = [...new Set(result.items.map(row => row.season || 0))].sort((a,b)=>b-a);
+  page.innerHTML = `<section class="surface"><button class="button button-quiet button-small" data-series-back>← Back to Library</button><div class="section-heading"><div><span class="eyebrow">SERIES</span><h2>${esc(result.series.title)}</h2><p>${esc(result.series.year || 'Year unknown')} · ${result.items.length} episode${result.items.length === 1 ? '' : 's'} across ${seasons.length} season${seasons.length === 1 ? '' : 's'}</p></div><button class="button button-quiet button-small" data-series-refresh="${seriesId}" ${status.status === 'running' ? 'disabled':''}>${status.status === 'running' ? 'Loading…':'Refresh episodes'}</button></div>
+  ${status.status === 'running' ? '<p class="field-note">Retrieving episode information from the configured providers. This runs only when requested.</p>':''}
+  ${status.error ? `<p class="field-note alert-note">${esc(status.error)}</p>`:''}
+  ${seasons.map(season => `<div class="episode-season"><h3>${season ? `Season ${season}` : 'Unknown season'}</h3><div class="episode-list">${result.items.filter(row => (row.season || 0) === season).map(row => `<div class="episode-row"><div><strong>${row.episode ? `Episode ${row.episode}` : 'Episode'}</strong>${row.episode_name ? `<span>${esc(row.episode_name)}</span>` : ''}<small>${row.source_count} source${row.source_count === 1 ? '' : 's'}</small></div><button class="button button-quiet button-small" data-play="${row.id}">Play</button></div>`).join('')}</div></div>`).join('')}
+  ${!result.items.length && status.status !== 'running' ? emptyState('No episodes found yet','Refresh this series to ask its providers for available seasons and episodes.','▣') : ''}</section>`;
+  clearTimeout(state.seriesRefreshTimer);
+  if (status.status === 'running') state.seriesRefreshTimer = setTimeout(() => { if (state.page === 'library' && state.seriesDetail === seriesId) renderSeriesDetail().catch(error=>notify(error.message,true)); },2500);
+}
+
+async function showLiveGuide(titleId) {
+  const channel = state.items.find(row => String(row.id) === String(titleId));
+  const panel = $('#guide-panel');
+  if (!panel) return;
+  panel.hidden = false;
+  panel.innerHTML = `<h2>${esc(channel?.title || 'Channel')} · Programme guide</h2><p class="field-note">Loading available guide entries…</p>`;
+  panel.scrollIntoView({behavior:'smooth',block:'nearest'});
+  try {
+    const result = await api(`/api/titles/${titleId}/guide`);
+    if (!panel.isConnected) return;
+    panel.innerHTML = `<h2>${esc(channel?.title || 'Channel')} · Programme guide</h2><p class="field-note">${result.source ? `Guide from ${esc(result.source)} · ` : ''}Times are shown as supplied by the provider.</p>${result.programmes.length ? `<div class="episode-list">${result.programmes.map(row => `<div class="episode-row"><div><strong>${esc(row.title)}</strong><small>${esc(row.start)}${row.end ? ` – ${esc(row.end)}`:''}</small>${row.description ? `<p class="field-note">${esc(row.description)}</p>`:''}</div></div>`).join('')}</div>` : '<p class="field-note">No guide entries were returned for this channel. Live playback is unaffected.</p>'}`;
+  } catch (error) { if (panel.isConnected) panel.innerHTML = `<h2>Programme guide unavailable</h2><p class="field-note">${esc(error.message)}</p>`; }
 }
 
 async function renderLive() {
@@ -111,10 +150,11 @@ async function renderLive() {
   state.items = result.items;
   const groups = [...new Set(result.items.map(item => item.group_name).filter(Boolean))].sort((a,b) => a.localeCompare(b));
   const selected = state.liveGroup === 'all' ? result.items : result.items.filter(item => item.group_name === state.liveGroup);
-  page.innerHTML = `<div class="preview-banner">Direct links, M3U imports and selected Xtream/Stalker channels share this lineup. Full XMLTV EPG and improved player compatibility are still planned.</div>
+  page.innerHTML = `<div class="preview-banner">Direct links, M3U imports and selected Xtream/Stalker channels share this lineup. Use Guide on a provider channel to load available programme entries. Full XMLTV aggregation and improved player compatibility are still planned.</div>
     <div class="toolbar"><button class="pill ${state.liveGroup === 'all' ? 'active':''}" data-group="all">All channels</button>${groups.map(group => `<button class="pill ${state.liveGroup === group ? 'active':''}" data-group="${esc(group)}">${esc(group)}</button>`).join('')}</div>
     ${heading('Your live lineup', `${selected.length} channel${selected.length===1?'':'s'} · ${groups.length} categor${groups.length===1?'y':'ies'}`)}
-    ${selected.length ? `<div class="live-list">${selected.map(liveCard).join('')}</div>` : emptyState('No channels to show', 'Import an M3U playlist or create a direct channel in Settings > Sources.', '▻')}`;
+    ${selected.length ? `<div class="live-list">${selected.map(liveCard).join('')}</div>` : emptyState('No channels to show', 'Import an M3U playlist or create a direct channel in Settings > Sources.', '▻')}
+    <section class="surface" id="guide-panel" hidden></section>`;
 }
 
 const upcoming = {
@@ -224,7 +264,10 @@ async function startPlayback(titleId) {
   state.variants = playable;
   state.variantIndex = 0;
   state.pendingSeek = Number(title.position_seconds) || 0;
-  $('#player-title').textContent = title.title;
+  $('#player-title').textContent = title.kind === 'episode' ? `${title.title} · S${title.season || '?'}E${title.episode || '?'}${title.episode_name ? ` · ${title.episode_name}`:''}` : title.title;
+  const index = state.seriesEpisodes.findIndex(item => Number(item.id) === Number(titleId));
+  $('#previous-episode').hidden = index < 0 || index === state.seriesEpisodes.length - 1;
+  $('#next-episode').hidden = index <= 0;
   $('#player-overlay').hidden = false;
   void playVariant();
 }
@@ -264,6 +307,15 @@ function nextSource() {
   state.pendingSeek = $('#player').currentTime || state.pendingSeek;
   state.variantIndex += 1;
   void playVariant();
+}
+
+async function jumpEpisode(direction) {
+  if (!state.activeTitle) return;
+  const index = state.seriesEpisodes.findIndex(item => Number(item.id) === Number(state.activeTitle.id));
+  const adjacent = state.seriesEpisodes[index + direction];
+  if (index < 0 || !adjacent) return;
+  try { await startPlayback(adjacent.id); }
+  catch (error) { notify(error.message,true); }
 }
 
 function closePlayer() {
@@ -336,6 +388,21 @@ page.addEventListener('click', async event => {
   const target = event.target.closest('button');
   if (!target) return;
   if (target.dataset.page) return navigate(target.dataset.page);
+  if (target.dataset.series) {
+    state.seriesDetail = Number(target.dataset.series);
+    state.page = 'library';
+    $('#page-title').textContent = 'Library';
+    document.querySelectorAll('[data-page]').forEach(el => el.classList.toggle('selected',el.dataset.page === 'library'));
+    window.scrollTo({top:0,behavior:'instant'});
+    return renderPage();
+  }
+  if (target.hasAttribute('data-series-back')) { state.seriesDetail = null; clearTimeout(state.seriesRefreshTimer); return renderPage(); }
+  if (target.dataset.seriesRefresh) {
+    try { await api(`/api/titles/${target.dataset.seriesRefresh}/episodes/refresh`,{method:'POST'}); notify('Retrieving available episodes.'); await renderPage(); }
+    catch (error) { notify(error.message,true); }
+    return;
+  }
+  if (target.dataset.guide) return showLiveGuide(target.dataset.guide);
   if (target.dataset.kind) { state.kind = target.dataset.kind; return renderPage(); }
   if (target.dataset.group) { state.liveGroup = target.dataset.group; return renderPage(); }
   if (target.dataset.settings) { state.settingsTab = target.dataset.settings; return renderPage(); }
@@ -378,6 +445,8 @@ document.querySelectorAll('.sidebar [data-page]').forEach(button => button.addEv
 $('#brand-link').addEventListener('click', event => { event.preventDefault(); navigate('home'); });
 $('#close-player').addEventListener('click', closePlayer);
 $('#try-next').addEventListener('click', nextSource);
+$('#previous-episode').addEventListener('click', () => jumpEpisode(1));
+$('#next-episode').addEventListener('click', () => jumpEpisode(-1));
 $('#open-stream').addEventListener('click', () => {
   if (state.resolvedUrl && /^https?:\/\//i.test(state.resolvedUrl)) window.open(state.resolvedUrl, '_blank', 'noopener,noreferrer');
   else notify('The local stream is available only inside Hearthwave.');
