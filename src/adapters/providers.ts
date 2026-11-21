@@ -21,6 +21,14 @@ function artwork(value: unknown): string {
   try { const url = validateProviderUrl(field(value)); return url.toString(); }
   catch { return ''; }
 }
+function description(value: unknown): string { return field(value).slice(0,4000); }
+function genres(value: unknown): string {
+  return (Array.isArray(value) ? value.map(field).filter(Boolean).join(', ') : field(value)).slice(0,250);
+}
+function rating(value: unknown): number | null {
+  const n=Number(value);
+  return Number.isFinite(n) && n > 0 && n <= 10 ? Math.round(n*10)/10 : null;
+}
 
 export function providerKinds(): Kind[] { return ['live','vod','series']; }
 
@@ -172,6 +180,8 @@ function xtreamRows(rows: unknown, source: SourceRow, category: ProviderCategory
       externalId:kind === 'live' ? field(row.epg_channel_id || row.xmltv_id) : '',
       sourceRef:`${kind}:${id}`, url:kind === 'series' ? `xtream-series:${id}` : client.url(kind,id,ext),
       quality:quality(name),group:category.name,artwork:artwork(row.stream_icon || row.cover || row.backdrop_path),
+      description:description(row.plot || row.description),genres:genres(row.genre || row.genres),
+      rating:rating(row.rating_5based != null ? Number(row.rating_5based)*2 : row.rating_imdb ?? row.rating),
     });
   }
   return items;
@@ -192,6 +202,8 @@ function stalkerRows(rows: unknown, category: ProviderCategory): ImportItem[] {
       year:yearFrom(row.year || name),externalId:kind === 'live' ? field(row.xmltv_id || row.epg_id) : '',
       sourceRef:`${kind}:${id}`,url:kind === 'series' ? `stalker-series:${id}` : `stalker:${JSON.stringify({kind,cmd})}`,
       quality:quality(name),group:category.name,artwork:artwork(row.logo || row.screenshot_uri),
+      description:description(row.description || row.plot),genres:genres(row.genre || row.genres),
+      rating:rating(row.rating_imdb ?? row.rating),
     });
   }
   return items;

@@ -5,7 +5,7 @@ import { dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
 import { parseM3u, scanFolder } from './catalogue.ts';
-import { abortGuideImport, addGuideFeed, addSource, completeImport, createUser, dashboardStats, db, deleteGuideFeed, deleteSource, findUser, getGuideFeed, getSource, getTitle, getVariant, guideGrid, hasUsers, importBatch, listCategories, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, publicGuideFeed, publicSource, publicUsers, removeSession, replaceSeriesEpisodes, saveCategories, saveProgress, saveSession, selectCategories, setFavourite, setGuideStatus, setSourceStatus, storedGuide, titleExists, type GuideFeed, type SourceRow } from './db.ts';
+import { abortGuideImport, addGuideFeed, addSource, completeImport, createUser, dashboardStats, db, deleteGuideFeed, deleteSource, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getVariant, guideGrid, hasUsers, importBatch, listCategories, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setFavourite, setGuideStatus, setSourceStatus, storedGuide, titleExists, type GuideFeed, type SourceRow } from './db.ts';
 import { discoverProvider, discoverSeriesEpisodes, importProvider, providerGuide, resolveProviderStream } from './adapters/providers.ts';
 import { importXmltv } from './guide.ts';
 import { ProviderError, validateProviderUrl } from './adapters/network.ts';
@@ -293,7 +293,7 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const path = url.pathname;
   const method = req.method || 'GET';
-  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.4.0' });
+  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.5.0' });
   if (path === '/api/session' && method === 'GET') {
     const current = session(req);
     return send(res, 200, { needsSetup: !hasUsers(), user: current?.user || null, csrf: current?.csrf || null });
@@ -477,11 +477,46 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     const limit=Math.floor(Math.min(80,Math.max(1,Number(url.searchParams.get('limit') || 40) || 40)));
     return send(res,200,{items:guideGrid(country,limit,(url.searchParams.get('q') || '').slice(0,120)),country});
   }
+  if (path==='/api/guide/channels' && method==='GET') {
+    if (current.user.role!=='admin') throw new HttpError(403,'Administrator access required.');
+    return send(res,200,{channels:searchGuideChannels((url.searchParams.get('q') || '').slice(0,120))});
+  }
   if (path === '/api/catalogue' && method === 'GET') {
     const kind = url.searchParams.get('kind') || 'all';
     if (!['all', 'library', 'film', 'series', 'episode', 'channel', 'music', 'photo'].includes(kind)) throw new HttpError(400, 'Unsupported media kind.');
     const query = (url.searchParams.get('q') || '').slice(0, 120);
     return send(res, 200, { items: listTitles(kind as 'all' | 'library' | ImportItem['kind'], current.user.id, query), maxResults: 250 });
+  }
+  const detailMatch=/^\/api\/titles\/(\d+)$/.exec(path);
+  if (detailMatch && method==='GET') {
+    const title=getTitleDetail(positiveId(detailMatch[1]),current.user.id);
+    if (!title) throw new HttpError(404,'Title not found.');
+    return send(res,200,{title});
+  }
+  const mappingMatch=/^\/api\/titles\/(\d+)\/guide\/mapping$/.exec(path);
+  if (mappingMatch) {
+    const titleId=positiveId(mappingMatch[1]);
+    if (getTitle(titleId)?.kind!=='channel') throw new HttpError(404,'Live channel not found.');
+    if (method==='GET') {
+      if (current.user.role!=='admin') throw new HttpError(403,'Administrator access required.');
+      return send(res,200,{mapping:getGuideMapping(titleId) || null});
+    }
+    if (method==='POST') {
+      requireWrite(req,true);
+      const input=await body(req);
+      const feedId=positiveId(String(input.feedId || ''));
+      const channelId=textField(input.channelId,'XMLTV channel ID',300);
+      try { saveGuideMapping(titleId,feedId,channelId); }
+      catch (error) { throw new HttpError(400,error instanceof Error ? error.message : 'Invalid guide mapping.'); }
+      guideCache.delete(titleId);
+      return send(res,200,{mapping:getGuideMapping(titleId)});
+    }
+    if (method==='DELETE') {
+      requireWrite(req,true);
+      removeGuideMapping(titleId);
+      guideCache.delete(titleId);
+      return send(res,200,{ok:true});
+    }
   }
   const episodesMatch = /^\/api\/titles\/(\d+)\/episodes(?:\/(refresh))?$/.exec(path);
   if (episodesMatch) {

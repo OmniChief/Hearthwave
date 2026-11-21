@@ -1,4 +1,4 @@
-const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', liveGroup: 'all', liveCountry: 'all', guideView: false, guideCountry: '', query: '', items: [], stats: null, sources: [], seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackGeneration: 0, lastProgressSave: 0 };
+const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', liveGroup: 'all', liveCountry: 'all', guideView: false, guideCountry: '', query: '', items: [], stats: null, sources: [], detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackGeneration: 0, lastProgressSave: 0 };
 const $ = (selector) => document.querySelector(selector);
 const page = $('#page');
 
@@ -55,6 +55,7 @@ async function navigate(destination) {
   if (destination === 'settings' && state.session?.user.role !== 'admin') return;
   state.guideView = false;
   state.seriesDetail = null;
+  state.detailId = null;
   state.seriesEpisodes = [];
   clearTimeout(state.seriesRefreshTimer);
   state.page = headings[destination] ? destination : 'home';
@@ -78,7 +79,8 @@ function mediaCard(item) {
   const initial = Array.from(item.title || '?')[0].toUpperCase();
   const tone = Number(item.id) % 4;
   const detail = [item.year, item.kind === 'episode' ? `S${item.season || '?'}E${item.episode || '?'}` : null, `${item.source_count} source${item.source_count === 1 ? '' : 's'}`].filter(Boolean).join(' · ');
-  return `<article class="media-card"><div class="media-art tone-${tone}"><span class="art-initial">${esc(initial)}</span><span class="media-kind">${esc(item.kind)}</span></div><div class="media-info"><strong title="${esc(item.title)}">${esc(item.title)}</strong><small>${esc(detail)}</small><div class="media-actions">${item.kind === 'series' ? `<button class="button button-quiet button-small" data-series="${item.id}">Episodes</button>` : `<button class="button button-quiet button-small" data-play="${item.id}">Play</button>`}<button class="star-button ${item.favourite ? 'is-favourite':''}" data-favourite="${item.id}" data-next="${item.favourite ? '0':'1'}" aria-label="${item.favourite ? 'Remove from' : 'Add to'} favourites">${item.favourite ? '★':'☆'}</button></div></div></article>`;
+  const cover = typeof item.artwork === 'string' && /^https?:\/\//i.test(item.artwork) ? `<img src="${esc(item.artwork)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '';
+  return `<article class="media-card"><div class="media-art tone-${tone}"><span class="art-initial">${esc(initial)}</span>${cover}<span class="media-kind">${esc(item.kind)}</span></div><div class="media-info"><strong title="${esc(item.title)}">${esc(item.title)}</strong><small>${esc(detail)}</small><div class="media-actions"><button class="button button-quiet button-small" data-detail="${item.id}">Details</button>${item.kind === 'series' ? `<button class="button button-quiet button-small" data-series="${item.id}">Episodes</button>` : `<button class="button button-quiet button-small" data-play="${item.id}">Play</button>`}<button class="star-button ${item.favourite ? 'is-favourite':''}" data-favourite="${item.id}" data-next="${item.favourite ? '0':'1'}" aria-label="${item.favourite ? 'Remove from' : 'Add to'} favourites">${item.favourite ? '★':'☆'}</button></div></div></article>`;
 }
 
 function liveCard(item) {
@@ -115,21 +117,42 @@ async function renderHome() {
 }
 
 async function renderLibrary() {
+  if (state.detailId) return renderTitleDetail();
   if (state.seriesDetail) return renderSeriesDetail();
   const types = [{key:'all',name:'All media'}, {key:'film',name:'Films'}, {key:'series',name:'Series'}, {key:'episode',name:'Episodes'}, {key:'music',name:'Music'}, {key:'photo',name:'Photos'}];
   const result = await api(`/api/catalogue?kind=${encodeURIComponent(state.kind === 'all' ? 'library' : state.kind)}&q=${encodeURIComponent(state.query)}`);
   state.items = result.items;
   const items = result.items.filter(item => item.kind !== 'channel');
-  page.innerHTML = `<div class="preview-banner">Local folders and selected Xtream/Stalker VOD categories feed this shared collection. Opening a provider series retrieves its seasons and episodes on demand. Metadata enrichment, subtitles and downloads remain future work.</div>
+  page.innerHTML = `<div class="preview-banner">One title across your sources, with provider artwork and descriptions when available. Choose Details to see editions and start a specific version; series episodes load only when opened.</div>
     <div class="toolbar">${types.map(type => `<button class="pill ${state.kind === type.key ? 'active':''}" data-kind="${type.key}">${type.name}</button>`).join('')}</div>
     ${heading(state.kind === 'all' ? 'Your collection' : types.find(t => t.key === state.kind).name, `${items.length} item${items.length===1?'':'s'} in this view`)}
     ${items.length ? `<div class="cards">${items.map(mediaCard).join('')}</div>` : emptyState('No matching media', 'Try another filter, or add a folder in Settings > Sources.', '▣')}
     ${result.items.length >= result.maxResults ? `<p class="field-note">Showing the first ${result.maxResults} results. Use search to narrow the list.</p>` : ''}`;
 }
 
+async function renderTitleDetail() {
+  const titleId=state.detailId;
+  const [result,versions]=await Promise.all([api(`/api/titles/${titleId}`),api(`/api/titles/${titleId}/variants`)]);
+  if (state.detailId!==titleId || state.page!=='library') return;
+  const title=result.title;
+  state.items=[title];
+  const art=typeof title.artwork==='string' && /^https?:\/\//i.test(title.artwork)
+    ? `<img src="${esc(title.artwork)}" alt="" referrerpolicy="no-referrer">` : '';
+  const facts=[title.year,title.genres,title.rating ? `★ ${title.rating}/10` : '',title.duration_seconds ? `${Math.round(title.duration_seconds/60)} min` : ''].filter(Boolean);
+  page.innerHTML=`<section class="surface"><button class="button button-quiet button-small" data-detail-back>← Back to Library</button>
+    <div class="detail-layout"><div class="detail-poster media-art tone-${Number(title.id)%4}"><span class="art-initial">${esc(Array.from(title.title||'?')[0].toUpperCase())}</span>${art}</div>
+    <div><span class="eyebrow">${esc(title.kind.toUpperCase())} · ${title.source_count} SOURCE${title.source_count===1?'':'S'}</span><h2 class="detail-title">${esc(title.title)}</h2>
+    <p class="detail-facts">${facts.map(esc).join(' · ') || 'No metadata supplied yet'}</p>
+    <p class="detail-description">${esc(title.description || 'A description has not been supplied by your sources yet.')}</p>
+    <div class="row-actions">${title.kind==='series' ? `<button class="button button-primary" data-series="${title.id}">Browse episodes</button>` : versions.variants.some(v=>v.playable) ? `<button class="button button-primary" data-play="${title.id}">Play best available</button>` : ''}
+    <button class="button button-quiet" data-favourite="${title.id}" data-next="${title.favourite?'0':'1'}">${title.favourite?'★ In favourites':'☆ Add to favourites'}</button></div></div></div>
+    ${heading('Available sources','Choose a version to play. Hearthwave can try the next source if playback fails.')}
+    <div class="episode-list">${versions.variants.map(version=>`<div class="episode-row"><div><strong>${esc(version.name)}</strong><small>${esc([version.quality || 'Quality unspecified',version.type].join(' · '))}</small></div>${version.playable ? `<button class="button button-quiet button-small" data-play="${title.id}" data-preferred="${version.id}">Play this source</button>` : '<span class="field-note">Browse episodes first</span>'}</div>`).join('')}</div></section>`;
+}
+
 async function renderSeriesDetail() {
   const seriesId = state.seriesDetail;
-  const result = await api(`/api/titles/${seriesId}/episodes`);
+  const [result,detail]=await Promise.all([api(`/api/titles/${seriesId}/episodes`),api(`/api/titles/${seriesId}`)]);
   if (state.seriesDetail !== seriesId || state.page !== 'library') return;
   state.items = [result.series,...result.items];
   state.seriesEpisodes = result.items;
@@ -139,7 +162,7 @@ async function renderSeriesDetail() {
     catch (error) { status = {status:'error',error:error.message}; }
   }
   const seasons = [...new Set(result.items.map(row => row.season || 0))].sort((a,b)=>b-a);
-  page.innerHTML = `<section class="surface"><button class="button button-quiet button-small" data-series-back>← Back to Library</button><div class="section-heading"><div><span class="eyebrow">SERIES</span><h2>${esc(result.series.title)}</h2><p>${esc(result.series.year || 'Year unknown')} · ${result.items.length} episode${result.items.length === 1 ? '' : 's'} across ${seasons.length} season${seasons.length === 1 ? '' : 's'}</p></div><button class="button button-quiet button-small" data-series-refresh="${seriesId}" ${status.status === 'running' ? 'disabled':''}>${status.status === 'running' ? 'Loading…':'Refresh episodes'}</button></div>
+  page.innerHTML = `<section class="surface"><button class="button button-quiet button-small" data-series-back>← Back to Library</button><div class="section-heading"><div><span class="eyebrow">SERIES</span><h2>${esc(result.series.title)}</h2><p>${esc(result.series.year || 'Year unknown')} · ${result.items.length} episode${result.items.length === 1 ? '' : 's'} across ${seasons.length} season${seasons.length === 1 ? '' : 's'}</p>${detail.title.description ? `<p class="detail-description">${esc(detail.title.description)}</p>`:''}</div><button class="button button-quiet button-small" data-series-refresh="${seriesId}" ${status.status === 'running' ? 'disabled':''}>${status.status === 'running' ? 'Loading…':'Refresh episodes'}</button></div>
   ${status.status === 'running' ? '<p class="field-note">Retrieving episode information from the configured providers. This runs only when requested.</p>':''}
   ${status.error ? `<p class="field-note alert-note">${esc(status.error)}</p>`:''}
   ${seasons.map(season => `<div class="episode-season"><h3>${season ? `Season ${season}` : 'Unknown season'}</h3><div class="episode-list">${result.items.filter(row => (row.season || 0) === season).map(row => `<div class="episode-row"><div><strong>${row.episode ? `Episode ${row.episode}` : 'Episode'}</strong>${row.episode_name ? `<span>${esc(row.episode_name)}</span>` : ''}<small>${row.source_count} source${row.source_count === 1 ? '' : 's'}</small></div><button class="button button-quiet button-small" data-play="${row.id}">Play</button></div>`).join('')}</div></div>`).join('')}
@@ -158,8 +181,24 @@ async function showLiveGuide(titleId) {
   try {
     const result = await api(`/api/titles/${titleId}/guide`);
     if (!panel.isConnected) return;
-    panel.innerHTML = `<h2>${esc(channel?.title || 'Channel')} · Programme guide</h2><p class="field-note">${result.source ? `Guide from ${esc(result.source)} · ` : ''}XMLTV timestamps use your device timezone; other provider times are shown as supplied.</p>${result.programmes.length ? `<div class="episode-list">${result.programmes.map(row => `<div class="episode-row"><div><strong>${esc(row.title)}</strong><small>${esc(localGuideTime(row.start))}${row.end ? ` – ${esc(localGuideTime(row.end))}`:''}</small>${row.description ? `<p class="field-note">${esc(row.description)}</p>`:''}</div></div>`).join('')}</div>` : '<p class="field-note">No guide entries were returned for this channel. Live playback is unaffected.</p>'}`;
+    panel.innerHTML = `<h2>${esc(channel?.title || 'Channel')} · Programme guide</h2><p class="field-note">${result.source ? `Guide from ${esc(result.source)} · ` : ''}XMLTV timestamps use your device timezone; other provider times are shown as supplied.</p>${result.programmes.length ? `<div class="episode-list">${result.programmes.map(row => `<div class="episode-row"><div><strong>${esc(row.title)}</strong><small>${esc(localGuideTime(row.start))}${row.end ? ` – ${esc(localGuideTime(row.end))}`:''}</small>${row.description ? `<p class="field-note">${esc(row.description)}</p>`:''}</div></div>`).join('')}</div>` : '<p class="field-note">No guide entries were returned for this channel. Live playback is unaffected.</p>'}${state.session.user.role==='admin'?`<div class="guide-map-actions"><button class="button button-quiet button-small" data-guide-map="${titleId}">Match an XMLTV channel</button></div><div id="guide-map-editor"></div>`:''}`;
   } catch (error) { if (panel.isConnected) panel.innerHTML = `<h2>Programme guide unavailable</h2><p class="field-note">${esc(error.message)}</p>`; }
+}
+
+async function showGuideMappingEditor(titleId,query='') {
+  const editor=$('#guide-map-editor');
+  if (!editor) return;
+  editor.innerHTML='<p class="field-note">Finding imported XMLTV channels…</p>';
+  const channel=state.items.find(row=>Number(row.id)===Number(titleId));
+  const search=query || channel?.title || '';
+  try {
+    const [saved,results]=await Promise.all([api(`/api/titles/${titleId}/guide/mapping`),api(`/api/guide/channels?q=${encodeURIComponent(search)}`)]);
+    if (!editor.isConnected) return;
+    editor.innerHTML=`<div class="guide-map-box"><h3>Manual XMLTV match</h3><p class="field-note">${saved.mapping?`Currently matched to ${esc(saved.mapping.name || saved.mapping.channel_id)} in ${esc(saved.mapping.source)}.`:'Automatic matching is active. Choose a specific XMLTV channel to override it.'} Search by name or XMLTV ID.</p>
+      <form id="guide-search-form" class="row-actions" data-title-id="${titleId}"><input name="query" maxlength="120" placeholder="Search imported channels" value="${esc(search)}" required><button type="submit" class="button button-quiet button-small">Search</button></form>
+      <form id="guide-map-form" class="field-stack" data-title-id="${titleId}"><label>XMLTV channel<select name="channel" required><option value="">Select a channel</option>${results.channels.map((row,index)=>`<option value="${index}" data-feed-id="${row.feed_id}" data-channel-id="${esc(row.channel_id)}">${esc(row.name)} · ${esc(row.source)} (${esc(row.channel_id)})</option>`).join('')}</select></label><div class="row-actions"><button class="button button-primary button-small" type="submit" ${results.channels.length?'':'disabled'}>Save match</button>${saved.mapping?`<button class="button button-danger button-small" type="button" data-guide-unmap="${titleId}">Use automatic matching</button>`:''}</div></form>
+      ${!results.channels.length?'<p class="field-note">No channels found. Import an XMLTV feed in Settings → Metadata & Guide or try a broader search.</p>':''}</div>`;
+  } catch (error) { if (editor.isConnected) editor.innerHTML=`<p class="field-note alert-note">${esc(error.message)}</p>`; }
 }
 
 async function renderLive() {
@@ -173,7 +212,7 @@ async function renderLive() {
     return countryRank(a.channel_country)-countryRank(b.channel_country) || liveGenres.indexOf(liveGenre(a))-liveGenres.indexOf(liveGenre(b)) || a.title.localeCompare(b.title);
   });
   state.items=result.items;
-  page.innerHTML = `<div class="preview-banner">All sources share this lineup, grouped by region and familiar genres. Import XMLTV in Settings → Metadata & Guide for a combined programme guide, or use Guide on a channel for provider data. Advanced EPG mapping and player compatibility are still being developed.</div>
+  page.innerHTML = `<div class="preview-banner">All sources share this lineup, grouped by region and familiar genres. Import XMLTV in Settings → Metadata & Guide for a combined programme guide. Administrators can manually match channels from the Guide panel.</div>
     <div class="toolbar">${countries.map(([key,label])=>`<button class="pill ${state.liveCountry===key?'active':''}" data-country="${key}">${label}</button>`).join('')}</div>
     <div class="toolbar"><button class="pill ${state.liveGroup==='all'?'active':''}" data-group="all">All genres</button>${genres.map(genre=>`<button class="pill ${state.liveGroup===genre?'active':''}" data-group="${genre}">${genre}</button>`).join('')}</div>
     ${heading('Your live lineup', `${selected.length} channel${selected.length===1?'':'s'} · ${genres.length} genre${genres.length===1?'':'s'}`, '<button class="button button-quiet button-small" data-guide-view="open">Programme guide</button>')}
@@ -307,10 +346,11 @@ async function renderPage() {
   }
 }
 
-async function startPlayback(titleId) {
+async function startPlayback(titleId,preferredId=null) {
   const result = await api(`/api/titles/${titleId}/variants`);
   const playable = result.variants.filter(variant => variant.playable && (variant.url || variant.resolve));
   if (!playable.length) throw new Error('There is no playable stream for this title yet.');
+  if (preferredId != null) playable.sort((a,b)=>(Number(b.id)===Number(preferredId)?1:0)-(Number(a.id)===Number(preferredId)?1:0));
   const title = (state.items.find(item => Number(item.id) === Number(titleId)) || (await api('/api/catalogue?kind=all')).items.find(item => Number(item.id) === Number(titleId)) || { title:'Your media', id:titleId });
   state.activeTitle = title;
   state.variants = playable;
@@ -401,6 +441,9 @@ $('#sign-out').addEventListener('click', async () => {
 
 $('#global-search').addEventListener('input', (event) => {
   state.query = event.target.value;
+  state.detailId = null;
+  state.seriesDetail = null;
+  clearTimeout(state.seriesRefreshTimer);
   clearTimeout(state.searchTimer);
   state.searchTimer = setTimeout(() => {
     if (!['live','library'].includes(state.page)) navigate('library');
@@ -409,13 +452,28 @@ $('#global-search').addEventListener('input', (event) => {
 });
 
 page.addEventListener('change', event => { if (event.target?.id === 'source-type') syncSourceForm(); });
+page.addEventListener('error', event => { if (event.target?.matches?.('.media-art img')) event.target.hidden=true; }, true);
 
 page.addEventListener('submit', async event => {
   const form = event.target;
-  if (!['source-form','m3u-form','user-form','folders-form','guide-form'].includes(form.id)) return;
+  if (!['source-form','m3u-form','user-form','folders-form','guide-form','guide-search-form','guide-map-form'].includes(form.id)) return;
   event.preventDefault();
   const data = new FormData(form);
   try {
+    if (form.id === 'guide-search-form') {
+      await showGuideMappingEditor(form.dataset.titleId,String(data.get('query') || ''));
+      return;
+    }
+    if (form.id === 'guide-map-form') {
+      const chosen=form.querySelector('[name=channel]').selectedOptions[0];
+      if (!chosen?.dataset.feedId || !chosen.dataset.channelId) throw new Error('Choose an XMLTV channel.');
+      const titleId=form.dataset.titleId;
+      await api(`/api/titles/${titleId}/guide/mapping`,{method:'POST',body:{feedId:Number(chosen.dataset.feedId),channelId:chosen.dataset.channelId}});
+      notify('Manual guide match saved.');
+      await showLiveGuide(titleId);
+      await showGuideMappingEditor(titleId);
+      return;
+    }
     if (form.id === 'source-form') {
       const type = data.get('type');
       const config = type === 'xtream' ? { username:data.get('username'), password:data.get('password'), allowLan:data.has('allowLan') } : type === 'stalker' ? { mac:data.get('mac'), username:data.get('stalkerUsername'), password:data.get('stalkerPassword'), serial:data.get('serial'), deviceId:data.get('deviceId'), deviceId2:data.get('deviceId2'), allowLan:data.has('allowLan') } : undefined;
@@ -469,6 +527,7 @@ page.addEventListener('click', async event => {
   if (target.id==='refresh-guides') return renderPage();
   if (target.dataset.series) {
     state.seriesDetail = Number(target.dataset.series);
+    state.detailId = null;
     state.page = 'library';
     $('#page-title').textContent = 'Library';
     document.querySelectorAll('[data-page]').forEach(el => el.classList.toggle('selected',el.dataset.page === 'library'));
@@ -476,8 +535,25 @@ page.addEventListener('click', async event => {
     return renderPage();
   }
   if (target.hasAttribute('data-series-back')) { state.seriesDetail = null; clearTimeout(state.seriesRefreshTimer); return renderPage(); }
+  if (target.dataset.detail) {
+    state.detailId=Number(target.dataset.detail);
+    state.seriesDetail=null;
+    state.page='library';
+    $('#page-title').textContent='Library';
+    document.querySelectorAll('[data-page]').forEach(el=>el.classList.toggle('selected',el.dataset.page==='library'));
+    window.scrollTo({top:0,behavior:'instant'});
+    return renderPage();
+  }
+  if (target.hasAttribute('data-detail-back')) { state.detailId=null; return renderPage(); }
   if (target.dataset.seriesRefresh) {
     try { await api(`/api/titles/${target.dataset.seriesRefresh}/episodes/refresh`,{method:'POST'}); notify('Retrieving available episodes.'); await renderPage(); }
+    catch (error) { notify(error.message,true); }
+    return;
+  }
+  if (target.dataset.guideMap) return showGuideMappingEditor(target.dataset.guideMap);
+  if (target.dataset.guideUnmap) {
+    const titleId=target.dataset.guideUnmap;
+    try { await api(`/api/titles/${titleId}/guide/mapping`,{method:'DELETE'}); notify('Automatic guide matching restored.'); await showLiveGuide(titleId); await showGuideMappingEditor(titleId); }
     catch (error) { notify(error.message,true); }
     return;
   }
@@ -486,7 +562,7 @@ page.addEventListener('click', async event => {
   if (target.dataset.group) { state.liveGroup = target.dataset.group; return renderPage(); }
   if (target.dataset.settings) { state.settingsTab = target.dataset.settings; return renderPage(); }
   if (target.dataset.play) {
-    try { await startPlayback(target.dataset.play); }
+    try { await startPlayback(target.dataset.play,target.dataset.preferred || null); }
     catch (error) { notify(error.message,true); }
   }
   if (target.dataset.favourite) {

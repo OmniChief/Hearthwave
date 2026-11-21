@@ -1,4 +1,4 @@
-const SHELL_CACHE = 'hearthwave-shell-v4';
+const SHELL_CACHE = 'hearthwave-shell-v5';
 const SHELL = ['/', '/styles.css', '/app.js', '/icon.svg', '/manifest.webmanifest'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(SHELL_CACHE).then(cache => cache.addAll(SHELL)));

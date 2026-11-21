@@ -6,7 +6,7 @@ Hearthwave is a new, self-hosted home entertainment platform. Instead of opening
 
 This repository is a fresh implementation, not a fork of Vaultcast. The initial milestone targets low-resource ARM64 and x64 NAS devices with one Node.js process and an embedded SQLite database. There is no PHP, Docker, Redis, separate database server or external scheduler in the runtime.
 
-## Current status — unified Live and XMLTV preview (0.4.0)
+## Current status — Library details and guide matching preview (0.5.0)
 
 Working now:
 
@@ -28,10 +28,12 @@ Working now:
 - Better Live channel identity matching across source names, quality suffixes and regional categories; Live browsing uses country/genre groups instead of provider folders.
 - Manual XMLTV and compressed XMLTV.gz imports, saved in a unified SQLite programme database. A new guide is published only after a complete import succeeds; old entries remain visible on failure.
 - A combined Live programme grid and per-channel XMLTV guide lookup, with safe matching by guide ID first and normalized name/region second.
+- Library detail pages with provider descriptions, genres and ratings when available, artwork covers, and an explicit choice of source/version with client-side playback fallback.
+- Administrator-controlled manual XMLTV channel matching within each Live channel's Guide panel, with search and the option to restore automatic matching.
 
 Provider integration is an **early compatibility implementation**, not a fully tested release: portal variants differ, and no live provider account has yet been used for end-to-end verification. Episodes are fetched when a viewer opens a series, rather than during bulk catalogue scans. Some Stalker portals may expose episodes in unsupported forms. No transcoding or guaranteed browser codec support is included.
 
-Designed but **not yet implemented**: advanced XMLTV mapping controls and multi-day timeline navigation, richer artwork metadata retrieval, subtitles, downloads/acquisition, personal scheduled channels, emulation, games, AI generation, community, file sharing, pairing worker PCs, TV compatibility mode, complete installer/updater, backup and migration rollback. Navigation destinations for these capabilities are previews only.
+Designed but **not yet implemented**: multi-day XMLTV timeline navigation, external artwork/metadata enrichment beyond what providers supply, subtitles, downloads/acquisition, personal scheduled channels, emulation, games, AI generation, community, file sharing, pairing worker PCs, TV compatibility mode, complete installer/updater, backup and migration rollback. Navigation destinations for these capabilities are previews only.
 
 ## Run locally
 
@@ -58,11 +60,14 @@ No `npm install` is required to start this preview because it uses Node built-in
 
 Open a series in **Library** to retrieve its episodes on demand. Use **Refresh episodes** if provider contents change. In **Live**, choose **Guide** on a channel for programme details or **Programme guide** for the combined XMLTV lineup.
 
+Choose **Details** on a Library item to view available metadata and select an individual source. Where one provider offers no artwork or description, Hearthwave uses what another source supplied for the shared title; it does not make an external lookup.
+
 ### Add a unified TV guide
 
 1. In **Settings > Metadata & Guide**, choose **Use UK example** or **Use US example**, or enter a public XMLTV URL. The examples come from [Open-EPG](https://www.open-epg.com/app/epgguide.php).
 2. Add the feed, then click **Import**. XMLTV and `.xml.gz` files are streamed and parsed in bounded chunks; the app does not require a separate scheduler or persistent background worker.
 3. In **Live**, open **Programme guide** to see channel programmes, or use the per-channel Guide button. Existing guide entries stay available if a later import fails.
+4. If a channel has no matching programme data, open its **Guide** panel and choose **Match an XMLTV channel** (administrator only). Search the imported channel names/IDs and save a match. You can later return to automatic matching; a manual match persists through feed refreshes when the XMLTV channel ID stays the same.
 
 Open-EPG updates its free files about once daily and asks clients to avoid excessive downloads; Hearthwave limits successful refreshes of each Open-EPG feed to at least six hours apart. Guide URLs must be public HTTP(S) endpoints. A combined XMLTV entry uses explicit guide IDs where possible; name matching is conservative when different countries have similarly named channels.
 
@@ -91,7 +96,7 @@ Provider requests block localhost and link-local/cloud-metadata destinations. Pr
 
 - Data lives in `data/hearthwave.sqlite` unless `HEARTHWAVE_DATA_DIR` is set. `data/` is Git-ignored. Provider URLs, configuration and stored stream commands are encrypted in SQLite; keep `secret.key` from the same directory when backing up. This protects database-only exports, not a completely compromised server.
 - The app creates its own schema, runs SQLite in WAL mode, and never requires the user to install MariaDB or Redis.
-- Keep the whole data directory together when backing up or moving an installation. Schema v1–v3 databases migrate to v4 on startup. Online database backup, rollback controls and a built-in updater are **next milestones**, not features of this preview.
+- Keep the whole data directory together when backing up or moving an installation. Schema v1–v4 databases migrate to v5 on startup. Online database backup, rollback controls and a built-in updater are **next milestones**, not features of this preview.
 - Local file streams are served from the configured folder only; symbolic-link escapes are rejected at playback time.
 - M3U and direct channels currently use browser-native playback. Some HLS or codec combinations require later compatibility work; the app surfaces an error and tries another available source rather than silently hanging.
 
@@ -99,8 +104,8 @@ Provider requests block localhost and link-local/cloud-metadata destinations. Pr
 
 1. **Foundation:** shared UI, accounts, content identity and source setup (delivered as the first preview).
 2. **Source adapters:** initial Xtream/Stalker connections, selected imports and playback resolution (delivered in v0.2).
-3. **Core media:** on-demand provider series episode browsing (this preview); richer local metadata, source preferences, subtitles, requests and downloads remain planned.
-4. **Live:** provider guide lookup (v0.3), normalized channel matching and manual unified XMLTV (this preview); advanced EPG mapping, broader portal compatibility, radio and personal channels remain planned.
+3. **Core media:** on-demand provider series episode browsing (v0.3), Library details and explicit source choice (v0.5); richer external metadata, subtitles, requests and downloads remain planned.
+4. **Live:** provider guide lookup (v0.3), normalized channel matching and manual unified XMLTV (v0.4), manual channel mapping (v0.5); timeline navigation, broader portal compatibility, radio and personal channels remain planned.
 5. **Extended:** games, arcade, creative studio, worker pairing, Community and My Space.
 6. **Hardening:** on-device installer/updater, 1 GB RAM profiling, TV/remote controls, security audit, backups and rollback.
 

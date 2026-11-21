@@ -16,7 +16,7 @@ const secrets = secretStore(dataDir);
 export const db = new DatabaseSync(join(dataDir, 'hearthwave.sqlite'), { enableForeignKeyConstraints: true });
 db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 3000; PRAGMA synchronous = NORMAL;');
 const schemaVersion = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
-if (schemaVersion > 4) throw new Error(`Database schema ${schemaVersion} requires a newer Hearthwave version.`);
+if (schemaVersion > 5) throw new Error(`Database schema ${schemaVersion} requires a newer Hearthwave version.`);
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -117,6 +117,22 @@ if (schemaVersion < 4) {
     for (const row of existing) update.run(channelKey(row.title),channelCountry(row.title,row.group_name),row.id);
     db.exec('PRAGMA user_version = 4; COMMIT;');
   } catch (error) { db.exec('ROLLBACK'); throw error; }
+}
+if (schemaVersion < 5) {
+  db.exec(`
+    BEGIN IMMEDIATE;
+    ALTER TABLE titles ADD COLUMN description TEXT NOT NULL DEFAULT '';
+    ALTER TABLE titles ADD COLUMN genres TEXT NOT NULL DEFAULT '';
+    ALTER TABLE titles ADD COLUMN rating REAL;
+    ALTER TABLE titles ADD COLUMN duration_seconds INTEGER;
+    CREATE TABLE guide_mappings (
+      title_id INTEGER PRIMARY KEY REFERENCES titles(id) ON DELETE CASCADE,
+      feed_id INTEGER NOT NULL REFERENCES guide_feeds(id) ON DELETE CASCADE,
+      channel_id TEXT NOT NULL
+    );
+    PRAGMA user_version = 5;
+    COMMIT;
+  `);
 }
 db.prepare("UPDATE sources SET status='interrupted',last_error='Previous source operation was interrupted; run it again.' WHERE status IN ('scanning','discovering')").run();
 db.prepare("UPDATE guide_feeds SET status='interrupted',last_error='Previous guide import was interrupted; import again.' WHERE status='importing'").run();
@@ -222,14 +238,18 @@ export function setSourceStatus(id: number, status: string, error: string | null
 }
 
 const upsertTitle = db.prepare(`
-  INSERT INTO titles (canonical_key,kind,title,year,season,episode,group_name,artwork,channel_key,channel_country)
-  VALUES (?,?,?,?,?,?,?,?,?,?)
+  INSERT INTO titles (canonical_key,kind,title,year,season,episode,group_name,artwork,channel_key,channel_country,description,genres,rating,duration_seconds)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   ON CONFLICT(canonical_key) DO UPDATE SET
     title=CASE WHEN excluded.kind='channel' AND LENGTH(excluded.title)<LENGTH(titles.title) THEN excluded.title ELSE titles.title END,
     artwork=COALESCE(NULLIF(titles.artwork,''), excluded.artwork),
     group_name=COALESCE(NULLIF(titles.group_name,''), excluded.group_name),
     channel_key=COALESCE(NULLIF(titles.channel_key,''), excluded.channel_key),
-    channel_country=COALESCE(NULLIF(titles.channel_country,''), excluded.channel_country)
+    channel_country=COALESCE(NULLIF(titles.channel_country,''), excluded.channel_country),
+    description=COALESCE(NULLIF(titles.description,''), excluded.description),
+    genres=COALESCE(NULLIF(titles.genres,''), excluded.genres),
+    rating=COALESCE(titles.rating, excluded.rating),
+    duration_seconds=COALESCE(titles.duration_seconds, excluded.duration_seconds)
   RETURNING id
 `);
 const upsertVariant = db.prepare(`
@@ -260,7 +280,7 @@ export function importBatch(sourceId: number, items: ImportItem[], generation: s
         titleId = compatible[0].id;
         updateMatchedChannel.run(name,name,item.artwork || '',country,titleId);
       } else {
-        titleId = Number((upsertTitle.get(key, item.kind, name, item.year || null, item.season || null, item.episode || null, item.group || '', item.artwork || '',identity,country) as { id: number }).id);
+        titleId = Number((upsertTitle.get(key, item.kind, name, item.year || null, item.season || null, item.episode || null, item.group || '', item.artwork || '',identity,country,(item.description || '').slice(0,4000),(item.genres || '').slice(0,250),item.rating ?? null,item.durationSeconds ?? null) as { id: number }).id);
       }
       upsertVariant.run(titleId, sourceId, item.sourceRef, secrets.seal(item.url, true), item.quality || '', item.group || '', generation,(item.externalId || '').trim().toLowerCase().slice(0,200));
     }
@@ -300,6 +320,17 @@ export function getTitle(id: number): { id: number; title: string; kind: MediaKi
   return db.prepare('SELECT id,title,kind,year FROM titles WHERE id=?').get(id) as { id:number; title:string; kind:MediaKind; year:number|null } | undefined;
 }
 
+export function getTitleDetail(id:number,userId:number): unknown | undefined {
+  return db.prepare(`SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,t.artwork,
+    t.description,t.genres,t.rating,t.duration_seconds,t.channel_country,
+    (SELECT COUNT(*) FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL) AS source_count,
+    CASE WHEN f.title_id IS NULL THEN 0 ELSE 1 END AS favourite,p.position_seconds
+    FROM titles t LEFT JOIN favourites f ON f.title_id=t.id AND f.user_id=?
+    LEFT JOIN progress p ON p.title_id=t.id AND p.user_id=?
+    WHERE t.id=? AND EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id)`)
+    .get(userId,userId,id);
+}
+
 const upsertEpisodeVariant = db.prepare(`
   INSERT INTO variants (title_id,source_id,source_ref,url,quality,group_name,generation,series_parent_id,episode_name)
   VALUES (?,?,?,?,?,?,?,?,?)
@@ -316,7 +347,7 @@ export function replaceSeriesEpisodes(seriesId: number, sourceId: number, items:
   const generation = randomUUID();
   transaction(() => {
     for (const item of items) {
-      const titleId = Number((upsertTitle.get(canonicalKey(item), 'episode', cleanTitle(item.title), item.year || null, item.season || null, item.episode || null, item.group || '', item.artwork || '','','') as {id:number}).id);
+      const titleId = Number((upsertTitle.get(canonicalKey(item), 'episode', cleanTitle(item.title), item.year || null, item.season || null, item.episode || null, item.group || '', item.artwork || '','','',(item.description || '').slice(0,4000),(item.genres || '').slice(0,250),item.rating ?? null,item.durationSeconds ?? null) as {id:number}).id);
       upsertEpisodeVariant.run(titleId,sourceId,item.sourceRef,secrets.seal(item.url,true),item.quality || '',item.group || '',generation,seriesId,(item.episodeName || '').slice(0,250));
     }
     db.prepare('DELETE FROM variants WHERE series_parent_id=? AND source_id=? AND generation<>?').run(seriesId,sourceId,generation);
@@ -414,9 +445,34 @@ export function abortGuideImport(feedId:number,generation:string,error:string):v
   });
 }
 
+export interface GuideMapping {title_id:number;feed_id:number;channel_id:string;name:string;source:string}
+export function getGuideMapping(titleId:number):GuideMapping|undefined {
+  return db.prepare(`SELECT m.title_id,m.feed_id,m.channel_id,c.name,f.name AS source
+    FROM guide_mappings m JOIN guide_feeds f ON f.id=m.feed_id
+    LEFT JOIN guide_channels c ON c.feed_id=m.feed_id AND c.generation=f.generation AND c.channel_id=m.channel_id
+    WHERE m.title_id=?`).get(titleId) as GuideMapping|undefined;
+}
+export function searchGuideChannels(query:string,limit=50):unknown[] {
+  const search=`%${query.replace(/[\\%_]/g,'\\$&')}%`;
+  return db.prepare(`SELECT c.feed_id,c.channel_id,c.name,c.icon,f.name AS source,f.country
+    FROM guide_channels c JOIN guide_feeds f ON f.id=c.feed_id AND f.generation=c.generation
+    WHERE c.name LIKE ? ESCAPE '\\' OR c.channel_id LIKE ? ESCAPE '\\'
+    ORDER BY c.name COLLATE NOCASE LIMIT ?`).all(search,search,limit);
+}
+export function saveGuideMapping(titleId:number,feedId:number,channelId:string):void {
+  const valid=db.prepare(`SELECT c.channel_id FROM guide_channels c JOIN guide_feeds f
+    ON f.id=c.feed_id AND f.generation=c.generation
+    WHERE c.feed_id=? AND c.channel_id=?`).get(feedId,channelId);
+  if (getTitle(titleId)?.kind!=='channel' || !valid) throw new Error('Select an existing live channel and an imported XMLTV channel.');
+  db.prepare(`INSERT INTO guide_mappings(title_id,feed_id,channel_id) VALUES(?,?,?)
+    ON CONFLICT(title_id) DO UPDATE SET feed_id=excluded.feed_id,channel_id=excluded.channel_id`).run(titleId,feedId,channelId);
+}
+export function removeGuideMapping(titleId:number):void { db.prepare('DELETE FROM guide_mappings WHERE title_id=?').run(titleId); }
+
 export function storedGuide(titleId:number,limit=12): { programmes:Array<{title:string;description:string;start:string;end:string}>; source:string; icon:string } {
   const title=db.prepare("SELECT channel_key,channel_country,canonical_key FROM titles WHERE id=? AND kind='channel'").get(titleId) as {channel_key:string;channel_country:string;canonical_key:string}|undefined;
   if (!title) return {programmes:[],source:'',icon:''};
+  const mapping=getGuideMapping(titleId);
   const epgIds=new Set((db.prepare("SELECT epg_id FROM variants WHERE title_id=? AND epg_id<>''").all(titleId) as Array<{epg_id:string}>).map(row=>row.epg_id.toLowerCase()));
   const encoded=/^channel:[^:]*:epg:(.+)$/.exec(title.canonical_key)?.[1];
   if(encoded) epgIds.add(encoded.toLowerCase());
@@ -424,13 +480,13 @@ export function storedGuide(titleId:number,limit=12): { programmes:Array<{title:
   const rows=db.prepare(`SELECT c.feed_id,c.generation,c.channel_id,c.name,c.name_key,c.icon,
       f.name AS source,f.country
     FROM guide_channels c JOIN guide_feeds f ON f.id=c.feed_id AND f.generation=c.generation
-    WHERE (c.name_key=?${ids.length ? ` OR LOWER(c.channel_id) IN (${ids.map(()=>'?').join(',')})` : ''})
-    LIMIT 80`).all(title.channel_key,...ids) as Array<{feed_id:number;generation:string;channel_id:string;name:string;name_key:string;icon:string;source:string;country:string}>;
+    WHERE ${mapping ? '(c.feed_id=? AND c.channel_id=?)' : `(c.name_key=?${ids.length ? ` OR LOWER(c.channel_id) IN (${ids.map(()=>'?').join(',')})` : ''})`}
+    LIMIT 80`).all(...(mapping ? [mapping.feed_id,mapping.channel_id] : [title.channel_key,...ids])) as Array<{feed_id:number;generation:string;channel_id:string;name:string;name_key:string;icon:string;source:string;country:string}>;
   const exact=rows.filter(row=>epgIds.has(row.channel_id.toLowerCase()));
   const sameCountry=rows.filter(row=>!title.channel_country || !row.country || title.channel_country===row.country);
-  const possible=exact.length ? exact : sameCountry.filter(row=>row.name_key===title.channel_key);
+  const possible=mapping ? rows.filter(row=>row.feed_id===mapping.feed_id && row.channel_id===mapping.channel_id) : exact.length ? exact : sameCountry.filter(row=>row.name_key===title.channel_key);
   const countries=new Set(possible.map(row=>row.country).filter(Boolean));
-  if (!exact.length && !title.channel_country && countries.size>1) return {programmes:[],source:'',icon:''};
+  if (!mapping && !exact.length && !title.channel_country && countries.size>1) return {programmes:[],source:'',icon:''};
   for (const row of possible) {
     const now=Math.floor(Date.now()/1000);
     const items=db.prepare(`SELECT title,description,starts,ends FROM guide_programmes

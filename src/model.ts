@@ -38,6 +38,10 @@ export interface ImportItem {
   group?: string;
   region?: string;
   artwork?: string;
+  description?: string;
+  genres?: string;
+  rating?: number | null;
+  durationSeconds?: number | null;
 }
 
 export interface ProviderCategory {
