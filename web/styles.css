@@ -106,6 +106,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .field-stack label { display:block; font-size:12px; color:#c3ced9; font-weight:700; }
 .field-stack input,.field-stack select,.field-stack textarea { display:block; margin-top:7px; width:100%; background:#101924; color:#f1f4f8; border:1px solid #344053; border-radius:10px; padding:12px 13px; font-size:13px; outline-color:var(--peach); }
 .field-stack textarea { min-height:170px; resize:vertical; font-family:ui-monospace,monospace; font-size:11px; line-height:1.5; }
+.field-stack .checkbox-row { display:flex; align-items:flex-start; gap:10px; font-size:12px; line-height:1.4; font-weight:500; }
+.field-stack .checkbox-row input[type="checkbox"] { flex:none; width:16px; height:16px; margin:0; padding:0; accent-color:var(--peach); }
+.category-set { border:1px solid var(--stroke); border-radius:12px; padding:15px; min-width:0; }
+.category-set legend { padding:0 7px; color:#f7dbc7; font-size:13px; font-weight:800; }
+.category-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); gap:13px 18px; max-height:300px; overflow-y:auto; }
 .field-note { color:var(--muted); font-size:12px; line-height:1.6; }
 .form-message { color:#ffa7ae; min-height:17px; font-size:12px; }
 .empty { text-align:center; border:1px dashed #39485a; border-radius:18px; padding:58px 24px; color:#a5b2c0; }

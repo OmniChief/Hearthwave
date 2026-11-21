@@ -5,8 +5,10 @@ import { dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
 import { parseM3u, scanFolder } from './catalogue.ts';
-import { addSource, completeImport, createUser, dashboardStats, db, deleteSource, findUser, getSource, getVariant, hasUsers, importBatch, listSources, listTitles, listVariants, loadSession, publicUsers, removeSession, saveProgress, saveSession, setFavourite, setSourceStatus, titleExists, type SourceRow } from './db.ts';
-import type { ImportItem, SourceType, User } from './model.ts';
+import { addSource, completeImport, createUser, dashboardStats, db, deleteSource, findUser, getSource, getVariant, hasUsers, importBatch, listCategories, listSources, listTitles, listVariants, loadSession, publicSource, publicUsers, removeSession, saveCategories, saveProgress, saveSession, selectCategories, setFavourite, setSourceStatus, titleExists, type SourceRow } from './db.ts';
+import { discoverProvider, importProvider, resolveProviderStream } from './adapters/providers.ts';
+import { ProviderError, validateProviderUrl } from './adapters/network.ts';
+import type { ImportItem, ProviderCategory, ProviderConfig, SourceType, User } from './model.ts';
 
 const webRoot = join(dirname(fileURLToPath(import.meta.url)), '..', 'web');
 const allowedAssets: Record<string, string> = {
@@ -113,16 +115,34 @@ function streamLocation(value: string): string {
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || !url.hostname) throw new HttpError(400, 'Stream URLs must be HTTP(S), without embedded passwords.');
   return url.toString();
 }
-function safelyPublicSource(source: SourceRow): SourceRow {
+function safelyPublicSource(source: SourceRow): ReturnType<typeof publicSource> {
+  const safe = publicSource(source);
   // Locations are visible only to admins; a token-bearing query is still masked in listings.
-  if (/^https?:/i.test(source.location)) {
+  if (/^https?:/i.test(safe.location)) {
     try {
-      const url = new URL(source.location);
+      const url = new URL(safe.location);
       if (url.search) url.search = '?[redacted]';
-      return { ...source, location: url.toString() };
+      return { ...safe, location: url.toString() };
     } catch { /* Preserve a non-URL location for diagnostics. */ }
   }
-  return source;
+  return safe;
+}
+
+function connectionConfig(type: SourceType, raw: unknown): ProviderConfig {
+  if (type !== 'xtream' && type !== 'stalker') return {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new HttpError(400, 'Provider connection details are required.');
+  const input = raw as Record<string,unknown>;
+  const config: ProviderConfig = {allowLan:input.allowLan === true};
+  for (const key of ['username','password','mac','serial','deviceId','deviceId2'] as const) {
+    const value = input[key];
+    if (value == null || value === '') continue;
+    if (typeof value !== 'string' || value.length > 512 || /[\r\n\0]/.test(value)) throw new HttpError(400, `Invalid ${key} value.`);
+    config[key] = value.trim();
+  }
+  if (type === 'xtream' && (!config.username || !config.password)) throw new HttpError(400, 'Xtream username and password are required.');
+  if (type === 'stalker' && !/^(?:[A-F\d]{2}:){5}[A-F\d]{2}$/i.test(config.mac || '')) throw new HttpError(400, 'Enter the MAC address registered with the Stalker portal.');
+  if (config.mac) config.mac = config.mac.toUpperCase();
+  return config;
 }
 
 function startImport(source: SourceRow, items: AsyncIterable<ImportItem>): void {
@@ -133,7 +153,9 @@ function startImport(source: SourceRow, items: AsyncIterable<ImportItem>): void 
   void (async () => {
     try {
       let buffer: ImportItem[] = [];
+      let seen = 0;
       for await (const item of items) {
+        if (++seen > 50_000) throw new Error('This scan exceeds the 50,000-item source limit. Select fewer categories and retry.');
         buffer.push(item);
         if (buffer.length === 128) {
           importBatch(source.id, buffer, generation);
@@ -144,8 +166,24 @@ function startImport(source: SourceRow, items: AsyncIterable<ImportItem>): void 
       if (buffer.length) importBatch(source.id, buffer, generation);
       completeImport(source.id, generation);
     } catch (error) {
-      setSourceStatus(source.id, 'error', error instanceof Error ? error.message.slice(0, 300) : 'Scan failed.');
+      setSourceStatus(source.id, error instanceof ProviderError && error.status === 429 ? 'rate_limited' : 'error', error instanceof Error ? error.message.slice(0, 300) : 'Scan failed.');
       console.error(`Import of source ${source.id} failed:`, error);
+    } finally { inProgress.delete(source.id); }
+  })();
+}
+
+function startDiscovery(source: SourceRow): void {
+  if (inProgress.has(source.id)) throw new HttpError(409, 'This source is already busy.');
+  inProgress.add(source.id);
+  setSourceStatus(source.id,'discovering');
+  void (async () => {
+    try {
+      const categories = await discoverProvider(source);
+      saveCategories(source.id,categories);
+      setSourceStatus(source.id,'categories_ready');
+    } catch (error) {
+      setSourceStatus(source.id,error instanceof ProviderError && error.status === 429 ? 'rate_limited' : 'error',error instanceof Error ? error.message.slice(0,300) : 'Provider discovery failed.');
+      console.error(`Provider discovery failed for source ${source.id}:`,error instanceof Error ? error.message : 'Unknown error');
     } finally { inProgress.delete(source.id); }
   })();
 }
@@ -194,7 +232,7 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const path = url.pathname;
   const method = req.method || 'GET';
-  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.1.0' });
+  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.2.0' });
   if (path === '/api/session' && method === 'GET') {
     const current = session(req);
     return send(res, 200, { needsSetup: !hasUsers(), user: current?.user || null, csrf: current?.csrf || null });
@@ -261,7 +299,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     const type = textField(input.type, 'source type', 30) as SourceType;
     if (!allowedKinds.has(type)) throw new HttpError(400, 'Unsupported source type.');
     const name = textField(input.name, 'source name', 100);
-    let location = type === 'folder' || type === 'direct' ? textField(input.location, 'source location', 2048) : (typeof input.location === 'string' ? input.location.trim() : '');
+    let location = ['folder','direct','xtream','stalker'].includes(type) ? textField(input.location, 'source location', 2048) : (typeof input.location === 'string' ? input.location.trim() : '');
     if (type === 'folder') {
       if (!isAbsolute(location)) throw new HttpError(400, 'Local folder paths must be absolute.');
       location = await realpath(location);
@@ -269,7 +307,13 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     }
     if (type === 'direct') location = streamLocation(location);
     if (type === 'm3u' && location) location = streamLocation(location);
-    const source = addSource({ name, type, location });
+    if (type === 'xtream' || type === 'stalker') {
+      const url = validateProviderUrl(location);
+      if (url.search || url.hash) throw new HttpError(400, 'Enter the provider server URL without a query string.');
+      location = url.toString().replace(/\/$/,'');
+    }
+    const config = connectionConfig(type,input.config);
+    const source = addSource({ name, type, location, config });
     if (type === 'direct') {
       const generation = randomUUID();
       importBatch(source.id, [{ kind: 'channel', title: name, sourceRef: 'direct', url: location }], generation);
@@ -277,7 +321,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     }
     return send(res, 201, { source: safelyPublicSource(getSource(source.id)!) });
   }
-  const sourceMatch = /^\/api\/sources\/(\d+)(?:\/(import|scan))?$/.exec(path);
+  const sourceMatch = /^\/api\/sources\/(\d+)(?:\/(import|scan|discover|categories))?$/.exec(path);
   if (sourceMatch) {
     const id = positiveId(sourceMatch[1]);
     const source = getSource(id);
@@ -301,14 +345,43 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     }
     if (method === 'POST' && sourceMatch[2] === 'scan') {
       requireWrite(req, true);
-      if (source.type !== 'folder') throw new HttpError(400, 'Only local folder sources can be scanned.');
-      startImport(source, scanFolder(source.location));
+      if (source.type === 'folder') startImport(source, scanFolder(source.location));
+      else if (source.type === 'stalker' || source.type === 'xtream') {
+        const selected = listCategories(id).filter(row=>row.selected === 1);
+        if (!selected.length) throw new HttpError(400, 'Select provider categories in Settings before scanning.');
+        startImport(source, importProvider(source,selected));
+      } else throw new HttpError(400, 'This source does not support scanning.');
       return send(res, 202, { status: 'scanning' });
+    }
+    if (method === 'POST' && sourceMatch[2] === 'discover') {
+      requireWrite(req,true);
+      if (!['stalker','xtream'].includes(source.type)) throw new HttpError(400, 'This source has no remote categories.');
+      startDiscovery(source);
+      return send(res, 202, { status:'discovering' });
+    }
+    if (method === 'GET' && sourceMatch[2] === 'categories') {
+      if (current.user.role !== 'admin') throw new HttpError(403, 'Administrator access required.');
+      return send(res, 200, {categories:listCategories(id)});
+    }
+    if (method === 'POST' && sourceMatch[2] === 'categories') {
+      requireWrite(req,true);
+      if (inProgress.has(id)) throw new HttpError(409, 'Wait until provider discovery or scanning finishes.');
+      const input = await body(req);
+      if (!Array.isArray(input.selected) || input.selected.length > 3000) throw new HttpError(400, 'Invalid provider category selection.');
+      const selected = input.selected.map((row: unknown) => {
+        if (!row || typeof row !== 'object') throw new HttpError(400, 'Invalid category selection.');
+        const {kind,id:categoryId} = row as {kind:unknown;id:unknown};
+        if (!['live','vod','series'].includes(String(kind)) || typeof categoryId !== 'string' || categoryId.length > 80) throw new HttpError(400, 'Invalid category selection.');
+        return {kind,id:categoryId} as {kind:ProviderCategory['kind'];id:string};
+      });
+      try { selectCategories(id,selected); }
+      catch (error) { throw new HttpError(409,error instanceof Error ? error.message : 'Could not update category selections.'); }
+      return send(res, 200, {categories:listCategories(id)});
     }
   }
   if (path === '/api/catalogue' && method === 'GET') {
     const kind = url.searchParams.get('kind') || 'all';
-    if (!['all', 'library', 'film', 'episode', 'channel', 'music', 'photo'].includes(kind)) throw new HttpError(400, 'Unsupported media kind.');
+    if (!['all', 'library', 'film', 'series', 'episode', 'channel', 'music', 'photo'].includes(kind)) throw new HttpError(400, 'Unsupported media kind.');
     const query = (url.searchParams.get('q') || '').slice(0, 120);
     return send(res, 200, { items: listTitles(kind as 'all' | 'library' | ImportItem['kind'], current.user.id, query), maxResults: 250 });
   }
@@ -318,8 +391,20 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     if (!titleExists(titleId)) throw new HttpError(404, 'Title not found.');
     return send(res, 200, { variants: listVariants(titleId).map(v => ({
       id: v.id, name: v.source_name, quality: v.quality, type: v.source_type,
-      url: v.source_type === 'folder' ? `/api/media/${v.id}/file` : v.url,
+      playable:!v.url.startsWith('xtream-series:') && !v.url.startsWith('stalker-series:'),
+      resolve:v.source_type === 'stalker' && v.url.startsWith('stalker:'),
+      url:v.source_type === 'folder' ? `/api/media/${v.id}/file` : v.source_type === 'stalker' ? null : v.url.startsWith('xtream-series:') ? null : v.url,
     })) });
+  }
+  const resolveMatch = /^\/api\/variants\/(\d+)\/resolve$/.exec(path);
+  if (resolveMatch && method === 'POST') {
+    requireWrite(req);
+    const variant = getVariant(positiveId(resolveMatch[1]));
+    if (!variant) throw new HttpError(404,'Source version not found.');
+    const source = getSource(variant.source_id);
+    if (!source) throw new HttpError(404,'Source connection not found.');
+    const stream = await resolveProviderStream(source,variant.url);
+    return send(res,200,{url:stream});
   }
   const favouriteMatch = /^\/api\/titles\/(\d+)\/favourite$/.exec(path);
   if (favouriteMatch && method === 'POST') {
@@ -360,7 +445,7 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': contentTypes[extname(name)] || 'application/octet-stream', 'Cache-Control': name === 'sw.js' ? 'no-cache' : 'no-store' });
     res.end(contents);
   } catch (error) {
-    const status = error instanceof HttpError ? error.status : (error as NodeJS.ErrnoException).code === 'ENOENT' ? 404 : 500;
+    const status = error instanceof HttpError || error instanceof ProviderError ? error.status : (error as NodeJS.ErrnoException).code === 'ENOENT' ? 404 : 500;
     if (status === 500) console.error('Request failed:', error);
     const message = status === 500 ? 'The request could not be completed.' : error instanceof Error ? error.message : 'Request failed.';
     if (!res.headersSent) send(res, status, { error: message });

@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { canonicalKey, cleanTitle } from './catalogue.ts';
 import { secretStore } from './secrets.ts';
-import type { ImportItem, MediaKind, SourceInput, User } from './model.ts';
+import type { ImportItem, MediaKind, ProviderCategory, ProviderConfig, SourceInput, User } from './model.ts';
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const dataDir = process.env.HEARTHWAVE_DATA_DIR || join(packageRoot, 'data');
@@ -15,7 +15,7 @@ const secrets = secretStore(dataDir);
 export const db = new DatabaseSync(join(dataDir, 'hearthwave.sqlite'), { enableForeignKeyConstraints: true });
 db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 3000; PRAGMA synchronous = NORMAL;');
 const schemaVersion = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
-if (schemaVersion > 1) throw new Error(`Database schema ${schemaVersion} requires a newer Hearthwave version.`);
+if (schemaVersion > 2) throw new Error(`Database schema ${schemaVersion} requires a newer Hearthwave version.`);
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -57,8 +57,22 @@ db.exec(`
     PRIMARY KEY(user_id, title_id)
   );
 `);
-if (schemaVersion === 0) db.exec('PRAGMA user_version = 1;');
-db.prepare("UPDATE sources SET status='interrupted',last_error='Previous scan was interrupted; run it again.' WHERE status='scanning'").run();
+if (schemaVersion < 2) {
+  db.exec(`
+    BEGIN IMMEDIATE;
+    ALTER TABLE sources ADD COLUMN config TEXT NOT NULL DEFAULT '{}';
+    CREATE TABLE provider_categories (
+      source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK(kind IN ('live','vod','series')),
+      category_id TEXT NOT NULL, name TEXT NOT NULL,
+      selected INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (source_id,kind,category_id)
+    );
+    PRAGMA user_version = 2;
+    COMMIT;
+  `);
+}
+db.prepare("UPDATE sources SET status='interrupted',last_error='Previous source operation was interrupted; run it again.' WHERE status IN ('scanning','discovering')").run();
 
 export function transaction<T>(fn: () => T): T {
   db.exec('BEGIN IMMEDIATE');
@@ -98,21 +112,57 @@ export function removeSession(hash: string): void {
   db.prepare('DELETE FROM sessions WHERE token_hash=?').run(hash);
 }
 
-export interface SourceRow { id: number; name: string; type: SourceInput['type']; location: string; status: string; last_import: string | null; last_error: string | null }
+export interface SourceRow { id: number; name: string; type: SourceInput['type']; location: string; config: ProviderConfig; status: string; last_import: string | null; last_error: string | null }
+
+function unpackSource(source: Omit<SourceRow, 'config'> & { config: string }): SourceRow {
+  return { ...source, location: secrets.open(source.location), config: JSON.parse(secrets.open(source.config || '{}')) as ProviderConfig };
+}
 
 export function listSources(): SourceRow[] {
-  return (db.prepare('SELECT id,name,type,location,status,last_import,last_error FROM sources ORDER BY id').all() as unknown as SourceRow[])
-    .map(source => ({ ...source, location: secrets.open(source.location) }));
+  return (db.prepare('SELECT id,name,type,location,config,status,last_import,last_error FROM sources ORDER BY id').all() as unknown as Array<Omit<SourceRow,'config'> & { config: string }>).map(unpackSource);
 }
 
 export function getSource(id: number): SourceRow | undefined {
-  const source = db.prepare('SELECT id,name,type,location,status,last_import,last_error FROM sources WHERE id=?').get(id) as SourceRow | undefined;
-  return source ? { ...source, location: secrets.open(source.location) } : undefined;
+  const source = db.prepare('SELECT id,name,type,location,config,status,last_import,last_error FROM sources WHERE id=?').get(id) as (Omit<SourceRow,'config'> & { config: string }) | undefined;
+  return source ? unpackSource(source) : undefined;
 }
 
 export function addSource(input: SourceInput): SourceRow {
-  const result = db.prepare('INSERT INTO sources (name,type,location) VALUES (?,?,?)').run(input.name, input.type, secrets.seal(input.location || ''));
+  const result = db.prepare('INSERT INTO sources (name,type,location,config) VALUES (?,?,?,?)').run(input.name, input.type, secrets.seal(input.location || ''), secrets.seal(JSON.stringify(input.config || {}), true));
   return getSource(Number(result.lastInsertRowid))!;
+}
+
+export function publicSource(source: SourceRow): Omit<SourceRow, 'config'> & { hasCredentials: boolean } {
+  const { config, ...safe } = source;
+  return { ...safe, hasCredentials: Boolean(config.mac || config.username) };
+}
+
+export function listCategories(sourceId: number): ProviderCategory[] {
+  return db.prepare('SELECT source_id,kind,category_id,name,selected FROM provider_categories WHERE source_id=? ORDER BY kind,name COLLATE NOCASE').all(sourceId) as unknown as ProviderCategory[];
+}
+
+export function saveCategories(sourceId: number, found: Array<{ kind: ProviderCategory['kind']; id: string; name: string }>): void {
+  if (found.length > 3000) throw new Error('Provider returned too many categories.');
+  transaction(() => {
+    const upsert = db.prepare(`INSERT INTO provider_categories (source_id,kind,category_id,name) VALUES (?,?,?,?)
+      ON CONFLICT(source_id,kind,category_id) DO UPDATE SET name=excluded.name`);
+    const seen = new Set<string>();
+    for (const row of found) {
+      if (!row.id || !row.name) continue;
+      upsert.run(sourceId, row.kind, row.id, row.name);
+      seen.add(`${row.kind}\0${row.id}`);
+    }
+    for (const row of listCategories(sourceId)) if (!seen.has(`${row.kind}\0${row.category_id}`))
+      db.prepare('DELETE FROM provider_categories WHERE source_id=? AND kind=? AND category_id=?').run(sourceId,row.kind,row.category_id);
+  });
+}
+
+export function selectCategories(sourceId: number, selected: Array<{ kind: ProviderCategory['kind']; id: string }>): void {
+  transaction(() => {
+    db.prepare('UPDATE provider_categories SET selected=0 WHERE source_id=?').run(sourceId);
+    const update = db.prepare('UPDATE provider_categories SET selected=1 WHERE source_id=? AND kind=? AND category_id=?');
+    for (const row of selected) if (update.run(sourceId,row.kind,row.id).changes !== 1) throw new Error('Unknown provider category. Reload and try again.');
+  });
 }
 
 export function deleteSource(id: number): boolean {
@@ -146,7 +196,7 @@ export function importBatch(sourceId: number, items: ImportItem[], generation: s
       const key = canonicalKey(item);
       const name = cleanTitle(item.title).replace(/^(?:UK|US|USA|EN)\s*[-:|]\s*/i, '').replace(/\s+(?:UHD|FHD|4K|HD|SD|1080P|720P)$/i, '').trim();
       const titleId = Number((upsertTitle.get(key, item.kind, name, item.year || null, item.season || null, item.episode || null, item.group || '', item.artwork || '') as { id: number }).id);
-      upsertVariant.run(titleId, sourceId, item.sourceRef, secrets.seal(item.url), item.quality || '', item.group || '', generation);
+      upsertVariant.run(titleId, sourceId, item.sourceRef, secrets.seal(item.url, true), item.quality || '', item.group || '', generation);
     }
   });
 }

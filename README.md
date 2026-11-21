@@ -6,7 +6,7 @@ Hearthwave is a new, self-hosted home entertainment platform. Instead of opening
 
 This repository is a fresh implementation, not a fork of Vaultcast. The initial milestone targets low-resource ARM64 and x64 NAS devices with one Node.js process and an embedded SQLite database. There is no PHP, Docker, Redis, separate database server or external scheduler in the runtime.
 
-## Current status — foundation preview (0.1.0)
+## Current status — source adapters preview (0.2.0)
 
 Working now:
 
@@ -19,8 +19,14 @@ Working now:
 - Grouped channel variants by guide identifier or normalized title, with source selection and client-side fallback on playback error.
 - Authenticated byte-range streaming of local media without live transcoding.
 - Basic Library/Live search and source status.
+- Xtream Codes server/account connection, Live/VOD/series category discovery and administrator-selected category imports.
+- Stalker/MAG portal handshake, registered-device credentials, category discovery and selected Live/VOD/series catalogue imports with deferred stream-link resolution.
+- Encrypting provider configuration and stored stream URLs at rest; remote provider requests use bounded response sizes, timeouts, low concurrency and private-network restrictions.
+- Retaining folder selections across rediscovery and preserving the last successful source catalogue when an import fails.
 
-Designed but **not yet implemented**: Xtream and Stalker provider communication, remote VOD, XMLTV/EPG merging, artwork metadata retrieval, subtitles, downloads/acquisition, personal scheduled channels, emulation, games, AI generation, community, file sharing, pairing worker PCs, TV compatibility mode, complete installer/updater, backup and migration rollback. Navigation destinations for these capabilities are previews only.
+Provider integration is an **early compatibility implementation**, not a fully tested release: portal variants differ, and no live provider account has yet been used for end-to-end verification. Imported series are title listings only: individual seasons/episodes are not yet browsable. No transcoding or guaranteed browser codec support is included.
+
+Designed but **not yet implemented**: XMLTV/EPG merging, richer artwork metadata retrieval, subtitles, downloads/acquisition, personal scheduled channels, emulation, games, AI generation, community, file sharing, pairing worker PCs, TV compatibility mode, complete installer/updater, backup and migration rollback. Navigation destinations for these capabilities are previews only.
 
 ## Run locally
 
@@ -36,7 +42,16 @@ Open `http://localhost:9999`, create the first administrator, then add sources u
 PORT=9090 HOST=127.0.0.1 HEARTHWAVE_DATA_DIR=/path/to/your/data npm start
 ```
 
-No `npm install` is required to start the foundation because it uses Node built-ins. This is a development foundation, **not yet a hardened installer-ready release**. For access outside your home network, place it behind an authenticated HTTPS reverse proxy and apply appropriate firewall rules. For now, imported M3U playlists are pasted in Settings; a stored reference URL is not automatically fetched.
+No `npm install` is required to start this preview because it uses Node built-ins. This is a development build, **not yet a hardened installer-ready release**. For access outside your home network, place it behind an authenticated HTTPS reverse proxy and apply appropriate firewall rules. For now, imported M3U playlists are pasted in Settings; a stored reference URL is not automatically fetched.
+
+### Add a provider
+
+1. In **Settings > Sources**, add an **Xtream Codes API** server with its username/password, or a **Stalker / MAG** portal with its registered MAC address (and optional login/device IDs).
+2. Click **Discover folders**, then **Refresh status**. If the status reports an error, check your provider address, credentials and device authorisation.
+3. Click **Choose folders**, select the desired Live TV, VOD and series categories, and save. No categories are enabled automatically.
+4. Click **Scan** to index the selected content. Scan progress is asynchronous; refresh the source status to see completion. Indexed films appear in Library and channels in Live.
+
+Provider requests block localhost and link-local/cloud-metadata destinations. Private RFC1918 or ULA provider addresses require the explicit *Allow a private LAN provider address* checkbox. Use only providers you have permission to access. Browser playback may reveal direct Xtream stream URLs (which contain provider login details) to signed-in viewers; give accounts only to people you trust, and use a dedicated provider account if available.
 
 ## Design principles
 
@@ -53,24 +68,25 @@ No `npm install` is required to start the foundation because it uses Node built-
 | Local folder | Manual incremental scan; authenticated range playback | Library |
 | M3U | Import pasted playlist; direct-play channels | Live |
 | Direct HTTP(S) stream | Add one channel immediately | Live |
-| Xtream | Placeholder only; no provider requests yet | Live + Library (planned) |
-| Stalker portal | Placeholder only; no provider requests yet | Live + Library (planned) |
+| Xtream | Account authentication, category discovery, selected Live/VOD/series imports; direct playback URLs | Live + Library |
+| Stalker portal | Handshake/device profile, category discovery, selected imports and on-demand playback link resolution | Live + Library |
 | XMLTV | Not yet implemented | Live guide (planned) |
 
 ## Data and upgrade notes
 
-- Data lives in `data/hearthwave.sqlite` unless `HEARTHWAVE_DATA_DIR` is set. `data/` is Git-ignored. Provider URLs are encrypted in SQLite; keep `secret.key` from the same directory when backing up. This protects database-only exports, not a completely compromised server.
+- Data lives in `data/hearthwave.sqlite` unless `HEARTHWAVE_DATA_DIR` is set. `data/` is Git-ignored. Provider URLs, configuration and stored stream commands are encrypted in SQLite; keep `secret.key` from the same directory when backing up. This protects database-only exports, not a completely compromised server.
 - The app creates its own schema, runs SQLite in WAL mode, and never requires the user to install MariaDB or Redis.
-- Keep the whole data directory together when backing up or moving an installation. Online database backup, schema migrations beyond v1 and a built-in updater are **next milestones**, not features of this preview.
+- Keep the whole data directory together when backing up or moving an installation. Schema v1 databases migrate to v2 on startup. Online database backup, rollback controls and a built-in updater are **next milestones**, not features of this preview.
 - Local file streams are served from the configured folder only; symbolic-link escapes are rejected at playback time.
 - M3U and direct channels currently use browser-native playback. Some HLS or codec combinations require later compatibility work; the app surfaces an error and tries another available source rather than silently hanging.
 
 ## Planned delivery order
 
-1. **Foundation:** shared UI, accounts, content identity, source setup and adapter boundaries (this preview).
-2. **Core media:** provider VOD, local metadata, source preferences, subtitles, requests and downloads.
-3. **Live:** full IPTV/Xtream/Stalker adapters, unified channel matching, EPG, radio and personal channels.
-4. **Extended:** games, arcade, creative studio, worker pairing, Community and My Space.
-5. **Hardening:** on-device installer/updater, 1 GB RAM profiling, TV/remote controls, security audit, backups and rollback.
+1. **Foundation:** shared UI, accounts, content identity and source setup (delivered as the first preview).
+2. **Source adapters:** initial Xtream/Stalker connections, selected imports and playback resolution (this preview).
+3. **Core media:** provider series episodes, richer local metadata, source preferences, subtitles, requests and downloads.
+4. **Live:** broader portal compatibility, improved channel matching, EPG, radio and personal channels.
+5. **Extended:** games, arcade, creative studio, worker pairing, Community and My Space.
+6. **Hardening:** on-device installer/updater, 1 GB RAM profiling, TV/remote controls, security audit, backups and rollback.
 
-The guiding product requirements are captured in the original *Unified Home Entertainment Platform* brief. Hearthwave will develop those requirements iteratively; this first commit does not claim to fulfil the entire brief.
+The guiding product requirements are captured in the original *Unified Home Entertainment Platform* brief. Hearthwave will develop those requirements iteratively; these previews do not claim to fulfil the entire brief.

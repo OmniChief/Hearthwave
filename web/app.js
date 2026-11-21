@@ -1,4 +1,4 @@
-const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', liveGroup: 'all', query: '', items: [], stats: null, sources: [], activeTitle: null, variants: [], variantIndex: 0, playerTitle: null, lastProgressSave: 0 };
+const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', liveGroup: 'all', query: '', items: [], stats: null, sources: [], activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackGeneration: 0, lastProgressSave: 0 };
 const $ = (selector) => document.querySelector(selector);
 const page = $('#page');
 
@@ -74,7 +74,7 @@ function mediaCard(item) {
   const initial = Array.from(item.title || '?')[0].toUpperCase();
   const tone = Number(item.id) % 4;
   const detail = [item.year, item.kind === 'episode' ? `S${item.season || '?'}E${item.episode || '?'}` : null, `${item.source_count} source${item.source_count === 1 ? '' : 's'}`].filter(Boolean).join(' · ');
-  return `<article class="media-card"><div class="media-art tone-${tone}"><span class="art-initial">${esc(initial)}</span><span class="media-kind">${esc(item.kind)}</span></div><div class="media-info"><strong title="${esc(item.title)}">${esc(item.title)}</strong><small>${esc(detail)}</small><div class="media-actions"><button class="button button-quiet button-small" data-play="${item.id}">Play</button><button class="star-button ${item.favourite ? 'is-favourite':''}" data-favourite="${item.id}" data-next="${item.favourite ? '0':'1'}" aria-label="${item.favourite ? 'Remove from' : 'Add to'} favourites">${item.favourite ? '★':'☆'}</button></div></div></article>`;
+  return `<article class="media-card"><div class="media-art tone-${tone}"><span class="art-initial">${esc(initial)}</span><span class="media-kind">${esc(item.kind)}</span></div><div class="media-info"><strong title="${esc(item.title)}">${esc(item.title)}</strong><small>${esc(detail)}</small><div class="media-actions">${item.kind === 'series' ? '<span class="tag" title="Series listing imported; episode discovery is coming later">Episodes coming later</span>' : `<button class="button button-quiet button-small" data-play="${item.id}">Play</button>`}<button class="star-button ${item.favourite ? 'is-favourite':''}" data-favourite="${item.id}" data-next="${item.favourite ? '0':'1'}" aria-label="${item.favourite ? 'Remove from' : 'Add to'} favourites">${item.favourite ? '★':'☆'}</button></div></div></article>`;
 }
 
 function liveCard(item) {
@@ -95,11 +95,11 @@ async function renderHome() {
 }
 
 async function renderLibrary() {
-  const types = [{key:'all',name:'All media'}, {key:'film',name:'Films'}, {key:'episode',name:'Series episodes'}, {key:'music',name:'Music'}, {key:'photo',name:'Photos'}];
+  const types = [{key:'all',name:'All media'}, {key:'film',name:'Films'}, {key:'series',name:'Series'}, {key:'episode',name:'Episodes'}, {key:'music',name:'Music'}, {key:'photo',name:'Photos'}];
   const result = await api(`/api/catalogue?kind=${encodeURIComponent(state.kind === 'all' ? 'library' : state.kind)}&q=${encodeURIComponent(state.query)}`);
   state.items = result.items;
   const items = result.items.filter(item => item.kind !== 'channel');
-  page.innerHTML = `<div class="preview-banner">Local library scanning is ready. Remote VOD adapters, metadata enrichment, subtitles and downloads will be added in the next milestone.</div>
+  page.innerHTML = `<div class="preview-banner">Local folders and selected Xtream/Stalker VOD categories feed this shared collection. Series titles are listed for now; episode indexing, metadata enrichment, subtitles and downloads remain future work.</div>
     <div class="toolbar">${types.map(type => `<button class="pill ${state.kind === type.key ? 'active':''}" data-kind="${type.key}">${type.name}</button>`).join('')}</div>
     ${heading(state.kind === 'all' ? 'Your collection' : types.find(t => t.key === state.kind).name, `${items.length} item${items.length===1?'':'s'} in this view`)}
     ${items.length ? `<div class="cards">${items.map(mediaCard).join('')}</div>` : emptyState('No matching media', 'Try another filter, or add a folder in Settings > Sources.', '▣')}
@@ -111,7 +111,7 @@ async function renderLive() {
   state.items = result.items;
   const groups = [...new Set(result.items.map(item => item.group_name).filter(Boolean))].sort((a,b) => a.localeCompare(b));
   const selected = state.liveGroup === 'all' ? result.items : result.items.filter(item => item.group_name === state.liveGroup);
-  page.innerHTML = `<div class="preview-banner">All live channels share this lineup, regardless of how they were added. Full XMLTV EPG, Stalker and Xtream adapters are planned next.</div>
+  page.innerHTML = `<div class="preview-banner">Direct links, M3U imports and selected Xtream/Stalker channels share this lineup. Full XMLTV EPG and improved player compatibility are still planned.</div>
     <div class="toolbar"><button class="pill ${state.liveGroup === 'all' ? 'active':''}" data-group="all">All channels</button>${groups.map(group => `<button class="pill ${state.liveGroup === group ? 'active':''}" data-group="${esc(group)}">${esc(group)}</button>`).join('')}</div>
     ${heading('Your live lineup', `${selected.length} channel${selected.length===1?'':'s'} · ${groups.length} categor${groups.length===1?'y':'ies'}`)}
     ${selected.length ? `<div class="live-list">${selected.map(liveCard).join('')}</div>` : emptyState('No channels to show', 'Import an M3U playlist or create a direct channel in Settings > Sources.', '▻')}`;
@@ -137,16 +137,20 @@ async function renderSettings() {
   if (state.settingsTab === 'sources') state.sources = (await api('/api/sources')).sources;
   let contents = '';
   if (state.settingsTab === 'sources') {
-    contents = `<div class="info-banner">Provider types are configured here, never as separate browsing areas. In this foundation build, local folder scans, direct channels and pasted M3U imports work; Xtream/Stalker adapters are registered for later implementation.</div>
+    contents = `<div class="info-banner">Sources are configured here, not as separate browsing areas. For Xtream and Stalker, add an authorised connection, discover folders, choose what to include, then scan. Imports run in small batches on the NAS.</div>
       <div class="two-col"><section class="surface"><h2>Add a source</h2><p class="field-note">The source provides content. Viewers see it in Library or Live.</p><form class="field-stack" id="source-form">
       <label>Source name<input name="name" required maxlength="100" placeholder="e.g. Living room NAS"></label>
-      <label>Source type<select name="type" id="source-type"><option value="folder">Local media folder</option><option value="m3u">M3U playlist</option><option value="direct">Direct live channel</option><option value="xtream">Xtream (adapter planned)</option><option value="stalker">Stalker portal (adapter planned)</option></select></label>
+      <label>Source type<select name="type" id="source-type"><option value="folder">Local media folder</option><option value="m3u">M3U playlist</option><option value="direct">Direct live channel</option><option value="xtream">Xtream Codes API</option><option value="stalker">Stalker / MAG portal</option></select></label>
       <label id="source-location-label">Absolute folder path<input name="location" id="source-location" maxlength="2048" placeholder="/volume1/media" required></label>
+      <div id="xtream-fields" class="field-stack" hidden><label>Xtream username<input name="username" autocomplete="off" maxlength="512"></label><label>Xtream password<input name="password" type="password" autocomplete="new-password" maxlength="512"></label></div>
+      <div id="stalker-fields" class="field-stack" hidden><label>Registered MAG MAC address<input name="mac" placeholder="00:1A:79:00:00:00" autocomplete="off" maxlength="17"></label><label>Portal login (if required)<input name="stalkerUsername" autocomplete="off" maxlength="512"></label><label>Portal password (if required)<input name="stalkerPassword" type="password" autocomplete="new-password" maxlength="512"></label><label>Device serial (optional)<input name="serial" maxlength="512"></label><label>Device ID (optional)<input name="deviceId" maxlength="512"></label><label>Second device ID (optional)<input name="deviceId2" maxlength="512"></label></div>
+      <label id="provider-lan" class="checkbox-row" hidden><input name="allowLan" type="checkbox"> Allow a private LAN provider address</label>
       <p class="field-note" id="source-note">A scan is manual, resumable by re-running it, and uses small indexing batches.</p>
       <button type="submit" class="button button-primary">Add source</button></form></section>
       <section class="surface"><h2>Configured sources</h2><p class="field-note">Imports are triggered here, with their current status shown beside each source.</p>
-      ${state.sources.length ? state.sources.map(source => `<div class="list-row"><div><strong>${esc(source.name)}</strong> <span class="tag">${esc(source.type)}</span><small>${esc(source.location || 'No location specified')} · ${esc(source.status)}${source.last_error ? ` · ${esc(source.last_error)}` : ''}</small></div><div class="row-actions">${source.type === 'folder' ? `<button class="button button-quiet button-small" data-scan="${source.id}">Scan</button>`:''}${source.type === 'm3u' ? `<button class="button button-quiet button-small" data-import="${source.id}">Import M3U</button>`:''}<button class="button button-danger button-small" data-remove="${source.id}">Remove</button></div></div>`).join('') : '<p class="field-note">No sources configured yet.</p>'}
+      ${state.sources.length ? state.sources.map(source => `<div class="list-row"><div><strong>${esc(source.name)}</strong> <span class="tag">${esc(source.type)}</span><small>${esc(source.location || 'No location specified')} · ${esc(source.status)}${source.last_error ? ` · ${esc(source.last_error)}` : ''}</small></div><div class="row-actions">${source.type === 'folder' || ['xtream','stalker'].includes(source.type) ? `<button class="button button-quiet button-small" data-scan="${source.id}">Scan</button>`:''}${['xtream','stalker'].includes(source.type) ? `<button class="button button-quiet button-small" data-discover="${source.id}">Discover folders</button><button class="button button-quiet button-small" data-folders="${source.id}">Choose folders</button>`:''}${source.type === 'm3u' ? `<button class="button button-quiet button-small" data-import="${source.id}">Import M3U</button>`:''}<button class="button button-danger button-small" data-remove="${source.id}">Remove</button></div></div>`).join('') : '<p class="field-note">No sources configured yet.</p>'}
       <button class="button button-quiet button-small" id="refresh-sources">Refresh status</button></section></div>
+      <section class="surface" id="provider-folders-panel" hidden></section>
       <section class="surface" id="m3u-import-panel" hidden><h2>Import M3U playlist</h2><p class="field-note">Paste an authorised playlist. Stream entries are indexed progressively; the server does not proxy or transcode them.</p><form class="field-stack" id="m3u-form"><input type="hidden" name="sourceId"><label>M3U text<textarea name="playlist" spellcheck="false" required placeholder="#EXTM3U\n#EXTINF:-1 tvg-id=..."></textarea></label><button class="button button-primary" type="submit">Import playlist</button></form></section>`;
   } else if (state.settingsTab === 'users') {
     const users = (await api('/api/users')).users;
@@ -171,12 +175,34 @@ function syncSourceForm() {
   const label = $('#source-location-label');
   const input = $('#source-location');
   if (!input || !label) return;
-  label.hidden = !['folder','direct','m3u'].includes(type);
-  input.required = type === 'folder' || type === 'direct';
+  label.hidden = false;
+  input.required = type !== 'm3u';
   if (type === 'folder') { label.firstChild.textContent = 'Absolute folder path'; input.placeholder = '/volume1/media'; }
   if (type === 'm3u') { label.firstChild.textContent = 'Playlist URL (optional reference)'; input.placeholder = 'https://example.com/channels.m3u'; }
   if (type === 'direct') { label.firstChild.textContent = 'Direct stream URL'; input.placeholder = 'https://example.com/live.m3u8'; }
-  $('#source-note').textContent = type === 'm3u' ? 'After adding this source, use Import M3U to paste the playlist contents.' : ['stalker','xtream'].includes(type) ? 'Connection details are reserved for the provider adapter milestone; no fetching will happen yet.' : type === 'direct' ? 'The channel appears in Live immediately. Your browser must support its stream format.' : 'Scan runs in bounded batches and updates the Library as items are discovered.';
+  if (['stalker','xtream'].includes(type)) { label.firstChild.textContent = 'Provider server / portal URL'; input.placeholder = type === 'xtream' ? 'https://provider.example:8080' : 'https://portal.example/stalker_portal/c/'; }
+  $('#xtream-fields').hidden = type !== 'xtream';
+  $('#stalker-fields').hidden = type !== 'stalker';
+  $('#provider-lan').hidden = !['xtream','stalker'].includes(type);
+  for (const selector of ['#xtream-fields [name=username]','#xtream-fields [name=password]','#stalker-fields [name=mac]']) {
+    const field = $(selector);
+    field.required = type === 'xtream' && field.name !== 'mac' || type === 'stalker' && field.name === 'mac';
+  }
+  $('#source-note').textContent = type === 'm3u' ? 'After adding this source, use Import M3U to paste the playlist contents.' : ['stalker','xtream'].includes(type) ? 'Provider credentials are encrypted on the NAS. Discover folders, choose the live/VOD categories to import, then scan. Use only services you are authorised to access.' : type === 'direct' ? 'The channel appears in Live immediately. Your browser must support its stream format.' : 'Scan runs in bounded batches and updates the Library as items are discovered.';
+}
+
+async function showProviderFolders(sourceId) {
+  const source = state.sources.find(item => String(item.id) === String(sourceId));
+  const result = await api(`/api/sources/${sourceId}/categories`);
+  const panel = $('#provider-folders-panel');
+  if (!result.categories.length) {
+    panel.innerHTML = `<h2>${esc(source?.name || 'Provider')} folders</h2><p class="field-note">No folders discovered. Click Discover folders above, wait for the status to change, then refresh and try again.</p>`;
+  } else {
+    const kinds = [['live','Live TV'],['vod','Films / VOD'],['series','Series listings']];
+    panel.innerHTML = `<h2>${esc(source?.name || 'Provider')} · Choose folders</h2><p class="field-note">Only checked categories are scanned. Series titles are listed, but individual episodes are not indexed yet. Saved choices remain through later discovery runs.</p><form id="folders-form" class="field-stack"><input name="sourceId" type="hidden" value="${esc(sourceId)}">${kinds.map(([kind,title]) => { const categories = result.categories.filter(row => row.kind === kind); return categories.length ? `<fieldset class="category-set"><legend>${title} (${categories.length})</legend><div class="category-grid">${categories.map(row => `<label class="checkbox-row"><input type="checkbox" name="category" data-kind="${esc(row.kind)}" value="${esc(row.category_id)}" ${row.selected ? 'checked':''}> ${esc(row.name)}</label>`).join('')}</div></fieldset>` : ''; }).join('')}<button class="button button-primary" type="submit">Save folder choices</button></form>`;
+  }
+  panel.hidden = false;
+  panel.scrollIntoView({ behavior:'smooth', block:'nearest' });
 }
 
 async function renderPage() {
@@ -191,27 +217,43 @@ async function renderPage() {
 
 async function startPlayback(titleId) {
   const result = await api(`/api/titles/${titleId}/variants`);
-  if (!result.variants.length) throw new Error('There is no available source for this title.');
+  const playable = result.variants.filter(variant => variant.playable && (variant.url || variant.resolve));
+  if (!playable.length) throw new Error('There is no playable stream for this title yet.');
   const title = (state.items.find(item => Number(item.id) === Number(titleId)) || (await api('/api/catalogue?kind=all')).items.find(item => Number(item.id) === Number(titleId)) || { title:'Your media', id:titleId });
   state.activeTitle = title;
-  state.variants = result.variants;
+  state.variants = playable;
   state.variantIndex = 0;
   state.pendingSeek = Number(title.position_seconds) || 0;
   $('#player-title').textContent = title.title;
   $('#player-overlay').hidden = false;
-  playVariant();
+  void playVariant();
 }
 
-function playVariant() {
+async function playVariant() {
+  const generation = ++state.playbackGeneration;
   const item = state.variants[state.variantIndex];
   const video = $('#player');
-  $('#player-message').textContent = '';
+  state.resolvedUrl = null;
+  $('#player-message').textContent = item.resolve ? 'Connecting to your provider…' : '';
   $('#player-source').textContent = `${item.name}${item.quality ? ` · ${item.quality}` : ''} (${state.variantIndex + 1}/${state.variants.length})`;
   $('#try-next').disabled = state.variants.length < 2;
   video.pause();
-  video.src = item.url;
+  video.removeAttribute('src');
   video.load();
-  video.play().catch(() => { $('#player-message').textContent = 'Press Play to start this stream.'; });
+  try {
+    const url = item.resolve ? (await api(`/api/variants/${item.id}/resolve`, { method:'POST' })).url : item.url;
+    if (generation !== state.playbackGeneration || $('#player-overlay').hidden) return;
+    if (!url) throw new Error('No stream URL was returned.');
+    state.resolvedUrl = url;
+    $('#player-message').textContent = '';
+    video.src = url;
+    video.load();
+    video.play().catch(() => { if (generation === state.playbackGeneration) $('#player-message').textContent = 'Press Play to start this stream.'; });
+  } catch (error) {
+    if (generation !== state.playbackGeneration || $('#player-overlay').hidden) return;
+    if (state.variantIndex + 1 < state.variants.length) nextSource();
+    else $('#player-message').textContent = error instanceof Error ? error.message : 'Could not connect to your provider.';
+  }
 }
 
 function nextSource() {
@@ -221,10 +263,12 @@ function nextSource() {
   }
   state.pendingSeek = $('#player').currentTime || state.pendingSeek;
   state.variantIndex += 1;
-  playVariant();
+  void playVariant();
 }
 
 function closePlayer() {
+  state.playbackGeneration++;
+  state.resolvedUrl = null;
   const video = $('#player');
   video.pause();
   video.removeAttribute('src');
@@ -264,13 +308,19 @@ page.addEventListener('change', event => { if (event.target?.id === 'source-type
 
 page.addEventListener('submit', async event => {
   const form = event.target;
-  if (!['source-form','m3u-form','user-form'].includes(form.id)) return;
+  if (!['source-form','m3u-form','user-form','folders-form'].includes(form.id)) return;
   event.preventDefault();
   const data = new FormData(form);
   try {
     if (form.id === 'source-form') {
-      await api('/api/sources', { method:'POST', body:{ name:data.get('name'), type:data.get('type'), location:data.get('location') || '' } });
-      notify('Source added. You can scan or import it now.');
+      const type = data.get('type');
+      const config = type === 'xtream' ? { username:data.get('username'), password:data.get('password'), allowLan:data.has('allowLan') } : type === 'stalker' ? { mac:data.get('mac'), username:data.get('stalkerUsername'), password:data.get('stalkerPassword'), serial:data.get('serial'), deviceId:data.get('deviceId'), deviceId2:data.get('deviceId2'), allowLan:data.has('allowLan') } : undefined;
+      await api('/api/sources', { method:'POST', body:{ name:data.get('name'), type, location:data.get('location') || '', config } });
+      notify(['xtream','stalker'].includes(type) ? 'Provider added. Discover its folders and choose what to scan.' : 'Source added. You can scan or import it now.');
+    } else if (form.id === 'folders-form') {
+      const selected = Array.from(form.querySelectorAll('input[name=category]:checked'), checkbox => ({kind:checkbox.dataset.kind,id:checkbox.value}));
+      await api(`/api/sources/${data.get('sourceId')}/categories`, {method:'POST',body:{selected}});
+      notify(`Saved ${selected.length} provider folder selection${selected.length === 1 ? '' : 's'}. Click Scan to import them.`);
     } else if (form.id === 'm3u-form') {
       const result = await api(`/api/sources/${data.get('sourceId')}/import`, { method:'POST', body:{ playlist:data.get('playlist') } });
       notify(`Accepted ${result.accepted} streams. The catalogue is being updated.`);
@@ -300,7 +350,15 @@ page.addEventListener('click', async event => {
     } catch (error) { notify(error.message,true); }
   }
   if (target.dataset.scan) {
-    try { await api(`/api/sources/${target.dataset.scan}/scan`, { method:'POST' }); notify('Folder scan started. New items appear as batches finish.'); await renderPage(); }
+    try { await api(`/api/sources/${target.dataset.scan}/scan`, { method:'POST' }); notify('Scan started. New items appear as batches finish.'); await renderPage(); }
+    catch (error) { notify(error.message,true); }
+  }
+  if (target.dataset.discover) {
+    try { await api(`/api/sources/${target.dataset.discover}/discover`, { method:'POST' }); notify('Discovering provider folders. Refresh status in a moment, then choose folders.'); await renderPage(); }
+    catch (error) { notify(error.message,true); }
+  }
+  if (target.dataset.folders) {
+    try { await showProviderFolders(target.dataset.folders); }
     catch (error) { notify(error.message,true); }
   }
   if (target.dataset.import) {
@@ -321,11 +379,10 @@ $('#brand-link').addEventListener('click', event => { event.preventDefault(); na
 $('#close-player').addEventListener('click', closePlayer);
 $('#try-next').addEventListener('click', nextSource);
 $('#open-stream').addEventListener('click', () => {
-  const variant = state.variants[state.variantIndex];
-  if (variant?.url && /^https?:\/\//i.test(variant.url)) window.open(variant.url, '_blank', 'noopener,noreferrer');
+  if (state.resolvedUrl && /^https?:\/\//i.test(state.resolvedUrl)) window.open(state.resolvedUrl, '_blank', 'noopener,noreferrer');
   else notify('The local stream is available only inside Hearthwave.');
 });
-$('#player').addEventListener('error', () => { if (!$('#player-overlay').hidden) nextSource(); });
+$('#player').addEventListener('error', () => { if (!$('#player-overlay').hidden && state.resolvedUrl) nextSource(); });
 $('#player').addEventListener('loadedmetadata', () => {
   const video = $('#player');
   if (state.pendingSeek > 5 && Number.isFinite(video.duration) && state.pendingSeek < video.duration - 5) {

@@ -1,5 +1,15 @@
 export type SourceType = 'folder' | 'm3u' | 'xtream' | 'stalker' | 'direct';
-export type MediaKind = 'film' | 'episode' | 'channel' | 'music' | 'photo';
+export type MediaKind = 'film' | 'series' | 'episode' | 'channel' | 'music' | 'photo';
+
+export interface ProviderConfig {
+  username?: string;
+  password?: string;
+  mac?: string;
+  serial?: string;
+  deviceId?: string;
+  deviceId2?: string;
+  allowLan?: boolean;
+}
 
 export interface User {
   id: number;
@@ -11,6 +21,7 @@ export interface SourceInput {
   name: string;
   type: SourceType;
   location?: string;
+  config?: ProviderConfig;
 }
 
 export interface ImportItem {
@@ -26,6 +37,14 @@ export interface ImportItem {
   group?: string;
   region?: string;
   artwork?: string;
+}
+
+export interface ProviderCategory {
+  source_id: number;
+  kind: 'live' | 'vod' | 'series';
+  category_id: string;
+  name: string;
+  selected: number;
 }
 
 export interface MediaRow {

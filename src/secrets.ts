@@ -3,7 +3,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 
 /** Protect credential-bearing provider URLs in database-only exports. Keep this key with backups. */
-export function secretStore(dataDirectory: string): { seal: (value: string) => string; open: (value: string) => string } {
+export function secretStore(dataDirectory: string): { seal: (value: string, always?: boolean) => string; open: (value: string) => string } {
   const path = join(dataDirectory, 'secret.key');
   let key: Buffer;
   try { key = readFileSync(path); }
@@ -22,8 +22,8 @@ export function secretStore(dataDirectory: string): { seal: (value: string) => s
   if (key.length !== 32) throw new Error('The data directory secret.key is invalid. Restore the original key from backup.');
   try { chmodSync(path, 0o600); } catch { /* Keep running on file systems without chmod. */ }
   return {
-    seal(value) {
-      if (!/^https?:/i.test(value)) return value;
+    seal(value, always = false) {
+      if (!always && !/^https?:/i.test(value)) return value;
       const nonce = randomBytes(12);
       const cipher = createCipheriv('aes-256-gcm', key, nonce);
       const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
