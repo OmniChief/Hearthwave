@@ -334,6 +334,8 @@ export async function* importProvider(source: SourceRow, categories: ProviderCat
         }
         const signature = rows.map(row => field(row.id)).join('|');
         if (signature === previousPage) {
+          // One-based portals can alias page zero to their first page.
+          if (page === 1) continue;
           if (advertisedTotal !== null && advertisedTotal > scanned) throw new ProviderError('Portal repeated a category page before all advertised items were scanned.');
           complete=true;
           break;
@@ -441,6 +443,8 @@ export async function discoverSeriesEpisodes(source: SourceRow, encoded: string,
         }
         const signature = rows.map(row => field(row.id)).join('|');
         if (signature === previous) {
+          // One-based portals can alias page zero to their first page.
+          if (page === 1) continue;
           if (advertisedTotal !== null && advertisedTotal>scanned) throw new ProviderError('Portal repeated an episode page before the listing was complete.');
           break;
         }
