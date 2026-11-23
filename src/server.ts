@@ -935,7 +935,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname.startsWith('/api/')) return await api(req, res, url);
     if(url.pathname==='/game.html') {
       res.setHeader('X-Frame-Options','SAMEORIGIN');
-      res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob: https://cdn.emulatorjs.org; style-src 'self' 'unsafe-inline' https://cdn.emulatorjs.org; connect-src 'self' blob: data: https://cdn.emulatorjs.org; img-src 'self' blob: data: https://cdn.emulatorjs.org; font-src data: https://cdn.emulatorjs.org; worker-src 'self' blob:; media-src blob: data:; frame-ancestors 'self'; object-src 'none'");
+      res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self' 'unsafe-eval' blob: https://cdn.emulatorjs.org; style-src 'self' 'unsafe-inline' https://cdn.emulatorjs.org; connect-src 'self' blob: data: https://cdn.emulatorjs.org; img-src 'self' blob: data: https://cdn.emulatorjs.org; font-src data: https://cdn.emulatorjs.org; worker-src 'self' blob:; media-src blob: data:; frame-ancestors 'self'; object-src 'none'");
     }
     const name = allowedAssets[url.pathname];
     if (!name || req.method !== 'GET') throw new HttpError(404, 'Page not found.');
