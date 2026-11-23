@@ -564,9 +564,10 @@ async function showProviderFolders(sourceId) {
 
 async function renderGames() {
   const offset = state.playOffset;
-  const result = await api('/api/catalogue?kind=game&limit=60&offset=' + offset);
-  if (state.page !== 'play' || offset !== state.playOffset) return;
-  const games = result.items.map(game => `<article class="surface"><h3>${esc(game.title)}</h3><p>${esc(game.group_name || '')}</p><a class="button button-quiet" download href="/api/media/${Number(game.variant_id)}/file">Download ROM</a></article>`);
+  const query=state.query;
+  const result = await api('/api/catalogue?kind=game&limit=60&q='+encodeURIComponent(query)+'&offset=' + offset);
+  if (state.page !== 'play' || offset !== state.playOffset || query !== state.query) return;
+  const games = result.items.map(game => `<article class="surface">${game.artwork?`<img class="game-cover" src="${esc(game.artwork)}" alt="${esc(game.title)} box art" loading="lazy" referrerpolicy="no-referrer">`:''}<h3>${esc(game.title)}</h3><p>${esc(game.system || game.group_name || '')}</p>${game.core?`<button class="button button-primary" data-game="${Number(game.variant_id)}">Play game</button>`:'<span>Emulator unavailable</span>'}<a class="button button-quiet" download href="/api/media/${Number(game.variant_id)}/file">Download ROM</a></article>`);
   page.innerHTML = heading('Game library') + (games.length
     ? '<div class="cards">' + games.join('') + '</div>' + cataloguePager(result,'play')
     : emptyState('No games indexed', 'Scan your ROM folder under Settings > Sources.', '◈'));
@@ -944,13 +945,14 @@ $('#global-search').addEventListener('input', (event) => {
   state.query = event.target.value;
   state.libraryOffset=0;
   state.liveOffset=0;
+  state.playOffset=0;
   state.guideOffset = 0;
   state.detailId = null;
   state.seriesDetail = null;
   clearTimeout(state.seriesRefreshTimer);
   clearTimeout(state.searchTimer);
   state.searchTimer = setTimeout(() => {
-    if (!['live','library'].includes(state.page)) navigate('library');
+    if (!['live','library','play'].includes(state.page)) navigate('library');
     else renderPage().catch(error => notify(error.message,true));
   }, 250);
 });
@@ -1057,6 +1059,12 @@ page.addEventListener('submit', async event => {
 page.addEventListener('click', async event => {
   const target = event.target.closest('button');
   if (!target) return;
+  if(target.dataset.game) {
+    const title=target.closest('article').querySelector('h3').textContent;
+    page.innerHTML=heading(title,'','<button class="button button-quiet" data-close-game>Back to games</button>')+'<iframe class="game-frame" title="EmulatorJS" allow="autoplay; fullscreen; gamepad" allowfullscreen src="/game.html?id='+Number(target.dataset.game)+'"></iframe>';
+    return;
+  }
+  if(target.hasAttribute('data-close-game')) return renderGames();
   if(target.hasAttribute('data-library-collections')) {
     state.detailId=null;state.seriesDetail=null;state.collectionId=0;state.collectionName='';state.collectionOverview=true;state.libraryOffset=0;state.libraryGenre='';
     state.page='library';$('#page-title').textContent='Library';document.querySelectorAll('[data-page]').forEach(el=>el.classList.toggle('selected',el.dataset.page==='library'));

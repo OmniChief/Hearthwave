@@ -296,3 +296,4 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (max-width:600px) { .episode-row { flex-wrap:wrap; } .episode-controls { width:100%; justify-content:flex-end; } .autoplay-setting small { width:100%; margin-left:26px; } }
 @media (max-width:600px) { .catalogue-pagination { justify-content:center; text-align:center; } .catalogue-pager-controls { justify-content:center; } }
 @media (prefers-reduced-motion:no-preference) { .nav-link,.button,.media-card,.channel-row { transition:background .15s ease,border-color .15s ease,transform .15s ease; } .media-card:hover { transform:translateY(-2px); } }
+.game-cover{width:100%;height:13rem;object-fit:contain}.game-frame{width:100%;height:75vh;border:0;background:#10151d}

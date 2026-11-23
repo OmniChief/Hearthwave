@@ -1,4 +1,5 @@
 import { basename, extname, join } from 'node:path';
+import { gameSystem, isCartridgeBin } from './games.ts';
 import { opendir } from 'node:fs/promises';
 import type { ImportItem } from './model.ts';
 
@@ -126,7 +127,7 @@ export async function* scanFolder(root: string, sourceName = ''): AsyncGenerator
       if (!entry.isFile()) continue;
       const extension = extname(entry.name).toLowerCase();
       const inGameFolder = gameFolder.test(current.path) || gameFolder.test(sourceName);
-      if (romFormats.has(extension) || (inGameFolder && ['.zip','.7z','.iso','.cue','.md','.d64','.adf'].includes(extension))) {
+      if (isCartridgeBin(path) || romFormats.has(extension) || (gameSystem(path)?.formats.includes(extension)) || ((inGameFolder || gameSystem(path)) && ['.zip','.7z','.iso','.cue','.md','.d64','.adf'].includes(extension))) {
         const title = basename(entry.name, extname(entry.name)).replace(/[._]+/g, ' ').trim();
         yield {kind:'game', title, group:basename(current.path), sourceRef:path, url:path};
         continue;

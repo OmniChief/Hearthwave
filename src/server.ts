@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
 import { fillLocalFilmMetadata, lookupLocalFilm } from './local-films.ts';
 import { liveGenres, parseM3u, scanFolder } from './catalogue.ts';
+import { gameInfo, gameSystem } from './games.ts';
 import { libraryGenres } from './library-genres.ts';
 import { qualityPreferences, type QualityPreference } from './quality.ts';
 import { BackupError, backupBusy, streamBackup } from './backup.ts';
@@ -21,6 +22,7 @@ const webRoot = join(dirname(fileURLToPath(import.meta.url)), '..', 'web');
 const allowedAssets: Record<string, string> = {
   '/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/tv-navigation.js': 'tv-navigation.js', '/playback-variants.js': 'playback-variants.js', '/hls-playback.js': 'hls-playback.js', '/playback-diagnostics.js': 'playback-diagnostics.js', '/local-media.js': 'local-media.js', '/vendor/hls.light.min.js': 'vendor/hls.light.min.js',
   '/styles.css': 'styles.css', '/manifest.webmanifest': 'manifest.webmanifest',
+  '/game.html':'game.html', '/game.js':'game.js',
   '/sw.js': 'sw.js', '/icon.svg': 'icon.svg',
 };
 const contentTypes: Record<string, string> = {
@@ -318,13 +320,30 @@ async function* arrayItems(items: ImportItem[]): AsyncGenerator<ImportItem> {
   for (const item of items) yield item;
 }
 
-async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: number): Promise<void> {
+async function cueTracks(file:string):Promise<string[]> {
+  if(extname(file).toLowerCase()!=='.cue') return [];
+  if((await stat(file)).size>1024*1024) throw new HttpError(400,'Cue sheet is too large.');
+  const cue=await readFile(file,'utf8');
+  return [...new Set(Array.from(cue.matchAll(/^\s*FILE\s+(?:"([^"]+)"|(\S+))\s+BINARY\s*$/gmi),m=>m[1] || m[2]))]
+    .filter(name=>!/[\\/]/.test(name) && /\.bin$/i.test(name));
+}
+
+async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: number, gameFile?:string): Promise<void> {
   const variant = getVariant(variantId);
   if (!variant || variant.source_type !== 'folder') throw new HttpError(404, 'Local media not found.');
   const root = await realpath(variant.source_location);
-  const file = await realpath(variant.url);
+  let file = await realpath(variant.url);
   const rel = relative(root, file);
   if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new HttpError(403, 'The media file is outside its configured folder.');
+  if(gameFile!==undefined) {
+    if(getTitle(variant.title_id)?.kind!=='game') throw new HttpError(404,'Game not found.');
+    if(gameFile!==basename(file)) {
+      if(!(await cueTracks(file)).includes(gameFile)) throw new HttpError(404,'Disc track not found.');
+      const track=await realpath(join(dirname(file),gameFile));
+      if(dirname(track)!==dirname(file)) throw new HttpError(403,'Disc track is outside its game folder.');
+      file=track;
+    }
+  }
   const info = await stat(file);
   if (!info.isFile()) throw new HttpError(404, 'Media file unavailable.');
   const total = info.size;
@@ -349,7 +368,7 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
     'X-Content-Type-Options': 'nosniff',
   };
   if (range) headers['Content-Range'] = `bytes ${start}-${end}/${total}`;
-  if (getTitle(variant.title_id)?.kind === 'game') {
+  if (gameFile===undefined && getTitle(variant.title_id)?.kind === 'game') {
     headers['Content-Disposition'] = "attachment; filename*=UTF-8''" + encodeURIComponent(basename(file)).replace(/'/g,'%27');
   }
   res.writeHead(range ? 206 : 200, headers);
@@ -704,8 +723,14 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     const typedKind=kind as 'all'|'library'|ImportItem['kind'];
     const typedView=view as 'all'|'favourites'|'continue',typedSort=sort as 'title'|'year'|'added'|'activity';
     const liveGenre=kind==='channel'?genre:'',libraryGenre=kind==='channel'?'':genre;
+    const rows=listTitles(typedKind,current.user.id,query,typedView,typedSort,limit,offset,country,liveGenre,libraryGenre,collection) as Array<Record<string,unknown> & {game_path?:string}>;
+    const items=await Promise.all(rows.map(async ({game_path,...row})=>{
+      if(!game_path) return row;
+      const info=await gameInfo(game_path);
+      return {...row,core:info.core,system:info.system,artwork:info.cover || row.artwork};
+    }));
     return send(res,200,{
-      items:listTitles(typedKind,current.user.id,query,typedView,typedSort,limit,offset,country,liveGenre,libraryGenre,collection),
+      items,
       total:countTitles(typedKind,current.user.id,query,typedView,country,liveGenre,libraryGenre,collection),
       offset,limit,maxResults:limit,
       genres:collectionId?[]:kind==='channel'?channelGenreCounts(country,query):['library','film','series'].includes(kind)?libraryGenreCounts(kind as 'library'|'film'|'series',current.user.id,query,typedView):[],
@@ -881,6 +906,20 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     res.end(contents);
     return;
   }
+  const gameRoute=/^\/api\/games\/(\d+)(?:\/rom\/([^/]+))?$/.exec(path);
+  if(gameRoute && method==='GET') {
+    const id=positiveId(gameRoute[1]);
+    if(gameRoute[2]) return serveLocal(req,res,id,decodeURIComponent(gameRoute[2]));
+    const v=getVariant(id);
+    if(!v || v.source_type!=='folder' || getTitle(v.title_id)?.kind!=='game') throw new HttpError(404,'Game not found.');
+    const root=await realpath(v.source_location), file=await realpath(v.url);
+    const rel=relative(root,file);
+    if(!rel || rel==='..' || rel.startsWith('..'+sep) || isAbsolute(rel)) throw new HttpError(403,'Game outside its source.');
+    const tracks=await cueTracks(file);
+    const romUrl=(name:string)=>'/api/games/'+id+'/rom/'+encodeURIComponent(name);
+    return send(res,200,{core:gameSystem(v.url)?.core,filename:basename(file),url:romUrl(basename(file)),
+      tracks:Object.fromEntries(tracks.map(name=>['/'+name,romUrl(name)]))});
+  }
   const localMatch = /^\/api\/media\/(\d+)\/file$/.exec(path);
   if (localMatch && method === 'GET') return serveLocal(req, res, positiveId(localMatch[1]));
   throw new HttpError(404, 'API endpoint not found.');
@@ -894,6 +933,10 @@ const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url || '/', 'http://localhost');
     if (url.pathname.startsWith('/api/')) return await api(req, res, url);
+    if(url.pathname==='/game.html') {
+      res.setHeader('X-Frame-Options','SAMEORIGIN');
+      res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob: https://cdn.emulatorjs.org; style-src 'self' 'unsafe-inline' https://cdn.emulatorjs.org; connect-src 'self' blob: data: https://cdn.emulatorjs.org; img-src 'self' blob: data: https://cdn.emulatorjs.org; font-src data: https://cdn.emulatorjs.org; worker-src 'self' blob:; media-src blob: data:; frame-ancestors 'self'; object-src 'none'");
+    }
     const name = allowedAssets[url.pathname];
     if (!name || req.method !== 'GET') throw new HttpError(404, 'Page not found.');
     const contents = await readFile(join(webRoot, name));

@@ -558,7 +558,7 @@ export function listTitles(kind: MediaKind | 'all' | 'library', userId: number, 
       WHEN 'Music' THEN 7 ELSE 8 END,t.title COLLATE NOCASE ASC,t.id ASC`
     : {title:'t.title COLLATE NOCASE ASC,t.id ASC',year:'(t.year IS NULL),t.year DESC,t.title COLLATE NOCASE ASC,t.id ASC',added:'t.id DESC',activity:'(p.updated_at IS NULL),p.updated_at DESC,t.id DESC'}[sort];
   return db.prepare(`
-    SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,t.artwork,t.channel_country,t.live_genre, MIN(v.id) AS variant_id,
+    SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,t.artwork,t.channel_country,t.live_genre, MIN(v.id) AS variant_id, CASE WHEN t.kind='game' THEN v.source_ref END AS game_path,
       COUNT(v.id) AS source_count,
       CASE WHEN f.title_id IS NULL THEN 0 ELSE 1 END AS favourite,
       p.position_seconds
