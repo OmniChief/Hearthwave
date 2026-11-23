@@ -1,9 +1,10 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createReadStream } from 'node:fs';
 import { readFile, realpath, stat } from 'node:fs/promises';
-import { dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
+import { fillLocalFilmMetadata, lookupLocalFilm } from './local-films.ts';
 import { liveGenres, parseM3u, scanFolder } from './catalogue.ts';
 import { libraryGenres } from './library-genres.ts';
 import { qualityPreferences, type QualityPreference } from './quality.ts';
@@ -216,6 +217,7 @@ function startImport(source: SourceRow, items: AsyncIterable<ImportItem>): void 
       if(job.cancelRequested) throw new ScanCancelled();
       if (buffer.length) {importBatch(source.id, buffer, generation);job.indexed+=buffer.length;}
       completeImport(source.id, generation);
+      if (source.type === 'folder') fillLocalFilmMetadata();
       job.phase='completed';
     } catch (error) {
       const cancelled=job.cancelRequested || error instanceof ScanCancelled;
@@ -347,6 +349,9 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
     'X-Content-Type-Options': 'nosniff',
   };
   if (range) headers['Content-Range'] = `bytes ${start}-${end}/${total}`;
+  if (getTitle(variant.title_id)?.kind === 'game') {
+    headers['Content-Disposition'] = "attachment; filename*=UTF-8''" + encodeURIComponent(basename(file)).replace(/'/g,'%27');
+  }
   res.writeHead(range ? 206 : 200, headers);
   const stream = createReadStream(file, { start, end });
   stream.on('error', error => { console.error('Local playback failed:', error); res.destroy(error); });
@@ -552,6 +557,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       const generation = randomUUID();
       importBatch(source.id, [{ kind: 'channel', title: name, sourceRef: 'direct', url: location }], generation);
       completeImport(source.id, generation);
+      if (source.type === 'folder') fillLocalFilmMetadata();
     }
     return send(res, 201, { source: safelyPublicSource(getSource(source.id)!) });
   }
@@ -590,7 +596,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     if (method === 'POST' && sourceMatch[2] === 'scan') {
       requireWrite(req, true);
       if (source.type === 'm3u' && source.location) startImport(source, playlistItems(source.location));
-      else if (source.type === 'folder') startImport(source, scanFolder(source.location));
+      else if (source.type === 'folder') startImport(source, scanFolder(source.location, source.name));
       else if (source.type === 'stalker' || source.type === 'xtream') {
         const selected = listCategories(id).filter(row=>row.selected === 1);
         if (!selected.length) throw new HttpError(400, 'Select provider categories in Settings before scanning.');
@@ -679,7 +685,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   }
   if (path === '/api/catalogue' && method === 'GET') {
     const kind = url.searchParams.get('kind') || 'all';
-    if (!['all', 'library', 'film', 'series', 'episode', 'channel', 'music', 'photo'].includes(kind)) throw new HttpError(400, 'Unsupported media kind.');
+    if (!['all', 'library', 'film', 'series', 'episode', 'channel', 'music', 'photo', 'game'].includes(kind)) throw new HttpError(400, 'Unsupported media kind.');
     const query = (url.searchParams.get('q') || '').slice(0, 120);
     const view=url.searchParams.get('view') || 'all';
     const sort=url.searchParams.get('sort') || 'title';
@@ -725,7 +731,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
         if(!['xtream','stalker'].includes(v.source_type) || !/^(vod|series):/.test(v.source_ref) || seen.has(v.source_id)) return false;
         seen.add(v.source_id);return true;
       }).slice(0,3);
-      if(!variants.length) return send(res,200,{updated:false,providers:0,title:getTitleDetail(titleId,current.user.id)});
+
       if(metadataLastAttempt.size>300) metadataLastAttempt.clear();
       metadataLastAttempt.set(titleId,Date.now());
       let updated=0;
@@ -737,6 +743,13 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
           const info=await fetchTitleMetadata(source,variant.source_ref);
           if(info && enrichTitleMetadata(titleId,info)) updated++;
         } catch(error) { failures.push(error instanceof Error?error:new Error('Provider metadata lookup failed.')); }
+      }
+      const film = getTitle(titleId);
+      if (!updated && film?.kind === 'film' && listVariants(titleId).some(v => v.source_type === 'folder')) {
+        try {
+          const info = await lookupLocalFilm(film.title, film.year);
+          if (info && enrichTitleMetadata(titleId, info)) updated++;
+        } catch { failures.push(new Error('Movie lookup unavailable.')); }
       }
       if(!updated && failures.length) {
         const throttled=failures.every(error=>error instanceof ProviderError && error.status===429);
@@ -898,6 +911,7 @@ const server = createServer(async (req, res) => {
 const port = Number(process.env.PORT || 9999);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT must be between 1 and 65535.');
 server.listen(port, process.env.HOST || '0.0.0.0', () => console.log(`Hearthwave ready on port ${port}`));
+fillLocalFilmMetadata();
 const shutdown = () => { server.close(() => { db.close(); process.exit(0); }); };
 const shutdownForUpdate = () => {
   shutdown();

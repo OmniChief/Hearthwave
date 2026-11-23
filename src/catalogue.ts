@@ -74,6 +74,7 @@ export function canonicalKey(item: ImportItem): string {
     return `channel:${region}:${channelKey(item.title)}:0`;
   }
   const name = cleanTitle(item.title).replace(/^(?:uk|us|usa|en)\s*[-:|]\s*/i, '').replace(/\s+(?:UHD|FHD|4K|HD|SD|1080P|720P)$/i, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  if (item.kind === 'game') return JSON.stringify(['game', item.sourceRef]);
   const episode = item.kind === 'episode' ? `:${item.season || 0}:${item.episode || 0}` : '';
   return `${item.kind}:${region}:${name}:${item.year || 0}${episode}`;
 }
@@ -105,7 +106,10 @@ export function parseM3u(content: string): ImportItem[] {
   return items;
 }
 
-export async function* scanFolder(root: string): AsyncGenerator<ImportItem> {
+const romFormats = new Set('.nes .fds .sfc .smc .gb .gbc .gba .nds .3ds .z64 .n64 .v64 .sms .gg .mdx .gen .smd .32x .a26 .a78 .lnx .pce .ngp .ngc .ws .wsc .chd .cso .rvz .wbfs .gcm .xci .nsp .pbp'.split(' '));
+const gameFolder = /(?:^|[^a-z0-9])(?:roms?|games?|arcade|mame|fbneo|nes|snes|megadrive|genesis|ps[1-3xp]|playstation|dreamcast|saturn|wii|gamecube|nintendo|amiga)(?:$|[^a-z0-9])/i;
+
+export async function* scanFolder(root: string, sourceName = ''): AsyncGenerator<ImportItem> {
   const pending: { path: string; depth: number }[] = [{ path: root, depth: 0 }];
   let examined = 0;
   while (pending.length) {
@@ -121,6 +125,12 @@ export async function* scanFolder(root: string): AsyncGenerator<ImportItem> {
       }
       if (!entry.isFile()) continue;
       const extension = extname(entry.name).toLowerCase();
+      const inGameFolder = gameFolder.test(current.path) || gameFolder.test(sourceName);
+      if (romFormats.has(extension) || (inGameFolder && ['.zip','.7z','.iso','.cue','.md','.d64','.adf'].includes(extension))) {
+        const title = basename(entry.name, extname(entry.name)).replace(/[._]+/g, ' ').trim();
+        yield {kind:'game', title, group:basename(current.path), sourceRef:path, url:path};
+        continue;
+      }
       if (!MEDIA_EXTS.has(extension)) continue;
       const name = cleanTitle(basename(entry.name));
       const year = /(?:^|\s|\()(19\d{2}|20\d{2})(?:\)|\s|$)/.exec(name)?.[1];

@@ -1,5 +1,5 @@
 export type SourceType = 'folder' | 'm3u' | 'xtream' | 'stalker' | 'direct';
-export type MediaKind = 'film' | 'series' | 'episode' | 'channel' | 'music' | 'photo';
+export type MediaKind = 'film' | 'series' | 'episode' | 'channel' | 'music' | 'photo' | 'game';
 
 export interface ProviderConfig {
   username?: string;

@@ -4,7 +4,7 @@ import { prepareMedia } from './hls-playback.js';
 import { browserPlaybackCapabilities, connectionAdvice, nativeMediaFailure, playbackReport, streamFormat } from './playback-diagnostics.js';
 import { adjacentMedia, mediaQueue, presentation } from './local-media.js';
 
-const state = { session: null, page: 'home', settingsTab: 'sources', kind: 'all', libraryView: 'all', libraryGenre: '', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, collectionOverview: false, collectionId: 0, collectionName: '', collectionMode: 'manual', liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], browseItems: [], mediaQueue: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], sourceJobs: {}, sourcePollTimer: null, detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, qualityPreference: 'auto', activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackRequest: 0, playbackGeneration: 0, playbackAttempts: [], recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
+const state = { session: null, page: 'home', playOffset: 0, settingsTab: 'sources', kind: 'all', libraryView: 'all', libraryGenre: '', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, collectionOverview: false, collectionId: 0, collectionName: '', collectionMode: 'manual', liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], browseItems: [], mediaQueue: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], sourceJobs: {}, sourcePollTimer: null, detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, qualityPreference: 'auto', activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackRequest: 0, playbackGeneration: 0, playbackAttempts: [], recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
 let releaseMedia = () => {};
 let failedPlaybackGeneration = -1;
 let latestUpdateCheck = null;
@@ -155,7 +155,7 @@ function liveGenre(item) { return liveGenres.includes(item.live_genre)?item.live
 function cataloguePager(result,scope) {
   const total=Number(result.total)||0,limit=Number(result.limit)||1,offset=Number(result.offset)||0;
   const pages=Math.max(1,Math.ceil(total/limit)),current=Math.floor(offset/limit)+1;
-  return `<nav class="catalogue-pagination" aria-label="${scope==='library'?'Library':'Live'} pages"><div><strong>${total?`${offset+1}–${offset+result.items.length} of ${total}`:'0'} items</strong><small>Page ${current} of ${pages}</small></div><div class="catalogue-pager-controls"><button class="button button-quiet button-small" data-catalogue-move="${scope}" data-direction="-1" ${offset===0?'disabled':''}>← Previous</button><form id="${scope}-pager" data-limit="${limit}" data-pages="${pages}"><label>Page <input type="number" name="page" min="1" max="${pages}" value="${current}" required></label><button class="button button-quiet button-small" type="submit">Go</button></form><button class="button button-quiet button-small" data-catalogue-move="${scope}" data-direction="1" ${offset+result.items.length>=total?'disabled':''}>Next →</button></div></nav>`;
+  return `<nav class="catalogue-pagination" aria-label="${scope==='library'?'Library':scope==='play'?'Play':'Live'} pages"><div><strong>${total?`${offset+1}–${offset+result.items.length} of ${total}`:'0'} items</strong><small>Page ${current} of ${pages}</small></div><div class="catalogue-pager-controls"><button class="button button-quiet button-small" data-catalogue-move="${scope}" data-direction="-1" ${offset===0?'disabled':''}>← Previous</button><form id="${scope}-pager" data-limit="${limit}" data-pages="${pages}"><label>Page <input type="number" name="page" min="1" max="${pages}" value="${current}" required></label><button class="button button-quiet button-small" type="submit">Go</button></form><button class="button button-quiet button-small" data-catalogue-move="${scope}" data-direction="1" ${offset+result.items.length>=total?'disabled':''}>Next →</button></div></nav>`;
 }
 
 async function renderHome() {
@@ -251,7 +251,7 @@ async function renderTitleDetail() {
     <p class="detail-facts">${facts.map(esc).join(' · ') || 'No metadata supplied yet'}</p>
     <p class="detail-description">${esc(title.description || 'A description has not been supplied by your sources yet.')}</p>
     <div class="row-actions">${title.kind==='series' ? `<button class="button button-primary" data-series="${title.id}">Browse episodes</button>` : versions.variants.some(v=>v.playable) ? `<button class="button button-primary" data-play="${title.id}">${title.kind==='photo'?'View photo':title.kind==='music'?'Listen now':'Play best available'}</button>` : ''}
-    <button class="button button-quiet" data-favourite="${title.id}" data-next="${title.favourite?'0':'1'}">${title.favourite?'★ In favourites':'☆ Add to favourites'}</button>${state.session.user.role==='admin' && ['film','series'].includes(title.kind)?`<button class="button button-quiet" data-metadata-refresh="${title.id}">Fetch provider details</button>`:''}</div></div></div>
+    <button class="button button-quiet" data-favourite="${title.id}" data-next="${title.favourite?'0':'1'}">${title.favourite?'★ In favourites':'☆ Add to favourites'}</button>${state.session.user.role==='admin' && ['film','series'].includes(title.kind)?`<button class="button button-quiet" data-metadata-refresh="${title.id}">Fetch metadata</button>`:''}</div></div></div>
     ${heading('Available sources',`${versions.variants.length} connection${versions.variants.length===1?'':'s'} across your providers. Choose a particular version or let Hearthwave try alternatives if playback fails.`)}
     ${sourceOptions(versions.variants,title.id,title.kind)}
     ${collectionControls(title.id,collectionList.collections)}</section>`;
@@ -269,7 +269,7 @@ async function renderSeriesDetail() {
     catch (error) { status = {status:'error',error:error.message}; }
   }
   const seasons = [...new Set(result.items.map(row => row.season || 0))].sort((a,b)=>b-a);
-  page.innerHTML = `<section class="surface"><button class="button button-quiet button-small" data-series-back>← Back to Library</button><div class="section-heading"><div><span class="eyebrow">SERIES</span><h2>${esc(result.series.title)}</h2><p>${esc(result.series.year || 'Year unknown')} · ${result.items.length} episode${result.items.length === 1 ? '' : 's'} across ${seasons.length} season${seasons.length === 1 ? '' : 's'}</p>${detail.title.description ? `<p class="detail-description">${esc(detail.title.description)}</p>`:''}</div><div class="row-actions">${state.session.user.role==='admin'?`<button class="button button-quiet button-small" data-metadata-refresh="${seriesId}">Fetch provider details</button>`:''}<button class="button button-quiet button-small" data-series-refresh="${seriesId}" ${status.status === 'running' ? 'disabled':''}>${status.status === 'running' ? 'Loading…':'Refresh episodes'}</button></div></div>
+  page.innerHTML = `<section class="surface"><button class="button button-quiet button-small" data-series-back>← Back to Library</button><div class="section-heading"><div><span class="eyebrow">SERIES</span><h2>${esc(result.series.title)}</h2><p>${esc(result.series.year || 'Year unknown')} · ${result.items.length} episode${result.items.length === 1 ? '' : 's'} across ${seasons.length} season${seasons.length === 1 ? '' : 's'}</p>${detail.title.description ? `<p class="detail-description">${esc(detail.title.description)}</p>`:''}</div><div class="row-actions">${state.session.user.role==='admin'?`<button class="button button-quiet button-small" data-metadata-refresh="${seriesId}">Fetch metadata</button>`:''}<button class="button button-quiet button-small" data-series-refresh="${seriesId}" ${status.status === 'running' ? 'disabled':''}>${status.status === 'running' ? 'Loading…':'Refresh episodes'}</button></div></div>
   ${collectionControls(seriesId,collectionList.collections)}
   <label class="autoplay-setting"><input type="checkbox" id="autoplay-next" ${state.autoplayNext?'checked':''}> Automatically play the next episode when one finishes <small>Saved to your household profile</small></label>
   ${status.status === 'running' ? '<p class="field-note">Retrieving episode information from the configured providers. This runs only when requested.</p>':''}
@@ -378,7 +378,6 @@ async function renderGuideGrid() {
 }
 
 const upcoming = {
-  play:{ title:'A new way to play', description:'Your games, arcade and social challenges will live together here.',icon:'◈', features:[['Game library','Browse owned games and ROMs with covers, favourites and save states.'],['Retro arcade','Play in your browser with controller support.'],['Play together','Quizzes, chess, rooms, achievements and leaderboards.']] },
   create:{ title:'Make something wonderful', description:'Creative projects will be managed here while optional PC workers do the heavy lifting.',icon:'✳',features:[['Image studio','Queue text-to-image jobs and organise generated assets.'],['Video workspace','Optional video generation and project history.'],['Worker pairing','Attach a capable PC for conversion and GPU work.']] },
   community:{ title:'Good things are better shared',description:'Profiles, friends and togetherness without giving up ownership.',icon:'♧',features:[['Friends and profiles','Private social identities, lists and reviews.'],['Watch together','Synchronized viewing and chat rooms.'],['Teams and achievements','Game rankings and shared milestones.']] },
   'my-space':{ title:'Your corner of the world',description:'Everyday tools, plans and files in your own space.',icon:'☷',features:[['Personal calendar','Reminders, releases and shared planning.'],['File exchange','Permission-controlled sharing and resumable uploads.'],['Your dashboard','Photos, notifications, ambient displays and webcams.']] },
@@ -563,11 +562,22 @@ async function showProviderFolders(sourceId) {
   panel.scrollIntoView({ behavior:'smooth', block:'nearest' });
 }
 
+async function renderGames() {
+  const offset = state.playOffset;
+  const result = await api('/api/catalogue?kind=game&limit=60&offset=' + offset);
+  if (state.page !== 'play' || offset !== state.playOffset) return;
+  const games = result.items.map(game => `<article class="surface"><h3>${esc(game.title)}</h3><p>${esc(game.group_name || '')}</p><a class="button button-quiet" download href="/api/media/${Number(game.variant_id)}/file">Download ROM</a></article>`);
+  page.innerHTML = heading('Game library') + (games.length
+    ? '<div class="cards">' + games.join('') + '</div>' + cataloguePager(result,'play')
+    : emptyState('No games indexed', 'Scan your ROM folder under Settings > Sources.', '◈'));
+}
+
 async function renderPage() {
   switch (state.page) {
     case 'home': return renderHome();
     case 'library': return renderLibrary();
     case 'live': return renderLive();
+    case 'play': return renderGames();
     case 'settings': return renderSettings();
     default: return renderUpcoming(state.page);
   }
@@ -994,11 +1004,11 @@ page.addEventListener('submit', async event => {
     } catch(error) {notify(error.message,true);submit.disabled=false;}
     return;
   }
-  if (form.id==='library-pager' || form.id==='live-pager') {
+  if (['library-pager','live-pager','play-pager'].includes(form.id)) {
     event.preventDefault();
     const requested=Number(new FormData(form).get('page'));
     if(!Number.isSafeInteger(requested) || requested<1 || requested>Number(form.dataset.pages)) return notify('Enter a valid page number.',true);
-    const scope=form.id==='library-pager'?'library':'live';
+    const scope=form.id.split('-')[0];
     state[`${scope}Offset`]=(requested-1)*Number(form.dataset.limit);
     try {await renderPage();window.scrollTo({top:0,behavior:'instant'});} catch(error) {notify(error.message,true);}
     return;
@@ -1075,7 +1085,7 @@ page.addEventListener('click', async event => {
   if (target.dataset.libraryView) {state.libraryView=target.dataset.libraryView;state.libraryOffset=0;if(state.libraryView==='continue') state.librarySort='activity';return renderPage();}
   if (target.dataset.catalogueMove) {
     const scope=target.dataset.catalogueMove;
-    if (!['library','live'].includes(scope)) return;
+    if (!['library','live','play'].includes(scope)) return;
     state[`${scope}Offset`]=Math.max(0,state[`${scope}Offset`]+Number(target.dataset.direction)*(scope==='library'?48:60));
     try {await renderPage();window.scrollTo({top:0,behavior:'instant'});}catch(error){notify(error.message,true);}
     return;
@@ -1158,7 +1168,7 @@ page.addEventListener('click', async event => {
       const result=await api(`/api/titles/${titleId}/metadata/refresh`,{method:'POST'});
       notify(result.updated?`Updated details from ${result.providers} provider${result.providers===1?'':'s'}.`:'No additional provider details were available for this title.');
       await renderPage();
-    } catch(error) {target.disabled=false;target.textContent='Fetch provider details';notify(error.message,true);}
+    } catch(error) {target.disabled=false;target.textContent='Fetch metadata';notify(error.message,true);}
     return;
   }
   if (target.dataset.guideMap) return showGuideMappingEditor(target.dataset.guideMap);

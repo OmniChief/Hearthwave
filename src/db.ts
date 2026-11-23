@@ -532,7 +532,7 @@ export interface CollectionSettings {
 function collectionClause(collection:CollectionSettings|undefined,userId:number):{sql:string;params:Array<string|number>} {
   if(!collection) return {sql:'',params:[]};
   if(collection.mode==='manual') return {sql:' AND EXISTS (SELECT 1 FROM collection_items ci WHERE ci.collection_id=? AND ci.title_id=t.id)',params:[collection.id]};
-  const terms=["t.kind<>'channel'"];
+  const terms=["t.kind NOT IN ('channel','game')"];
   const params:Array<string|number>=[];
   if(collection.rule_kind!=='all') {terms.push('t.kind=?');params.push(collection.rule_kind);}
   if(collection.rule_genre) {terms.push('EXISTS (SELECT 1 FROM library_genres lg WHERE lg.title_id=t.id AND lg.genre=?)');params.push(collection.rule_genre);}
@@ -558,14 +558,14 @@ export function listTitles(kind: MediaKind | 'all' | 'library', userId: number, 
       WHEN 'Music' THEN 7 ELSE 8 END,t.title COLLATE NOCASE ASC,t.id ASC`
     : {title:'t.title COLLATE NOCASE ASC,t.id ASC',year:'(t.year IS NULL),t.year DESC,t.title COLLATE NOCASE ASC,t.id ASC',added:'t.id DESC',activity:'(p.updated_at IS NULL),p.updated_at DESC,t.id DESC'}[sort];
   return db.prepare(`
-    SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,t.artwork,t.channel_country,t.live_genre,
+    SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,t.artwork,t.channel_country,t.live_genre, MIN(v.id) AS variant_id,
       COUNT(v.id) AS source_count,
       CASE WHEN f.title_id IS NULL THEN 0 ELSE 1 END AS favourite,
       p.position_seconds
     FROM titles t JOIN variants v ON v.title_id=t.id AND (v.series_parent_id IS NULL OR ?='episode' OR ?>0)
     LEFT JOIN favourites f ON f.title_id=t.id AND f.user_id=?
     LEFT JOIN progress p ON p.title_id=t.id AND p.user_id=?
-    WHERE (?='all' OR (?='library' AND t.kind<>'channel') OR t.kind=?) AND t.title LIKE ? ESCAPE '\\'
+    WHERE (?='all' OR (?='library' AND t.kind NOT IN ('channel','game')) OR t.kind=?) AND t.title LIKE ? ESCAPE '\\'
       AND (?='all' OR (?='favourites' AND f.title_id IS NOT NULL) OR (?='continue' AND p.position_seconds>0))
       AND (?='' OR (?='other' AND t.channel_country NOT IN ('GB','US')) OR t.channel_country=?)
       AND (?='' OR t.live_genre=?)
@@ -581,7 +581,7 @@ export function countTitles(kind: MediaKind | 'all' | 'library',userId:number,qu
   return Number((db.prepare(`SELECT COUNT(*) AS total FROM titles t
     LEFT JOIN favourites f ON f.title_id=t.id AND f.user_id=?
     LEFT JOIN progress p ON p.title_id=t.id AND p.user_id=?
-    WHERE (?='all' OR (?='library' AND t.kind<>'channel') OR t.kind=?) AND t.title LIKE ? ESCAPE '\\'
+    WHERE (?='all' OR (?='library' AND t.kind NOT IN ('channel','game')) OR t.kind=?) AND t.title LIKE ? ESCAPE '\\'
       AND (?='all' OR (?='favourites' AND f.title_id IS NOT NULL) OR (?='continue' AND p.position_seconds>0))
       AND (?='' OR (?='other' AND t.channel_country NOT IN ('GB','US')) OR t.channel_country=?)
       AND (?='' OR t.live_genre=?)
@@ -900,7 +900,7 @@ export function guideGrid(country:string,limit=40,query='',offset=0,windowStart?
 }
 
 export function dashboardStats(): { items: number; channels: number; sources: number } {
-  const items = Number((db.prepare("SELECT COUNT(*) AS total FROM titles WHERE kind<>'channel' AND EXISTS (SELECT 1 FROM variants WHERE title_id=titles.id)").get() as { total: number }).total);
+  const items = Number((db.prepare("SELECT COUNT(*) AS total FROM titles WHERE kind NOT IN ('channel','game') AND EXISTS (SELECT 1 FROM variants WHERE title_id=titles.id)").get() as { total: number }).total);
   const channels = Number((db.prepare("SELECT COUNT(*) AS total FROM titles WHERE kind='channel' AND EXISTS (SELECT 1 FROM variants WHERE title_id=titles.id)").get() as { total: number }).total);
   return { items, channels, sources: listSources().length };
 }
