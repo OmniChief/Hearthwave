@@ -28,8 +28,12 @@ async function hlsConstructor() {
 }
 
 /** Returns a cleanup function. The caller owns playback-generation checks and source fallback. */
-export async function prepareMedia(video,address,{ready,fatal,alive,onEngine=()=>{}}) {
-  if (!isHlsUrl(address)) {
+export async function prepareMedia(video,address,{ready,fatal,alive,live=false,onEngine=()=>{}}) {
+  const hls = isHlsUrl(address);
+  const native = Boolean(video.canPlayType('application/vnd.apple.mpegurl'));
+  const path = new URL(address, location.href).pathname;
+  const probeHls = live && !hls && !native && !/\.(?:mp4|m4v|webm|mp3|aac|ts)$/i.test(path);
+  if (!hls && !probeHls) {
     onEngine(video.tagName==='AUDIO'?'Native audio':'Native video');
     video.src=address;
     video.load();
@@ -37,20 +41,20 @@ export async function prepareMedia(video,address,{ready,fatal,alive,onEngine=()=
     return () => {};
   }
 
-  const native=Boolean(video.canPlayType('application/vnd.apple.mpegurl'));
+
   let Hls;
   try { Hls=await hlsConstructor(); }
-  catch(error) {if(!native) throw error;}
+  catch(error) {if(!native && !probeHls) throw error;}
   if (!alive()) return () => {};
   if (Hls?.isSupported()) {
     onEngine('HLS.js');
     const engine=new Hls({enableWorker:true,maxBufferLength:30,backBufferLength:30});
     let mediaRecovered=false,networkRecovered=false,nativeTried=false;
     const nativeFallback=()=>{
-      if(!native || nativeTried || !alive()) return false;
+      if((!native && !probeHls) || nativeTried || !alive()) return false;
       nativeTried=true;
       engine.destroy();
-      onEngine('Native HLS');
+      onEngine(probeHls?'Native video':'Native HLS');
       video.src=address;
       video.load();
       ready();
@@ -61,7 +65,7 @@ export async function prepareMedia(video,address,{ready,fatal,alive,onEngine=()=
     engine.on(Hls.Events.ERROR,(_event,data)=>{
       if (!alive() || nativeTried || !data?.fatal) return;
       if (data.type===Hls.ErrorTypes.MEDIA_ERROR && !mediaRecovered) {mediaRecovered=true;engine.recoverMediaError();return;}
-      if (data.type===Hls.ErrorTypes.NETWORK_ERROR && !networkRecovered) {networkRecovered=true;engine.startLoad();return;}
+      if (data.type===Hls.ErrorTypes.NETWORK_ERROR && !/^manifest/i.test(data.details || '') && !networkRecovered) {networkRecovered=true;engine.startLoad();return;}
       if(nativeFallback()) return;
       const network=data.type===Hls.ErrorTypes.NETWORK_ERROR;
       fatal(network ? 'HLS manifest or segments could not be fetched. The provider may require CORS.' : 'The browser could not decode this HLS stream.',network ? 'hls-network' : data.type===Hls.ErrorTypes.MEDIA_ERROR ? 'decode' : 'unknown');
@@ -69,8 +73,8 @@ export async function prepareMedia(video,address,{ready,fatal,alive,onEngine=()=
     try {engine.attachMedia(video);} catch(error) {if(!nativeFallback()) {engine.destroy();throw error;}}
     return () => engine.destroy();
   }
-  if (native) {
-    onEngine('Native HLS');
+  if (native || probeHls) {
+    onEngine(probeHls?'Native video':'Native HLS');
     video.src=address;
     video.load();
     ready();

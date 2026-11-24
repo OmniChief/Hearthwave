@@ -142,6 +142,15 @@ function xtreamClient(source: SourceRow) {
 }
 
 const magAgent = 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 MAG250 stbapp ver: 4 rev: 1812 Mobile Safari/533.3';
+function playbackAddress(command: unknown): string | null {
+  const match = /(?:^|\s)(https?:\/\/[^\s]+)/i.exec(field(command));
+  if (!match) return null;
+  const url = validateProviderUrl(match[1]);
+  const host = url.hostname.toLowerCase().replace(/\.$/, '');
+  if (host === 'localhost' || host.endsWith('.localhost') || /^127\./.test(host) || host === '[::1]' || host === '0.0.0.0') return null;
+  return url.href;
+}
+
 class StalkerClient {
   endpoint: string;
   token = '';
@@ -206,19 +215,22 @@ class StalkerClient {
   async resolve(kind: Kind, cmd: string, series = ''): Promise<string> {
     const params = { cmd, series, forced_storage:kind === 'live' ? 'false' : '', disable_ad:'false', download:'false', force_ch_link_check:'false' };
     const type = kind === 'live' ? 'itv' : 'vod';
-    let matched: RegExpExecArray | null = null;
+    let failure: unknown;
     for (const attempt of kind === 'series' ? ['vod','series'] : [type]) {
       try {
         const result = await this.call(attempt,'create_link',params);
-        matched = /(?:^|\s)(https?:\/\/[^\s]+)/i.exec(field(result.cmd || result.url));
-        if (matched) break;
+        const address = playbackAddress(result.cmd) || playbackAddress(result.url);
+        if (address) return address;
       } catch (error) {
         if (error instanceof ProviderError && error.status === 429) throw error;
+        failure = error;
       }
     }
-    matched ||= /(?:^|\s)(https?:\/\/[^\s]+)/i.exec(cmd);
-    if (!matched) throw new ProviderError('Portal did not provide a playable link.');
-    return validateProviderUrl(matched[1]).toString();
+    // Some portals list a usable direct stream instead of generating a new link.
+    const direct = playbackAddress(cmd);
+    if (direct) return direct;
+    if (failure) throw failure;
+    throw new ProviderError('The portal did not return a playable stream address.');
   }
 }
 

@@ -874,7 +874,7 @@ async function playVariant() {
       return;
     }
     const dispose=await prepareMedia(media,url,{
-      alive,
+      alive, live:state.activeTitle?.kind==='channel',
       onEngine:name=>{if(attempt?.generation===generation){attempt.engine=name;renderPlaybackDiagnostics();}},
       fatal:(message,code)=>failSource(generation,message,code),
       ready:()=>{
