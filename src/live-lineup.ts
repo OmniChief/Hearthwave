@@ -10,7 +10,9 @@ function region(id:string,name:string,country:string):string {
   return country||channelCountry(name)||({uk:'GB',gb:'GB',us:'US',usa:'US',ca:'CA'} as Record<string,string>)[id.toLowerCase().match(/[._-](uk|gb|us|usa|ca)$/)?.[1]||'']||'';
 }
 function nameKey(name:string):string {
-  const stripped=name.replace(/^\s*\[(?:UK|GB|US|USA|CA|EN|ENGLISH)\]\s*/i,'').replace(/^\s*(?:UK|GB|US|USA|CA|EN|ENGLISH)\s*[:|–-]\s*/i,'');
+  const stripped=name.replace(/^\s*\[(?:UK|GB|US|USA|CA|EN|ENGLISH)\]\s*/i,'').replace(/^\s*(?:UK|GB|US|USA|CA|EN|ENGLISH)\s*[:|–-]\s*/i,'')
+    .replace(/\s*\((?:4K|UHD|FHD|FULL\s*HD|HD|SD|HEVC|H265|H264|1080P|720P|2160P)\)\s*$/i,'')
+    .replace(/\+\s*(\d+)/g,' timeshiftplus $1 ');
   return channelKey(stripped).replace(/\b(bbc)\s+(one|two|three|four)\b/g,(_m,p,n)=>p+' '+({one:'1',two:'2',three:'3',four:'4'} as Record<string,string>)[n]).replace(/\s+/g,'');
 }
 function exactId(id:string){return id.trim().toLowerCase();}
