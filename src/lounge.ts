@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import type { MediaKind, User } from './model.ts';
-import { hasUsers, listTitles, getTitleDetail, listVariants, getVariant, getSource, listSeriesEpisodes, storedGuide, listCollections, ownedCollection, createCollection, setCollectionMembership, setFavourite, setWatchlisted, saveProgress, getUserPreferences, setUserPreferences, db } from './db.ts';
+import { hasUsers, listTitles, getTitleDetail, listVariants, getVariant, getSource, listSeriesEpisodes, storedGuide, listCollections, ownedCollection, createCollection, setCollectionMembership, setFavourite, setWatchlisted, saveProgress, getUserPreferences, setUserPreferences, dashboardStats, db } from './db.ts';
 import { resolveProviderStream } from './adapters/providers.ts';
 import { libraryGenres } from './library-genres.ts';
 import { liveGenres } from './catalogue.ts';
@@ -20,7 +20,7 @@ type Services={
 };
 type Kind=MediaKind|'library'|'all';
 type View='all'|'favourites'|'watchlist'|'continue';
-type Entry={id:number;kind:MediaKind;title:string;artwork?:string;year?:number;season?:number;episode?:number;episode_name?:string;description?:string;position_seconds?:number;favourite?:number;watchlisted?:number;source_count?:number};
+type Entry={id:number;kind:MediaKind;title:string;artwork?:string;year?:number;season?:number;episode?:number;episode_name?:string;description?:string;position_seconds?:number;favourite?:number;watchlisted?:number;source_count?:number;genres?:string;rating?:number;duration_seconds?:number;live_genre?:string};
 const kinds:Kind[]=['library','all','film','series','episode','channel','music','photo','game'];
 const kindNames:Record<Kind,string>={all:'Everything',library:'Your library',film:'Films',series:'Series',episode:'Episodes',channel:'Live television',music:'Music',photo:'Photos',game:'Games'};
 const views:View[]=['all','favourites','watchlist','continue'];
@@ -122,12 +122,13 @@ function respond(res:ServerResponse,code:number,html:string){
   res.writeHead(code,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'private, no-store','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' http: https:; media-src 'self' http: https:; connect-src 'self'; form-action 'self'; object-src 'none'; frame-ancestors 'none'"});
   res.end(html);
 }
-const navItems=[['home','Home','/tv'],['library','Watch',query({screen:'browse',kind:'library'})],['live','Live',query({screen:'browse',kind:'channel'})],['listen','Listen',query({screen:'browse',kind:'music'})],['photos','Photos',query({screen:'browse',kind:'photo'})],['play','Play',query({screen:'browse',kind:'game'})],['saved','My collection',query({screen:'saved'})],['settings','Settings',query({screen:'settings'})]];
+const navItems=[['home','Home','/tv'],['library','Library',query({screen:'browse',kind:'library'})],['live','Live',query({screen:'browse',kind:'channel'})],['play','Play',query({screen:'browse',kind:'game'})],['saved','My collection',query({screen:'saved'})],['settings','Settings',query({screen:'settings'})]];
 function frame(res:ServerResponse,user:User|null,section:string,heading:string,content:string,status=200,navigation?:Navigation){
-  const rail=user?'<td id="rail" valign="top"><div class="railcaption">EXPLORE</div>'+navItems.map(([key,label,path])=>href(path,label,'railitem'+(section===key?' active':''))).join('')+'<div class="railfooter">'+esc(user.username)+'</div></td>':'';
+  const rail=user?'<td id="rail" valign="top"><div class="railcaption">YOUR WORLD</div>'+navItems.map(([key,label,path])=>href(path,label,'railitem'+(section===key?' active':''))).join('')+'<div class="railfooter">'+esc(user.username)+'</div></td>':'';
   const back=navigation?backDestination(navigation):'';
+  const search=user?'<form class="global-search" action="/tv" method="get">'+hidden('screen','browse')+hidden('kind','all')+'<input type="text" name="q" maxlength="120" aria-label="Search your entertainment"><input class="commit" type="submit" value="Search"></form>':'';
   const backButton=back?'<a id="lounge-back" class="chip backbutton" href="'+esc(back)+'">&#8592; Back</a>':'';
-  let html='<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"><html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>'+esc(heading)+' | Hearthwave</title><link rel="stylesheet" type="text/css" href="/lounge.css?v=0332"><script type="text/javascript" src="/lounge-keys.js?v=0330" defer="defer"></script></head><body><div id="screen"><div id="mast"><a class="wordmark" href="/tv"><span class="emblem">&#9672;</span> hearthwave<span class="accent">.</span></a><span class="edition">YOUR ENTERTAINMENT &nbsp; / &nbsp; TV</span></div><table class="shell" cellpadding="0" cellspacing="0"><tr>'+rail+'<td id="stage" valign="top"><div class="heading"><h1>'+esc(heading)+'</h1><!--LOUNGE_BACK--></div>'+content+'</td></tr></table><div class="footer">Move with arrows &nbsp; &middot; &nbsp; OK to select &nbsp; &middot; &nbsp; Back to return <span>'+href('/?modern=1','Desktop interface','plain')+'</span></div></div></body></html>';
+  let html='<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"><html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>'+esc(heading)+' | Hearthwave</title><link rel="stylesheet" type="text/css" href="/lounge.css?v=0340"><script type="text/javascript" src="/lounge-keys.js?v=0340" defer="defer"></script></head><body><div id="screen"><div id="mast"><a class="wordmark" href="/tv"><span class="emblem">&#9672;</span> hearthwave<span class="accent">.</span></a>'+search+'<span class="edition">YOUR ENTERTAINMENT &nbsp; / &nbsp; TV</span></div><table class="shell" cellpadding="0" cellspacing="0"><tr>'+rail+'<td id="stage" valign="top"><div class="heading"><h1>'+esc(heading)+'</h1><!--LOUNGE_BACK--></div>'+content+'</td></tr></table><div class="footer">Move with arrows &nbsp; &middot; &nbsp; OK to select &nbsp; &middot; &nbsp; Back to return <span>'+href('/?modern=1','Desktop interface','plain')+'</span></div></div></body></html>';
   if(navigation)html=decorateNavigation(html,navigation);
   respond(res,status,html.replace('<!--LOUNGE_BACK-->',backButton));
 }
@@ -152,28 +153,38 @@ function loginScreen(req:IncomingMessage,res:ServerResponse,message='',status=20
   frame(res,null,'','Welcome home','<table class="welcome" cellpadding="0" cellspacing="0"><tr><td valign="top"><div class="kicker">THE LIVING ROOM</div><h2>Everything you love, together.</h2><p>Watch, listen and discover your own entertainment.</p></td><td valign="top"><div class="panel">'+(message?'<p class="notice">'+esc(message)+'</p>':'')+login+'</div></td></tr></table>',status);
 }
 function itemUrl(item:Entry,back:string){return query({screen:'item',id:item.id,back});}
-function tile(item:Entry,back:string){
-  const art=imageUrl(item.artwork);
-  const subtitle=[item.year,item.kind==='episode'?'S'+(item.season||'?')+' E'+(item.episode||'?'):kindNames[item.kind],item.favourite?'Saved':''].filter(Boolean).join('  /  ');
+function tile(item:Entry,back:string,csrf:string){
+  const art=imageUrl(item.artwork),resume=Number(item.position_seconds)>10&&['film','episode','music'].includes(item.kind);
+  const subtitle=[item.year,item.kind==='episode'?'S'+(item.season||'?')+' E'+(item.episode||'?'):'',(item.source_count||0)+' sources'].filter(Boolean).join(' / ');
   const shape=['film','series','episode'].includes(item.kind)?'portrait':item.kind==='channel'?'station':item.kind==='photo'?'snapshot':'square';
-  return '<a class="shelfcard shelf-'+shape+'" href="'+esc(itemUrl(item,back))+'"><span class="artwork">'+(art?'<img src="'+esc(art)+'" alt="">':'<span class="artlabel">'+esc(kindNames[item.kind])+'</span>')+'</span><span class="cardtitle">'+esc(item.title)+'</span><span class="caption">'+esc(subtitle)+'</span></a>';
+  const link=itemUrl(item,back),fields={id:item.id,back},title=item.kind==='photo'?'View':item.kind==='music'?'Listen':'Play';
+  const cover='<a class="cardart" href="'+esc(link)+'" title="'+esc(item.title)+'"><span class="artwork">'+(art?'<img src="'+esc(art)+'" alt="">':'<span class="artlabel">'+esc((item.title||'?').slice(0,1).toUpperCase())+'</span>')+'</span><span class="artbadge">'+esc(item.kind)+'</span>'+(resume?'<span class="watched">'+Math.max(1,Math.floor((item.position_seconds||0)/60))+'m watched</span>':'')+'</a>';
+  const controls='<div class="cardactions">'+href(link,'Details','cardbutton')+(item.kind==='series'?href(link,'Episodes','cardbutton'):item.kind==='game'?href(link,'Game','cardbutton'):post(csrf,'watch',{...fields,resume:resume?'yes':'no'},resume?'Resume':title,'cardform'))+'</div><div class="cardactions">'+post(csrf,'star',fields,item.favourite?'★':'☆','starform')+(['film','series','episode'].includes(item.kind)?post(csrf,'queue',fields,item.watchlisted?'✓ Saved':'+ Watchlist','saveform'):'')+'</div>';
+  return '<div class="shelfcard shelf-'+shape+'">'+cover+'<span class="cardtitle" title="'+esc(item.title)+'">'+esc(item.title)+'</span><span class="caption">'+esc(subtitle)+'</span>'+controls+'</div>';
 }
-function shelf(items:Entry[],back:string){
-  if(!items.length)return '<div class="blank">There is nothing here yet.</div>';
-  return '<div class="shelf">'+items.map(item=>tile(item,back)).join('\n')+'</div>';
+function channelList(items:Entry[],back:string,csrf:string){
+  if(!items.length)return '<div class="blank">No channels to display.</div>';
+  return '<table class="listing channel-list" cellspacing="0" cellpadding="0">'+items.map(item=>{
+    const art=imageUrl(item.artwork),fields={id:item.id,back};
+    return '<tr><td class="channel-logo">'+(art?'<img src="'+esc(art)+'" alt="">':'&#9658;')+'</td><td>'+href(itemUrl(item,back),item.title,'stationlink')+'<span class="caption">'+esc([item.live_genre,item.source_count+' sources'].filter(Boolean).join(' / '))+'</span></td><td class="channel-actions">'+post(csrf,'watch',fields,'Watch')+href(itemUrl(item,back),'Guide')+post(csrf,'star',fields,item.favourite?'★':'☆')+'</td></tr>';
+  }).join('')+'</table>';
 }
-function section(title:string,items:Entry[],back:string,more:string){
-  return items.length?'<div class="sectionhead"><h2>'+esc(title)+'</h2>'+href(more,'See all','plain')+'</div>'+shelf(items,back):'';
+function shelf(items:Entry[],back:string,csrf:string){
+  return items.length?'<div class="shelf">'+items.map(item=>tile(item,back,csrf)).join('\n')+'</div>':'<div class="blank">There is nothing here yet.</div>';
+}
+function section(title:string,items:Entry[],back:string,more:string,csrf:string,subtitle=''){
+  return items.length?'<div class="sectionhead"><h2>'+esc(title)+'</h2>'+href(more,'See all','plain')+(subtitle?'<p class="caption">'+esc(subtitle)+'</p>':'')+'</div>'+(items.every(item=>item.kind==='channel')?channelList(items,back,csrf):shelf(items,back,csrf)):'';
 }
 function catalogue(kind:Kind,uid:number,view:View='all',limit=4,sort:'added'|'title'|'activity'='title'){return listTitles(kind,uid,'',view,sort,limit) as Entry[];}
-const sectionFor=(kind:Kind)=>kind==='channel'?'live':kind==='music'?'listen':kind==='photo'?'photos':kind==='game'?'play':'library';
+const sectionFor=(kind:Kind)=>kind==='channel'?'live':kind==='game'?'play':'library';
 function programmeTime(raw:string){const d=new Date(raw);return Number.isFinite(d.getTime())?d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}):'';}
 function programmeList(id:number){
   const schedule=storedGuide(id,8);
   return schedule.programmes.length?'<table class="listing" cellspacing="0" cellpadding="0">'+schedule.programmes.map(p=>'<tr><td class="time">'+esc(programmeTime(p.start))+'</td><td><strong>'+esc(p.title)+'</strong><div class="caption">'+esc(p.description.slice(0,180))+'</div></td></tr>').join('')+'</table>':'<p class="caption">No imported programme information for this channel.</p>';
 }
-function playable(item:Entry){
-  return listVariants(item.id).filter(v=>!/^(?:xtream|stalker)-series:/.test(v.url));
+function playable(item:Entry,uid:number){
+  const pref=getUserPreferences(uid).qualityPreference,rank=pref==='sd'?3:pref==='hd'?2:pref==='fhd'?1:0;
+  return listVariants(item.id).filter(v=>!/^(?:xtream|stalker)-series:/.test(v.url)).sort((a,b)=>(a.quality_rank<rank?a.quality_rank+5:a.quality_rank)-(b.quality_rank<rank?b.quality_rank+5:b.quality_rank));
 }
 export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:URL,s:Services):Promise<void>{
   const method=req.method||'GET',path=url.pathname;
@@ -230,7 +241,7 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
       saveProgress(user.id,id,seconds);res.writeHead(204);res.end();return;
     }
     if(op==='watch'){
-      const choice=getVariant(idOf(f.get('variant')));
+      const choice=f.has('variant')?getVariant(idOf(f.get('variant'))):playable(item,user.id)[0];
       if(!choice||choice.title_id!==id||['series','game'].includes(item.kind)||/^(xtream|stalker)-series:/.test(choice.url))return error('This version is not playable.',404);
       let address=choice.source_type==='folder'?'/api/media/'+choice.id+'/file':choice.url;
       if(choice.source_type==='stalker'&&address.startsWith('stalker:')){
@@ -239,16 +250,19 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
       }
       if(choice.source_type!=='folder'&&!imageUrl(address))return error('The source does not offer a supported HTTP media address.');
       if(!originalRoute)navigation.trail=pushRoute(pushRoute(originalTrail,back),detail);
+      const tried=String(f.get('tried')||'').split(',').map(idOf).filter(Boolean).slice(-20);tried.push(choice.id);
+      const alternative=playable(item,user.id).find(v=>!tried.includes(v.id));
+      const fallback=alternative?post(csrf,'watch',{id,back,variant:alternative.id,tried:tried.join(','),resume:'yes'},'Try next source','fallbackform'):'';
       const offset=f.get('resume')==='yes'?Math.max(0,Number(item.position_seconds)||0):0;
       const attrs=' id="media" src="'+esc(address)+'" controls="controls" autoplay="autoplay" preload="metadata" data-item="'+id+'" data-kind="'+esc(item.kind)+'" data-offset="'+offset+'" data-token="'+esc(csrf)+'"';
       const tag=item.kind==='music'?'audio':'video';
       const media=item.kind==='photo'?'<img class="viewphoto" src="'+esc(address)+'" alt="'+esc(item.title)+'">':'<'+tag+attrs+'>Native media playback is not available in this browser.</'+tag+'>';
-      let adjacent='';
+      let adjacent='',autoNext='';
       if(item.kind==='episode'){
         const parent=db.prepare('SELECT series_parent_id AS id FROM variants WHERE title_id=? AND series_parent_id IS NOT NULL LIMIT 1').get(id) as {id:number}|undefined;
-        if(parent){const list=listSeriesEpisodes(parent.id,user.id) as Entry[],at=list.findIndex(x=>x.id===id);if(at>0)adjacent=href(itemUrl(list[at-1],back),'Next episode');if(at>=0&&at+1<list.length)adjacent+=href(itemUrl(list[at+1],back),'Previous episode');}
+        if(parent){const list=listSeriesEpisodes(parent.id,user.id) as Entry[],at=list.findIndex(x=>x.id===id);if(at>0){adjacent=post(csrf,'watch',{id:list[at-1].id,back},'Next episode','nextform');if(getUserPreferences(user.id).autoplayNext)autoNext='yes';}if(at>=0&&at+1<list.length)adjacent+=post(csrf,'watch',{id:list[at+1].id,back},'Previous episode');}
       }
-      return render(sectionFor(item.kind),item.title,'<div class="toolbar">'+href(detail,'Back to title','chip return-target')+adjacent+'</div><div class="screenmedia">'+media+'</div><div id="media-message" class="caption">Playback uses your television player. If it cannot play this format, select another version.</div><div class="toolbar">'+href(address,'Open stream directly')+href(detail,'Other versions','chip return-target')+'</div>');
+      return render(sectionFor(item.kind),item.title,'<div class="toolbar">'+href(detail,'Back to title','chip return-target')+adjacent+'</div><div class="screenmedia">'+media+'</div><div class="toolbar player-toolbar"><input class="commit" type="button" id="media-toggle" value="Play / pause"><input class="commit" type="button" id="media-full" value="Full screen">'+fallback+'</div><div id="media-message" class="caption" data-autonext="'+autoNext+'">'+esc(choice.source_name)+' / '+esc(choice.quality_tier)+' &middot; Native television playback</div><div class="toolbar">'+href(address,'Open stream directly')+href(detail,'Other versions','chip return-target')+'</div>');
     }
     return error('Unknown action.');
   }
@@ -262,14 +276,12 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
   }
   const params=url.searchParams,screen=params.get('screen')||'home';
   if(screen==='home'){
-    const added=catalogue('film',user.id,'all',4,'added');
-    const series=catalogue('series',user.id,'all',4,'added');
-    const recent=catalogue('episode',user.id,'continue',4,'activity');
-    const films=catalogue('film',user.id,'continue',4,'activity');
-    const focus=recent.length?recent:films;
-    return render('home','Good to have you home','<div class="spotlight"><div class="kicker">YOUR WORLD</div><h2>Find your next favourite.</h2><div class="toolbar">'+href(query({screen:'browse',kind:'film'}),'Find a film','primary')+href(query({screen:'browse',kind:'channel'}),'Watch live')+href(query({screen:'browse',kind:'all'}),'Search everything')+'</div></div>'+
-      section('Pick up where you left off',focus,'/tv',query({screen:'browse',kind:recent.length?'episode':'film',view:'continue'}))+section('New in films',added,'/tv',query({screen:'browse',kind:'film'}))+section('Explore series',series,'/tv',query({screen:'browse',kind:'series'}))+
-      (!added.length&&!series.length&&!focus.length?'<p class="blank">Your library is ready when you are. An administrator can add media from the desktop interface.</p>':''));
+    const stats=dashboardStats(),added=catalogue('library',user.id,'all',6,'added'),recent=catalogue('episode',user.id,'continue',6,'activity'),films=catalogue('film',user.id,'continue',6,'activity'),saved=catalogue('library',user.id,'watchlist',6),favourites=catalogue('channel',user.id,'favourites',4),live=catalogue('channel',user.id,'all',4);
+    const focus=[...films,...recent].slice(0,6);
+    const browse=(kind:Kind,view:View='all')=>query({screen:'browse',kind,view});
+    return render('home','Home','<div class="spotlight"><div class="hero-disc"></div><div class="kicker">WELCOME TO HEARTHWAVE</div><h2>All your entertainment.<br>One happy place.</h2><p>Movies, music and live television belong together. Your own server, your sources and your choices.</p><div class="toolbar">'+href(browse('library'),'Explore your library','primary')+'</div></div><table class="stat-grid" cellspacing="8" cellpadding="0"><tr><td><span class="caption">Library titles</span><strong>'+stats.items+'</strong></td><td><span class="caption">Live channels</span><strong>'+stats.channels+'</strong></td><td><span class="caption">Configured sources</span><strong>'+stats.sources+'</strong></td></tr></table>'+
+      section('Continue watching',focus,'/tv',browse('library','continue'),csrf,'Resume where you left off.')+section('Your watchlist',saved,'/tv',browse('library','watchlist'),csrf,'Saved for later.')+section('Favourite channels',favourites,'/tv',browse('channel','favourites'),csrf,'Jump straight to your favourites.')+section('Your library',added,'/tv',browse('library'),csrf,'Pick up something good.')+section('Live television',live,'/tv',browse('channel'),csrf,'Your shared lineup.')+
+      (!added.length&&!live.length?'<p class="blank">Your library is ready when you are. Add sources from Settings.</p>':''));
   }
   if(screen==='browse'){
     const requested=params.get('kind') as Kind,kind=kinds.includes(requested)?requested:'library';
@@ -280,21 +292,22 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
     const cid=idOf(params.get('collection')),collection=cid?ownedCollection(user.id,cid):undefined;
     if(cid&&!collection)return error('This collection is not available.',404);
     const number=pageNo(params.get('page')),limit=12;
-    const state={screen:'browse',kind,view,q:search,region:country,genre,collection:cid,page:number};
-    const back=query(state),rows=listTitles(kind,user.id,search,view,view==='continue'?'activity':'title',limit+1,number*limit,country,kind==='channel'?genre:'',kind==='channel'?'':genre,collection) as Entry[];
-    const kindbar=sectionFor(kind)==='library'?'<div class="toolbar">'+(['library','film','series','episode'] as Kind[]).map(k=>href(query({screen:'browse',kind:k}),kindNames[k],k===kind?'primary':'chip')).join('')+'</div>':kind==='channel'?'<div class="toolbar">'+href(query({screen:'guide'}),'On now / programme guide')+'</div>':'';
+    const requestedSort=params.get('sort'),sort=requestedSort==='year'||requestedSort==='added'||requestedSort==='activity'||requestedSort==='title'?requestedSort:view==='continue'?'activity':'title';
+    const state={screen:'browse',kind,view,q:search,region:country,genre,collection:cid,page:number,sort};
+    const back=query(state),rows=listTitles(kind,user.id,search,view,sort,limit+1,number*limit,country,kind==='channel'?genre:'',kind==='channel'?'':genre,collection) as Entry[];
+    const kindbar=sectionFor(kind)==='library'?'<div class="toolbar">'+(['library','film','series','episode','music','photo'] as Kind[]).map(k=>href(query({screen:'browse',kind:k}),kindNames[k],k===kind?'primary':'chip')).join('')+'</div>':kind==='channel'?'<div class="toolbar">'+href(query({screen:'guide'}),'Programme guide')+'</div>':'';
     const filter='<form class="filter" method="get" action="/tv">'+hidden('screen','browse')+hidden('kind',kind)+hidden('collection',cid)+'<label>Find <input type="text" name="q" maxlength="120" value="'+esc(search)+'"></label><label>Show '+select('view',[['all','All'],['favourites','Favourites'],['watchlist','Watchlist'],['continue','In progress']],view)+'</label>'+
-      (kind==='channel'?'<label>Region '+select('region',[['','Everywhere'],['GB','UK'],['US','US'],['other','Other']],country)+'</label>':'')+(categories.length?'<label>Genre '+select('genre',[['','Any'],...categories.map(x=>[x,x] as [string,string])],genre)+'</label>':'')+'<input type="submit" class="commit" value="Find"></form>';
+      (kind==='channel'?'<label>Region '+select('region',[['','Everywhere'],['GB','UK'],['US','US'],['other','Other']],country)+'</label>':'')+(categories.length?'<label>Genre '+select('genre',[['','Any'],...categories.map(x=>[x,x] as [string,string])],genre)+'</label>':'')+(kind==='channel'?'':'<label>Sort '+select('sort',[['title','Title A–Z'],['year','Newest release'],['added','Recently added'],['activity','Recently watched']],sort)+'</label>')+'<input type="submit" class="commit" value="Find"></form>';
     const pages='<div class="toolbar pagination">'+(number?href(query({...state,page:number-1}),'Previous'):'')+'<span class="caption">Page '+(number+1)+'</span>'+(rows.length>limit?href(query({...state,page:number+1}),'Next'):'')+'</div>';
-    return render(sectionFor(kind),collection?.name||kindNames[kind],kindbar+filter+shelf(rows.slice(0,limit),back)+pages);
+    return render(sectionFor(kind),collection?.name||kindNames[kind],kindbar+filter+(kind==='channel'?channelList(rows.slice(0,limit),back,csrf):shelf(rows.slice(0,limit),back,csrf))+pages);
   }
   if(screen==='guide'){
     const number=pageNo(params.get('page')),region=['GB','US','other'].includes(params.get('region')||'')?params.get('region')!:'',limit=8;
     const rows=listTitles('channel',user.id,'','all','title',limit+1,number*limit,region) as Entry[];
     const here=query({screen:'guide',region,page:number});
-    const now=Date.now();
+    const now=Math.floor(Date.now()/1000);
     const listing=rows.slice(0,limit).map(row=>{
-      const schedule=storedGuide(row.id,3,now,now+3*3600000).programmes;
+      const schedule=storedGuide(row.id,3,now,now+3*3600).programmes;
       return '<tr><td class="station">'+href(itemUrl(row,here),row.title,'stationlink')+'</td><td>'+(schedule.length?schedule.map(p=>'<div class="programme"><span class="time">'+esc(programmeTime(p.start))+'</span> '+esc(p.title)+'</div>').join(''):'<span class="caption">Guide not available</span>')+'</td></tr>';
     }).join('');
     return render('live','On now','<div class="toolbar">'+href(query({screen:'browse',kind:'channel'}),'All channels')+[['','All'],['GB','UK'],['US','US'],['other','Other']].map(([key,label])=>href(query({screen:'guide',region:key}),label,key===region?'primary':'chip')).join('')+'</div><table class="listing" cellspacing="0" cellpadding="0">'+listing+'</table><div class="toolbar">'+(number?href(query({screen:'guide',region,page:number-1}),'Previous'):'')+(rows.length>limit?href(query({screen:'guide',region,page:number+1}),'Next'):'')+'</div>');
@@ -305,7 +318,7 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
   }
   if(screen==='settings'){
     const preferences=getUserPreferences(user.id);
-    return render('settings','Your preferences','<div class="panel"><h2>Playback</h2><form method="post" action="/tv/submit">'+hidden('csrf',csrf)+hidden('op','preferences')+'<p><label>Preferred quality '+select('quality',[['auto','Best available'],['fhd','1080p or lower'],['hd','720p or lower'],['sd','Standard definition']],preferences.qualityPreference)+'</label></p><p><label>Autoplay next (full interface) '+select('autoplay',[['yes','On'],['no','Off']],preferences.autoplayNext?'yes':'no')+'</label></p><input type="submit" class="commit" value="Save preferences"></form></div><div class="panel"><h2>Account</h2><p>'+esc(user.username)+' &middot; '+esc(user.role)+'</p><p>Hearthwave '+esc(s.version)+'</p>'+(user.role==='admin'?'<p>Maintenance: '+(s.activity().busy?'Running':'Idle')+'. Manage imports and workers in the desktop interface.</p>':'')+post(csrf,'logout',{},'Sign out')+'</div>');
+    return render('settings','Your preferences','<div class="panel"><h2>Playback</h2><form method="post" action="/tv/submit">'+hidden('csrf',csrf)+hidden('op','preferences')+'<p><label>Preferred quality '+select('quality',[['auto','Best available'],['fhd','1080p or lower'],['hd','720p or lower'],['sd','Standard definition']],preferences.qualityPreference)+'</label></p><p><label>Autoplay next episode '+select('autoplay',[['yes','On'],['no','Off']],preferences.autoplayNext?'yes':'no')+'</label></p><input type="submit" class="commit" value="Save preferences"></form></div><div class="panel"><h2>Account</h2><p>'+esc(user.username)+' &middot; '+esc(user.role)+'</p><p>Hearthwave '+esc(s.version)+'</p>'+(user.role==='admin'?'<p>Maintenance: '+(s.activity().busy?'Running':'Idle')+'. Manage imports and workers in the desktop interface.</p>':'')+post(csrf,'logout',{},'Sign out')+'</div>');
   }
   if(screen==='item'){
     const id=idOf(params.get('id')),item=id?getTitleDetail(id,user.id) as Entry|undefined:undefined,back=internalReturn(params.get('back'));
@@ -327,8 +340,7 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
     }else if(item.kind==='game'){
       content+='<div class="notice">This browser cannot run the EmulatorJS engine. Play this title on a modern device.</div>';
     }else{
-      const pref=getUserPreferences(user.id).qualityPreference,rank=pref==='sd'?3:pref==='hd'?2:pref==='fhd'?1:0;
-      const sources=playable(item).sort((a,b)=>(a.quality_rank<rank?a.quality_rank+5:a.quality_rank)-(b.quality_rank<rank?b.quality_rank+5:b.quality_rank));
+      const sources=playable(item,user.id);
       if(sources.length){const selected=sources[0];
         content+='<div class="toolbar">'+post(csrf,'watch',{...fields,variant:selected.id},item.kind==='photo'?'View':'Play now','heroform')+((item.position_seconds||0)>10?post(csrf,'watch',{...fields,variant:selected.id,resume:'yes'},'Resume at '+Math.floor((item.position_seconds||0)/60)+' min','heroform'):'')+'</div><h2>Available versions</h2><table class="listing" cellspacing="0" cellpadding="0">'+sources.map(v=>'<tr><td>'+esc(v.source_name)+'</td><td class="caption">'+esc(v.quality_tier)+'</td><td>'+post(csrf,'watch',{...fields,variant:v.id},'Play')+'</td></tr>').join('')+'</table>';
       }else content+='<p class="blank">No playable versions are available.</p>';

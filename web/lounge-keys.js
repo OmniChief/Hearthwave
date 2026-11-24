@@ -4,6 +4,7 @@
   var player = null;
   var savedAt = 0;
   var hasResumed = false;
+  var autoNextStarted = false;
   var backInFlight = false;
   var backDown = false;
   var oldSamsung = /maple|orsay|samsung.*smart-tv/i.test(navigator.userAgent || '') && !/tizen/i.test(navigator.userAgent || '');
@@ -136,6 +137,25 @@
     if (offset > 0) { try { player.currentTime = offset; } catch (err) {} }
     hasResumed = true;
   }
+  function submitClass(name) {
+    var forms = document.getElementsByTagName('form'), i;
+    for (i = 0; i < forms.length; i++) {
+      if ((' ' + forms[i].className + ' ').indexOf(' ' + name + ' ') >= 0) {
+        storePosition(true);
+        try { forms[i].submit(); return true; } catch (err) { return false; }
+      }
+    }
+    return false;
+  }
+  function toggleMedia() {
+    if (!player || !player.play) { return; }
+    try { if (player.paused) { player.play(); } else { player.pause(); } } catch (err) {}
+  }
+  function fullMedia() {
+    if (!player) { return; }
+    var fn = player.requestFullscreen || player.webkitRequestFullscreen || player.webkitEnterFullscreen || player.mozRequestFullScreen || player.msRequestFullscreen;
+    try { if (fn) { fn.call(player); } } catch (err) {}
+  }
   function keydown(event) {
     var ev = event || window.event, code = ev.keyCode || ev.which, node = currentControl(), tag = node ? String(node.tagName).toLowerCase() : '', typing = tag === 'input' && (node.type === 'text' || node.type === 'password'), choosing = tag === 'select';
     if (isBack(ev)) { return handleBack(ev); }
@@ -149,7 +169,7 @@
     if (typing || choosing) { return true; }
     if (code >= 37 && code <= 40) { direction(code); return stop(ev); }
     if (code === 13 && node && tag === 'a') { window.location.href = node.href; return stop(ev); }
-    if (code === 13 && node && tag === 'input' && node.type === 'submit' && node.click) { node.click(); return stop(ev); }
+    if (code === 13 && node && tag === 'input' && (node.type === 'submit' || node.type === 'button') && node.click) { node.click(); return stop(ev); }
     if (player && player.play && (code === 415 || code === 19 || code === 10252)) {
       try { if (code === 19 || (code === 10252 && !player.paused)) { player.pause(); } else { player.play(); } } catch (err2) {}
       return stop(ev);
@@ -171,12 +191,20 @@
       if (player.readyState > 0) { resumeMedia(); }
       bind(player, 'timeupdate', function () { storePosition(false); });
       bind(player, 'pause', function () { storePosition(true); });
-      bind(player, 'ended', function () { storePosition(true); });
+      bind(player, 'ended', function () {
+        storePosition(true);
+        var note = document.getElementById('media-message');
+        if (!autoNextStarted && note && note.getAttribute('data-autonext') === 'yes') { autoNextStarted = true; submitClass('nextform'); }
+      });
+      var toggle = document.getElementById('media-toggle'), full = document.getElementById('media-full');
+      if (toggle) { bind(toggle, 'click', toggleMedia); }
+      if (full) { if (player.requestFullscreen || player.webkitRequestFullscreen || player.webkitEnterFullscreen || player.mozRequestFullScreen || player.msRequestFullscreen) { bind(full, 'click', fullMedia); } else { full.style.display = 'none'; } }
       bind(player, 'error', function () {
         var message = document.getElementById('media-message');
         if (message) { message.innerHTML = 'This television cannot play this source. Use another version or open the stream directly.'; }
       });
     }
+    if (player && player.play && !initial) { initial = document.getElementById('media-toggle'); }
     var anchor = String(window.location.hash || '').slice(1);
     if (/^lounge-(focus|item)-[0-9-]+$/.test(anchor)) {
       var previous = document.getElementById(anchor);
