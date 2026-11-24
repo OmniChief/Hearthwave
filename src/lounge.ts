@@ -127,7 +127,7 @@ function frame(res:ServerResponse,user:User|null,section:string,heading:string,c
   const rail=user?'<td id="rail" valign="top"><div class="railcaption">EXPLORE</div>'+navItems.map(([key,label,path])=>href(path,label,'railitem'+(section===key?' active':''))).join('')+'<div class="railfooter">'+esc(user.username)+'</div></td>':'';
   const back=navigation?backDestination(navigation):'';
   const backButton=back?'<a id="lounge-back" class="chip backbutton" href="'+esc(back)+'">&#8592; Back</a>':'';
-  let html='<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"><html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>'+esc(heading)+' | Hearthwave</title><link rel="stylesheet" type="text/css" href="/lounge.css"><script type="text/javascript" src="/lounge-keys.js?v=0330" defer="defer"></script></head><body><div id="screen"><div id="mast"><a class="wordmark" href="/tv"><span class="emblem">&#9672;</span> hearthwave<span class="accent">.</span></a><span class="edition">YOUR ENTERTAINMENT &nbsp; / &nbsp; TV</span></div><table class="shell" cellpadding="0" cellspacing="0"><tr>'+rail+'<td id="stage" valign="top"><div class="heading"><h1>'+esc(heading)+'</h1><!--LOUNGE_BACK--></div>'+content+'</td></tr></table><div class="footer">Move with arrows &nbsp; &middot; &nbsp; OK to select &nbsp; &middot; &nbsp; Back to return <span>'+href('/?modern=1','Desktop interface','plain')+'</span></div></div></body></html>';
+  let html='<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"><html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>'+esc(heading)+' | Hearthwave</title><link rel="stylesheet" type="text/css" href="/lounge.css?v=0332"><script type="text/javascript" src="/lounge-keys.js?v=0330" defer="defer"></script></head><body><div id="screen"><div id="mast"><a class="wordmark" href="/tv"><span class="emblem">&#9672;</span> hearthwave<span class="accent">.</span></a><span class="edition">YOUR ENTERTAINMENT &nbsp; / &nbsp; TV</span></div><table class="shell" cellpadding="0" cellspacing="0"><tr>'+rail+'<td id="stage" valign="top"><div class="heading"><h1>'+esc(heading)+'</h1><!--LOUNGE_BACK--></div>'+content+'</td></tr></table><div class="footer">Move with arrows &nbsp; &middot; &nbsp; OK to select &nbsp; &middot; &nbsp; Back to return <span>'+href('/?modern=1','Desktop interface','plain')+'</span></div></div></body></html>';
   if(navigation)html=decorateNavigation(html,navigation);
   respond(res,status,html.replace('<!--LOUNGE_BACK-->',backButton));
 }
@@ -155,17 +155,12 @@ function itemUrl(item:Entry,back:string){return query({screen:'item',id:item.id,
 function tile(item:Entry,back:string){
   const art=imageUrl(item.artwork);
   const subtitle=[item.year,item.kind==='episode'?'S'+(item.season||'?')+' E'+(item.episode||'?'):kindNames[item.kind],item.favourite?'Saved':''].filter(Boolean).join('  /  ');
-  return '<a class="shelfcard" href="'+esc(itemUrl(item,back))+'"><span class="artwork">'+(art?'<img src="'+esc(art)+'" alt="">':'<span class="artlabel">'+esc(kindNames[item.kind])+'</span>')+'</span><span class="cardtitle">'+esc(item.title)+'</span><span class="caption">'+esc(subtitle)+'</span></a>';
+  const shape=['film','series','episode'].includes(item.kind)?'portrait':item.kind==='channel'?'station':item.kind==='photo'?'snapshot':'square';
+  return '<a class="shelfcard shelf-'+shape+'" href="'+esc(itemUrl(item,back))+'"><span class="artwork">'+(art?'<img src="'+esc(art)+'" alt="">':'<span class="artlabel">'+esc(kindNames[item.kind])+'</span>')+'</span><span class="cardtitle">'+esc(item.title)+'</span><span class="caption">'+esc(subtitle)+'</span></a>';
 }
-function shelf(items:Entry[],back:string,wide=false){
+function shelf(items:Entry[],back:string){
   if(!items.length)return '<div class="blank">There is nothing here yet.</div>';
-  const columns=wide?3:4;let output='<table class="shelf" cellspacing="8" cellpadding="0">';
-  for(let i=0;i<items.length;i+=columns){
-    output+='<tr>';
-    for(let j=0;j<columns;j++)output+='<td width="'+Math.floor(100/columns)+'%" valign="top">'+(items[i+j]?tile(items[i+j],back):'')+'</td>';
-    output+='</tr>';
-  }
-  return output+'</table>';
+  return '<div class="shelf">'+items.map(item=>tile(item,back)).join('\n')+'</div>';
 }
 function section(title:string,items:Entry[],back:string,more:string){
   return items.length?'<div class="sectionhead"><h2>'+esc(title)+'</h2>'+href(more,'See all','plain')+'</div>'+shelf(items,back):'';
@@ -291,7 +286,7 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
     const filter='<form class="filter" method="get" action="/tv">'+hidden('screen','browse')+hidden('kind',kind)+hidden('collection',cid)+'<label>Find <input type="text" name="q" maxlength="120" value="'+esc(search)+'"></label><label>Show '+select('view',[['all','All'],['favourites','Favourites'],['watchlist','Watchlist'],['continue','In progress']],view)+'</label>'+
       (kind==='channel'?'<label>Region '+select('region',[['','Everywhere'],['GB','UK'],['US','US'],['other','Other']],country)+'</label>':'')+(categories.length?'<label>Genre '+select('genre',[['','Any'],...categories.map(x=>[x,x] as [string,string])],genre)+'</label>':'')+'<input type="submit" class="commit" value="Find"></form>';
     const pages='<div class="toolbar pagination">'+(number?href(query({...state,page:number-1}),'Previous'):'')+'<span class="caption">Page '+(number+1)+'</span>'+(rows.length>limit?href(query({...state,page:number+1}),'Next'):'')+'</div>';
-    return render(sectionFor(kind),collection?.name||kindNames[kind],kindbar+filter+shelf(rows.slice(0,limit),back,kind==='channel')+pages);
+    return render(sectionFor(kind),collection?.name||kindNames[kind],kindbar+filter+shelf(rows.slice(0,limit),back)+pages);
   }
   if(screen==='guide'){
     const number=pageNo(params.get('page')),region=['GB','US','other'].includes(params.get('region')||'')?params.get('region')!:'',limit=8;
