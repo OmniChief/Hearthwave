@@ -164,6 +164,12 @@ function addressHint(command: unknown): string {
     return u.protocol+' '+(loop?'loopback':'non-loopback')+'; extension '+ext+'; format hint '+(hint||'none')+'; query '+(u.search?'present':'absent')+'; embedded credentials '+(u.username||u.password?'present':'absent');
   } catch {return 'invalid URL';}
 }
+type LinkFlags={temporary?:boolean;loadBalanced?:boolean};
+function portalFlag(value:unknown):boolean|undefined {
+  if(value===false||value===0||value==='0'||value==='false')return false;
+  if(value===true||value===1||value==='1'||value==='true')return true;
+  return undefined;
+}
 class StalkerClient {
   endpoint: string;
   token = '';
@@ -188,7 +194,7 @@ class StalkerClient {
     try {
       response = await providerJson(url.toString(),{
       allowLan:this.source.config.allowLan,maxBytes:8*1024*1024,onStatus:code=>{status=code;},
-      headers:{'User-Agent':magAgent,'X-User-Agent':'Model: MAG250; Link: Ethernet',Cookie:`mac=${encodeURIComponent(mac)}; stb_lang=en; timezone=GMT`,...(token?{Authorization:`Bearer ${token}`}:{})},
+      headers:{'User-Agent':magAgent,'X-User-Agent':'Model: MAG250; Link: Ethernet',Referer:endpoint.replace(/\/(?:server\/load|portal)\.php$/,'/c/'),Cookie:`mac=${encodeURIComponent(mac)}; stb_lang=en; timezone=GMT`,...(token?{Authorization:`Bearer ${token}`}:{})},
     });
     } catch(error) {
       this.trace?.push(label+': failed; HTTP '+(status||'no response')+'; '+(Date.now()-started)+' ms; '+(error instanceof ProviderError?'provider error '+error.status:'network/transport error'));
@@ -243,13 +249,25 @@ class StalkerClient {
   }
   /** Used only in the admin header comparison. Never send credentials to a different origin. */
   diagnosticDeviceHeaders():{origin:string;headers:Record<string,string>} {
-    return {origin:new URL(this.endpoint).origin,headers:{'User-Agent':magAgent,'X-User-Agent':'Model: MAG250; Link: Ethernet',Cookie:'mac='+encodeURIComponent(this.source.config.mac||'')+'; stb_lang=en; timezone=GMT',...(this.token?{Authorization:'Bearer '+this.token}:{})}};
+    return {origin:new URL(this.endpoint).origin,headers:{'User-Agent':magAgent,'X-User-Agent':'Model: MAG250; Link: Ethernet',Referer:this.endpoint.replace(/\/(?:server\/load|portal)\.php$/,'/c/'),Cookie:'mac='+encodeURIComponent(this.source.config.mac||'')+'; stb_lang=en; timezone=GMT',...(this.token?{Authorization:'Bearer '+this.token}:{})}};
   }
-  async resolve(kind: Kind, cmd: string, series = ''): Promise<string> {
-    const params = { cmd, series, forced_storage:kind === 'live' ? 'false' : '', disable_ad:'false', download:'false', force_ch_link_check:'false' };
+  async resolve(kind: Kind, cmd: string, series = '',flags:LinkFlags={}): Promise<string> {
+    const params = {cmd,series,forced_storage:'undefined',disable_ad:0,download:0};
     const type = kind === 'live' ? 'itv' : 'vod';
     this.trace?.push('Stored command: '+addressHint(cmd));
     await this.session(); // Do not fall back to a stored URL after failed device authentication.
+    if(kind==='live'){
+      this.trace?.push('Live link flags: temporary '+(flags.temporary===undefined?'unknown':flags.temporary?'yes':'no')+'; load balancing '+(flags.loadBalanced===undefined?'unknown':flags.loadBalanced?'yes':'no'));
+      if(flags.temporary===false&&flags.loadBalanced===false){
+        let direct:string|null=null;
+        try{direct=playbackAddress(cmd);}catch{}
+        if(direct&&!/^\/ch\//i.test(new URL(direct).pathname)){
+          this.trace?.push('Selected: provider-declared static direct command; '+addressHint(direct));
+          return direct;
+        }
+      }
+    }
+    this.trace?.push('create_link request: forced_storage=undefined; disable_ad=0; download=0; portal Referer sent');
     let failure: unknown;
     for (const attempt of kind === 'series' ? ['vod','series'] : [type]) {
       try {
@@ -266,7 +284,7 @@ class StalkerClient {
       }
     }
     // Some portals list a usable direct stream instead of generating a new link.
-    const direct = playbackAddress(cmd);
+    const direct = kind==='live'?null:playbackAddress(cmd);
     if (direct) {this.trace?.push('Selected: stored direct command; '+addressHint(direct));return direct;}
     if (failure) throw failure;
     throw new ProviderError('The portal did not return a playable stream address.');
@@ -356,7 +374,7 @@ function stalkerRows(rows: unknown, category: ProviderCategory): ImportItem[] {
     if (kind !== 'series' && (!cmd || cmd.length > 4096)) continue;
     items.push({kind:kind === 'live' ? 'channel' : kind === 'vod' ? 'film' : 'series',title:name,
       year:yearFrom(row.year || name),externalId:kind === 'live' ? field(row.xmltv_id || row.epg_id) : '',
-      sourceRef:`${kind}:${id}`,url:kind === 'series' ? `stalker-series:${id}` : `stalker:${JSON.stringify({kind,cmd})}`,
+      sourceRef:`${kind}:${id}`,url:kind === 'series' ? `stalker-series:${id}` : `stalker:${JSON.stringify({kind,cmd,...(kind==='live'?{temporary:portalFlag(row.use_http_tmp_link),loadBalanced:portalFlag(row.use_load_balancing)}:{})})}`,
       quality:quality(name),group:category.name,artwork:artwork(row.logo || row.screenshot_uri),
       description:description(row.description || row.plot),genres:genres(row.genre || row.genres),
       rating:rating(row.rating_imdb ?? row.rating),
@@ -420,9 +438,9 @@ export async function* importProvider(source: SourceRow, categories: ProviderCat
   } else throw new ProviderError('This source cannot be scanned with a provider adapter.',400);
 }
 
-function decodeStalkerStream(source:SourceRow,encoded:string):{kind:Kind;cmd:string;series?:string} {
+function decodeStalkerStream(source:SourceRow,encoded:string):{kind:Kind;cmd:string;series?:string}&LinkFlags {
   if (source.type !== 'stalker' || !encoded.startsWith('stalker:')) throw new ProviderError('This version is not a Stalker stream.',400);
-  let data: {kind:Kind;cmd:string;series?:string};
+  let data: {kind:Kind;cmd:string;series?:string}&LinkFlags;
   try { data = JSON.parse(encoded.slice('stalker:'.length)); }
   catch { throw new ProviderError('Stored provider stream metadata is invalid.'); }
   if (!['live','vod','series'].includes(data.kind) || !data.cmd || (data.series != null && !/^\d{1,4}$/.test(data.series))) throw new ProviderError('Provider stream command is missing or invalid.');
@@ -431,7 +449,7 @@ function decodeStalkerStream(source:SourceRow,encoded:string):{kind:Kind;cmd:str
 
 export async function resolveProviderStream(source:SourceRow,encoded:string,trace?:string[]):Promise<string>{
   const data=decodeStalkerStream(source,encoded);
-  return new StalkerClient(source,trace).resolve(data.kind,data.cmd,data.series||'');
+  return new StalkerClient(source,trace).resolve(data.kind,data.cmd,data.series||'',data);
 }
 
 function episodeNumber(value: unknown): number {
@@ -610,7 +628,7 @@ export async function compareStalkerMediaRequests(source:SourceRow,encoded:strin
     try {
       const data=decodeStalkerStream(source,encoded);
       const client=new StalkerClient(source,trace);
-      const address=await client.resolve(data.kind,data.cmd,data.series||'');
+      const address=await client.resolve(data.kind,data.cmd,data.series||'',data);
       output.push('--- '+mode+' ---');
       const options={sendOrigin:mode==='browser-origin',userAgent,...(mode==='registered-device'?{device:client.diagnosticDeviceHeaders()}:{})};
       const result=await inspectMediaHeaders(address,Boolean(source.config.allowLan),browserOrigin,'GET',options);
