@@ -15,6 +15,9 @@ const fail=(status:number,message:string):never=>{throw new SpaceError(status,me
 const digest=(token:string)=>createHash('sha256').update(token).digest('hex');
 const token=()=>randomBytes(32).toString('hex');
 const MAX=64*1024*1024, CHUNK=256*1024;
+// Idle worker heartbeats are ephemeral: they must not dirty SQLite/WAL pages.
+const onlineWorkers=new Map<number,number>();
+const workerProgress=new Map<number,{phase:string;done:number;total:number|null;updated:number}>();
 db.exec(
   "CREATE TABLE IF NOT EXISTS paired_workers(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,token_hash TEXT NOT NULL UNIQUE,capabilities TEXT NOT NULL DEFAULT '[]',last_seen INTEGER NOT NULL DEFAULT 0);"+
   "CREATE TABLE IF NOT EXISTS worker_jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,worker_id INTEGER NOT NULL REFERENCES paired_workers(id),kind TEXT NOT NULL,payload TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'queued',lease TEXT NOT NULL DEFAULT '',message TEXT NOT NULL DEFAULT '',created INTEGER NOT NULL,updated INTEGER NOT NULL,file_id INTEGER REFERENCES space_files(id) ON DELETE SET NULL);"+
@@ -49,7 +52,7 @@ function expireJobs(){
   const expired=db.prepare("SELECT * FROM worker_jobs WHERE status='running' AND worker_id IN (SELECT id FROM paired_workers WHERE last_seen<?)").all(cutoff) as unknown as Job[];
   if(!expired.length)return;
   tx(()=>{
-    for(const job of expired){cleanupFile(job);db.prepare("UPDATE worker_jobs SET status='failed',message='Worker disconnected before reporting completion.',lease='',updated=? WHERE id=?").run(Date.now(),job.id);}
+    for(const job of expired){workerProgress.delete(job.id);cleanupFile(job);db.prepare("UPDATE worker_jobs SET status='failed',message='Worker disconnected before reporting completion.',lease='',updated=? WHERE id=?").run(Date.now(),job.id);}
   });
 }
 function cleanupFile(j:Job){if(j.file_id!==null)db.prepare('DELETE FROM space_files WHERE id=? AND user_id=? AND received<size').run(j.file_id,j.user_id);}
@@ -57,7 +60,11 @@ export async function workerApi(req:IncomingMessage,res:ServerResponse,url:URL,b
   const w=worker(req),path=url.pathname,reply=(x:unknown)=>send(res,200,x);
   if(req.method!=='POST')return fail(405,'Worker requests must be POST.');
   const x=await body(req,400000);
-  if(Date.now()-w.last_seen>=30000){expireJobs();db.prepare('UPDATE paired_workers SET last_seen=? WHERE id=?').run(Date.now(),w.id);}
+  onlineWorkers.set(w.id,Date.now());
+  if(Date.now()-w.last_seen>=30000&&db.prepare("SELECT 1 FROM worker_jobs WHERE worker_id=? AND status='running' LIMIT 1").get(w.id)){
+    expireJobs();
+    if(db.prepare("SELECT 1 FROM worker_jobs WHERE worker_id=? AND status='running' LIMIT 1").get(w.id))db.prepare('UPDATE paired_workers SET last_seen=? WHERE id=?').run(Date.now(),w.id);
+  }
   if(path==='/api/worker/heartbeat'){
     if(!Array.isArray(x.capabilities)||x.capabilities.some(k=>typeof k!=='string'||!kinds.includes(k)))return fail(400,'Invalid worker capabilities.');
     const caps=JSON.stringify([...new Set(x.capabilities)]);if(caps!==w.capabilities)db.prepare('UPDATE paired_workers SET capabilities=? WHERE id=?').run(caps,w.id);
@@ -71,13 +78,20 @@ export async function workerApi(req:IncomingMessage,res:ServerResponse,url:URL,b
       const jobs=db.prepare("SELECT * FROM worker_jobs WHERE worker_id=? AND status='queued' ORDER BY id LIMIT 100").all(w.id) as unknown as Job[];
       const j=jobs.find(j=>caps.includes(j.kind));if(!j)return {job:null};
       const lease=token();
+      db.prepare('UPDATE paired_workers SET last_seen=? WHERE id=?').run(Date.now(),w.id);
+      workerProgress.set(j.id,{phase:'Processing',done:0,total:null,updated:Date.now()});
       db.prepare("UPDATE worker_jobs SET status='running',lease=?,message='Worker processing job',updated=? WHERE id=?").run(lease,Date.now(),j.id);
       return {job:{id:j.id,kind:j.kind,payload:JSON.parse(j.payload),lease}};
     }));
   }
-  const match=/^\/api\/worker\/jobs\/(\d+)\/(result|begin-file|chunk)$/.exec(path);
+  const match=/^\/api\/worker\/jobs\/(\d+)\/(result|begin-file|chunk|progress)$/.exec(path);
   if(!match)return fail(404,'Unknown worker endpoint.');
   const id=Number(match[1]),action=match[2],job=active(w.id,id,x.lease);
+  if(action==='progress'){
+    const phase=str(x.phase,80),done=int(x.done,0),total=x.total===null?null:int(x.total,0);
+    if(total!==null&&done>total)return fail(400,'Invalid progress.');
+    workerProgress.set(id,{phase,done,total,updated:Date.now()});return reply({ok:true});
+  }
   if(action==='begin-file'){
     const filename=name(x.name),size=int(x.size,0,MAX);
     return reply(tx(()=>{
@@ -115,6 +129,7 @@ export async function workerApi(req:IncomingMessage,res:ServerResponse,url:URL,b
       if(!f||Number(f.received)!==Number(f.size)){if(x.ok)fail(409,'Output transfer incomplete.');cleanupFile(j);}
     }
     db.prepare('UPDATE worker_jobs SET status=?,message=?,lease=?,updated=? WHERE id=?').run(x.ok?'completed':'failed',message,'',Date.now(),id);
+    workerProgress.delete(id);
     return {ok:true};
   }));
 }
@@ -129,7 +144,7 @@ export async function jobsApi(req:IncomingMessage,res:ServerResponse,url:URL,use
     if(method==='GET'){
       expireJobs();
       const rows=db.prepare('SELECT id,name,capabilities,last_seen FROM paired_workers WHERE name NOT LIKE '% (revoked)' ORDER BY name').all() as unknown as Worker[];
-      return reply({items:rows.map(w=>({id:w.id,name:w.name,capabilities:JSON.parse(w.capabilities),online:Date.now()-w.last_seen<120000}))});
+      return reply({items:rows.map(w=>({id:w.id,name:w.name,capabilities:JSON.parse(w.capabilities),online:Date.now()-(onlineWorkers.get(w.id)??0)<120000}))});
     }
     if(method==='POST'){
       admin(user);const x=await body(req),label=str(x.name,80),secret=token();
@@ -143,6 +158,7 @@ export async function jobsApi(req:IncomingMessage,res:ServerResponse,url:URL,use
   if(m&&method==='DELETE'){
     admin(user);const id=Number(m[1]);
     if(db.prepare("SELECT 1 FROM worker_jobs WHERE worker_id=? AND status IN ('queued','running')").get(id))fail(409,'Cancel queued jobs and wait for running jobs before revoking this worker.');
+    onlineWorkers.delete(id);
     // Keep job history intact; revoke the credential and clear capabilities.
     db.prepare("UPDATE paired_workers SET token_hash=?,capabilities='[]',last_seen=0,name=name||' (revoked)' WHERE id=? AND capabilities<>'[\"revoked\"]' AND name NOT LIKE '% (revoked)'").run(digest(token()),id);
     return reply({ok:true});
@@ -151,7 +167,8 @@ export async function jobsApi(req:IncomingMessage,res:ServerResponse,url:URL,use
     if(method==='GET'){
       expireJobs();
       const all=user.role==='admin'&&url.searchParams.get('all')==='1';
-      return reply({items:db.prepare("SELECT j.id,j.kind,j.status,j.message,j.created,j.updated,j.file_id,w.name AS worker,u.username,CASE WHEN j.user_id=? THEN 1 ELSE 0 END AS own FROM worker_jobs j JOIN paired_workers w ON w.id=j.worker_id JOIN users u ON u.id=j.user_id WHERE (?=1 OR j.user_id=?) ORDER BY j.id DESC LIMIT 200").all(user.id,all?1:0,user.id)});
+      const rows=db.prepare("SELECT j.id,j.kind,j.status,j.message,j.created,j.updated,j.file_id,w.name AS worker,u.username,f.size AS output_size,f.received AS output_received,CASE WHEN j.user_id=? THEN 1 ELSE 0 END AS own FROM worker_jobs j JOIN paired_workers w ON w.id=j.worker_id JOIN users u ON u.id=j.user_id LEFT JOIN space_files f ON f.id=j.file_id WHERE (?=1 OR j.user_id=?) ORDER BY j.id DESC LIMIT 200").all(user.id,all?1:0,user.id);
+      return reply({items:rows.map(row=>({...row,progress:row.status==='running'?workerProgress.get(Number(row.id))||null:null}))});
     }
     if(method==='POST'){
       const x=await body(req),kind=str(x.kind,16),wid=int(x.workerId);

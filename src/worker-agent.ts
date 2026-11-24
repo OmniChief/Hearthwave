@@ -41,13 +41,21 @@ for(const key of ['image','video'] as const){
     try{const raw=await readFile(templates[key]!,'utf8');JSON.parse(raw);if(!raw.includes('__PROMPT__'))throw Error('Workflow must contain __PROMPT__');capabilities.push(key);}catch(e){console.error('Invalid '+key+' workflow:',e instanceof Error?e.message:e);}
   }
 }
-async function saveResponse(response:Response,file:string){
+async function report(job:Job,phase:string,done=0,total:number|null=null){
+  await api('jobs/'+job.id+'/progress',{lease:job.lease,phase,done,total}).catch(()=>{});
+}
+async function saveResponse(response:Response,file:string,job:Job,phase:string){
   if(!response.ok||!response.body)throw new Error('Remote request failed: '+response.status);
   if(Number(response.headers.get('content-length'))>limit)throw new Error('Download exceeds worker limit.');
   const temp=join(root,'.'+randomUUID()+'.part');
-  let total=0;
+  let total=0,lastReport=0;
+  const length=Number(response.headers.get('content-length'));
+  const expected=Number.isSafeInteger(length)&&length>0&&!response.headers.get('content-encoding')?length:null;
+  let reporting=false;
   try{
-    const count=new Transform({transform(chunk,_enc,cb){total+=chunk.length;cb(total>limit?new Error('Download exceeds worker limit.'):null,chunk);}});
+    const count=new Transform({transform(chunk,_enc,cb){total+=chunk.length;
+      if(!reporting&&Date.now()-lastReport>=5000){lastReport=Date.now();reporting=true;void report(job,phase,total,expected!==null&&total<=expected?expected:null).finally(()=>{reporting=false;});}
+      cb(total>limit?new Error('Download exceeds worker limit.'):null,chunk);}});
     await pipeline(Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]),count,createWriteStream(temp,{flags:'wx'}));
     await rename(temp,file);
   }finally{await rm(temp,{force:true}).catch(()=>{});}
@@ -57,7 +65,8 @@ async function execute(job:Job):Promise<string>{
   const p=job.payload;
   if(job.kind==='download'){
     const file=unique(job,p.name);
-    await saveResponse(await fetch(p.url,{signal:AbortSignal.timeout(3600000)}),file);
+    await report(job,'Downloading');
+    await saveResponse(await fetch(p.url,{signal:AbortSignal.timeout(3600000)}),file,job,'Downloading');
     return file;
   }
   if(job.kind==='convert'){
@@ -66,6 +75,7 @@ async function execute(job:Job):Promise<string>{
     const format=p.format;if(!['mp4','webm','mp3','flac'].includes(format))throw new Error('Invalid conversion format.');
     const filename=unique(job,basename(source,extname(source))+'.'+format);
     const args=format==='mp4'?['-c:v','libx264','-c:a','aac','-movflags','+faststart']:format==='webm'?['-c:v','libvpx-vp9','-c:a','libopus']:format==='mp3'?['-vn','-c:a','libmp3lame']:['-vn','-c:a','flac'];
+    await report(job,'Converting with FFmpeg');
     try{await run('ffmpeg',['-nostdin','-n','-i',source,...args,filename]);return filename;}catch(e){await rm(filename,{force:true}).catch(()=>{});throw e;}
   }
   if(job.kind!=='image'&&job.kind!=='video')throw new Error('Unsupported job.');
@@ -78,6 +88,7 @@ async function execute(job:Job):Promise<string>{
     if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([key,v])=>[key,substitute(v)]));
     return value;
   }
+  await report(job,'Generating with ComfyUI');
   const request=await fetch(comfy+'/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:substitute(raw),client_id:randomUUID()}),signal:AbortSignal.timeout(30000)});
   if(!request.ok)throw new Error('ComfyUI rejected the workflow: '+request.status);
   const {prompt_id:id}=await request.json();if(typeof id!=='string')throw new Error('ComfyUI did not return a job ID.');
@@ -93,7 +104,8 @@ async function execute(job:Job):Promise<string>{
     if(!artifact)throw new Error('Workflow finished without the requested output type.');
     const query=new URLSearchParams({filename:artifact.filename,subfolder:artifact.subfolder||'',type:'output'});
     const file=unique(job,artifact.filename);
-    await saveResponse(await fetch(comfy+'/view?'+query,{signal:AbortSignal.timeout(3600000)}),file);
+    await report(job,'Retrieving generated output');
+    await saveResponse(await fetch(comfy+'/view?'+query,{signal:AbortSignal.timeout(3600000)}),file,job,'Retrieving generated output');
     return file;
   }
   throw new Error('Creative workflow exceeded the time limit.');
@@ -102,6 +114,7 @@ async function transfer(job:Job,file:string):Promise<string>{
   const size=(await stat(file)).size;
   if(size>64*1024*1024)return 'Saved on worker: '+basename(file)+' (too large for My Space transfer)';
   const path='jobs/'+job.id+'/';
+  await report(job,'Transferring output to Hearthwave',0,size);
   try{
     const start=await api(path+'begin-file',{lease:job.lease,name:basename(file),size});
     let offset=Number(start.received);

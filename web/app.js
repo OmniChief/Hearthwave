@@ -111,7 +111,7 @@ async function navigate(destination, recordHistory = true) {
   state.guideRequest++;
   state.libraryRequest++;
   state.liveRequest++;
-  clearTimeout(state.sourcePollTimer);clearTimeout(activityTimer);clearTimeout(updatePollTimer);
+  clearTimeout(state.sourcePollTimer);clearTimeout(activityTimer);clearTimeout(updatePollTimer);workers.stopPolling();
   state.seriesDetail = null;
   state.detailId = null;
   state.seriesEpisodes = [];
@@ -272,6 +272,13 @@ async function renderTitleDetail() {
     ${collectionControls(title.id,collectionList.collections)}</section>`;
 }
 
+function seriesProgress(status){return `<p class="field-note">Retrieving episodes · ${status.processed||0}/${status.total||0} connections · ${status.episodes||0} episodes received</p><progress max="${Math.max(1,status.total||1)}" value="${status.processed||0}"></progress>`;}
+function scheduleSeriesProgress(id){
+  clearTimeout(state.seriesRefreshTimer);
+  const visible=()=>state.session?.user.role==='admin'&&state.page==='library'&&state.seriesDetail===id&&!state.detailId;
+  if(!visible())return;
+  state.seriesRefreshTimer=setTimeout(async()=>{if(!visible())return;try{const {status}=await api(`/api/titles/${id}/episodes/status`);if(!visible())return;if(status.status!=='running'){await renderSeriesDetail();return;}const p=$('#series-job-progress');if(p)p.innerHTML=seriesProgress(status);scheduleSeriesProgress(id);}catch(error){notify(error.message,true);}},5000);
+}
 async function renderSeriesDetail() {
   const seriesId = state.seriesDetail;
   const [result,detail,collectionList]=await Promise.all([api(`/api/titles/${seriesId}/episodes`),api(`/api/titles/${seriesId}`),api(`/api/collections?titleId=${seriesId}`)]);
@@ -283,7 +290,7 @@ async function renderSeriesDetail() {
   page.innerHTML = `<section class="surface"><button class="button button-quiet button-small" data-series-back>← Back to Library</button><div class="section-heading"><div><span class="eyebrow">SERIES</span><h2>${esc(result.series.title)}</h2><p>${esc(result.series.year || 'Year unknown')} · ${result.items.length} episode${result.items.length === 1 ? '' : 's'} across ${seasons.length} season${seasons.length === 1 ? '' : 's'}</p>${detail.title.description ? `<p class="detail-description">${esc(detail.title.description)}</p>`:''}</div><div class="row-actions">${watchlistButton(detail.title)}<button class="star-button ${detail.title.favourite?'is-favourite':''}" data-favourite="${seriesId}" data-next="${detail.title.favourite?'0':'1'}" aria-label="${detail.title.favourite?'Remove from':'Add to'} favourites">${detail.title.favourite?'★':'☆'}</button>${state.session.user.role==='admin'?`<button class="button button-quiet button-small" data-metadata-refresh="${seriesId}">Fetch metadata</button>`:''}${state.session.user.role==='admin'?`<button class="button button-quiet button-small" data-series-refresh="${seriesId}" ${status.status==='running'?'disabled':''}>${status.status==='running'?'Loading…':'Refresh episodes'}</button>`:''}</div></div>
   ${collectionControls(seriesId,collectionList.collections)}
   <label class="autoplay-setting"><input type="checkbox" id="autoplay-next" ${state.autoplayNext?'checked':''}> Automatically play the next episode when one finishes <small>Saved to your household profile</small></label>
-  ${status.status==='running'?`<p class="field-note">Retrieving episodes · ${status.processed||0}/${status.total||0} connections · ${status.episodes||0} episodes received</p><progress max="${Math.max(1,status.total||1)}" value="${status.processed||0}"></progress>`:''}
+  ${status.status==='running'?`<div id="series-job-progress">${seriesProgress(status)}</div>`:''}
   ${status.error ? `<p class="field-note alert-note">${esc(status.error)}</p>`:''}
   ${seasons.map(season => `<details class="season-accordion" ${season===seasons[0]?'open':''}><summary>${season ? `Season ${season}` : 'Unknown season'} <small>${result.items.filter(row => (row.season||0)===season).length} episodes</small></summary><div class="episode-list">${result.items.filter(row => (row.season || 0) === season).map(row => {
     const image=typeof (row.artwork||detail.title.artwork)==='string' && /^https?:\/\//i.test(row.artwork||detail.title.artwork)?`<img src="${esc(row.artwork||detail.title.artwork)}" loading="lazy" referrerpolicy="no-referrer" alt="">`:'';
@@ -291,7 +298,7 @@ async function renderSeriesDetail() {
   }).join('')}</div></details>`).join('')}
   ${!result.items.length && status.status !== 'running' ? emptyState('No episodes found yet',state.session.user.role==='admin'?'Click Refresh episodes to retrieve them manually.':'Ask an administrator to refresh this series.','▣') : ''}</section>`;
   clearTimeout(state.seriesRefreshTimer);
-  if (status.status === 'running' && state.session.user.role==='admin') state.seriesRefreshTimer = setTimeout(() => { if (state.page === 'library' && state.seriesDetail === seriesId && !state.detailId) renderSeriesDetail().catch(error=>notify(error.message,true)); },2500);
+  if(status.status==='running'&&state.session.user.role==='admin')scheduleSeriesProgress(seriesId);
 }
 
 async function showLiveGuide(titleId) {
@@ -503,7 +510,7 @@ async function refreshActivity(){
 }
 
 async function renderSettings() {
-  clearTimeout(state.sourcePollTimer);clearTimeout(activityTimer);clearTimeout(updatePollTimer);
+  clearTimeout(state.sourcePollTimer);clearTimeout(activityTimer);clearTimeout(updatePollTimer);workers.stopPolling();
   if (state.settingsTab === 'sources') {const result=await api('/api/sources');state.sources=result.sources;state.sourceJobs=result.jobs||{};}
   let contents = '';
   if (state.settingsTab === 'sources') {
@@ -515,7 +522,7 @@ async function renderSettings() {
       <div id="xtream-fields" class="field-stack" hidden><label>Xtream username<input name="username" autocomplete="off" maxlength="512"></label><label>Xtream password<input name="password" type="password" autocomplete="new-password" maxlength="512"></label></div>
       <div id="stalker-fields" class="field-stack" hidden><label>Registered MAG MAC address<input name="mac" placeholder="00:1A:79:00:00:00" autocomplete="off" maxlength="17"></label><label>Portal login (if required)<input name="stalkerUsername" autocomplete="off" maxlength="512"></label><label>Portal password (if required)<input name="stalkerPassword" type="password" autocomplete="new-password" maxlength="512"></label><label>Device serial (optional)<input name="serial" maxlength="512"></label><label>Device ID (optional)<input name="deviceId" maxlength="512"></label><label>Second device ID (optional)<input name="deviceId2" maxlength="512"></label></div>
       <label id="provider-lan" class="checkbox-row" hidden><input name="allowLan" type="checkbox"> Allow a private LAN provider address</label>
-      <p class="field-note" id="source-note">A scan is manual, resumable by re-running it, and uses small indexing batches.</p>
+      <p class="field-note" id="source-note">Adding a source never scans it. Click Scan to begin an import with progress tracking.</p>
       <button type="submit" class="button button-primary">Add source</button></form></section>
       <section class="surface"><h2>Configured sources</h2><p class="field-note">Imports run in bounded batches. While a scan is active, item counts, the current provider folder and its page are refreshed automatically. Counts indicate work done, not a percentage of the whole provider.</p>
       <div id="source-status-list">${renderSourceRows()}</div>
@@ -975,7 +982,7 @@ $('#auth-form').addEventListener('submit', async (event) => {
 $('#sign-out').addEventListener('click', async () => {
   await rooms.detach(true);
   try { await api('/api/logout', { method:'POST' }); } catch { /* Expired sessions may already be gone. */ }
-  state.session = null;clearTimeout(state.sourcePollTimer);clearTimeout(state.seriesRefreshTimer);clearTimeout(activityTimer);clearTimeout(updatePollTimer);closePlayer();
+  workers.stopPolling();state.session = null;clearTimeout(state.sourcePollTimer);clearTimeout(state.seriesRefreshTimer);clearTimeout(activityTimer);clearTimeout(updatePollTimer);closePlayer();
   showAuth(false);
 });
 
