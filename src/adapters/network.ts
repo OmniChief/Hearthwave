@@ -192,7 +192,7 @@ async function streamCatalogue(address:string, onChunk:(chunk:Buffer)=>void|Prom
   });
 }
 
-/** Follow the media request through to its final headers, then close the connection. */
+/** Follow redirects and stop as soon as the provider delivers the first media bytes. */
 export function checkMediaResponse(address: string, allowLan: boolean): Promise<string> {
   return withSlot(async () => {
     let url = validateProviderUrl(address);
@@ -208,18 +208,23 @@ export function checkMediaResponse(address: string, allowLan: boolean): Promise<
           lookup: (_host, _options, done) => done(null, pinned.address, pinned.family),
         }, resolve);
         request.once('error', reject);
-      });
+      }).catch(() => null);
+      if (!response) return 'The provider did not send an HTTP response to a fresh playback request from this server.';
       const status = response.statusCode || 0;
       const headers = response.headers;
-      response.destroy();
-      if ([301, 302, 303, 307, 308].includes(status) && headers.location) {
-        url = validateProviderUrl(new URL(headers.location, url).href);
-        continue;
-      }
-      if (status < 200 || status >= 300) return `A fresh playback request to the provider returned HTTP ${status}.`;
-      if (status === 204 || headers['content-length'] === '0') return 'The provider returned an empty media response.';
-      if (/^text\/html\b/i.test(String(headers['content-type'] || ''))) return 'The provider returned an HTML page when Hearthwave requested media.';
-      return '';
+      try {
+        if ([301, 302, 303, 307, 308].includes(status) && headers.location) {
+          url = validateProviderUrl(new URL(headers.location, url).href);
+          continue;
+        }
+        if (status < 200 || status >= 300) return `A fresh playback request to the provider returned HTTP ${status}.`;
+        if (status === 204 || headers['content-length'] === '0') return 'The provider returned an empty media response.';
+        if (/^text\/html\b/i.test(String(headers['content-type'] || ''))) return 'The provider returned an HTML page when Hearthwave requested media.';
+        try {
+          for await (const chunk of response) { if (chunk.length) return ''; }
+          return 'The provider returned an empty media response.';
+        } catch { return 'The fresh provider connection stopped before any media arrived.'; }
+      } finally { response.destroy(); }
     }
     return 'The provider redirected the media request too many times.';
   });

@@ -26,6 +26,9 @@ function needsLounge(agent:string):boolean{
 const webRoot = join(dirname(fileURLToPath(import.meta.url)), '..', 'web');
 const applicationVersion=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8')).version as string;
 const allowedAssets: Record<string, string> = {
+  '/vendor/mpegts.js':'vendor/mpegts.js',
+  '/vendor/mpegts.js.LICENSE.txt':'vendor/mpegts.js.LICENSE.txt',
+  '/vendor/MPEGTS-LICENSE.txt':'vendor/MPEGTS-LICENSE.txt',
   '/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/tv-navigation.js': 'tv-navigation.js', '/playback-variants.js': 'playback-variants.js', '/hls-playback.js': 'hls-playback.js', '/playback-diagnostics.js': 'playback-diagnostics.js', '/local-media.js': 'local-media.js', '/space.js': 'space.js', '/workers.js': 'workers.js', '/rooms.js': 'rooms.js', '/requests.js': 'requests.js', '/vendor/hls.light.min.js': 'vendor/hls.light.min.js',
   '/lounge.css':'lounge.css','/lounge-keys.js':'lounge-keys.js','/browser-entry.js':'browser-entry.js',
   '/styles.css': 'styles.css', '/manifest.webmanifest': 'manifest.webmanifest',
