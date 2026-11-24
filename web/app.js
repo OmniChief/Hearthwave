@@ -1,3 +1,4 @@
+import { workerPages } from './workers.js';
 import { spacePages } from './space.js';
 import { installTvNavigation } from './tv-navigation.js';
 import { orderPlaybackVariants, playbackVariantLabel } from './playback-variants.js';
@@ -66,7 +67,7 @@ function showAuth(needsSetup) {
 }
 
 function showShell() {
-  space.reset();
+  space.reset(); workers.reset();
   $('#auth').hidden = true;
   $('#shell').hidden = false;
   $('#current-user').textContent = state.session.user.username;
@@ -379,17 +380,6 @@ async function renderGuideGrid() {
     <div class="guide-pagination"><span>${result.total?`${result.offset+1}–${result.offset+result.items.length} of ${result.total} channels`:'No matching channels'}</span><div><button class="button button-quiet button-small" data-guide-page="-1" ${result.offset===0?'disabled':''}>← Previous channels</button><button class="button button-quiet button-small" data-guide-page="1" ${result.offset+result.items.length>=result.total?'disabled':''}>More channels →</button></div></div>`;
 }
 
-const upcoming = {
-  create:{ title:'Make something wonderful', description:'Creative projects will be managed here while optional PC workers do the heavy lifting.',icon:'✳',features:[['Image studio','Queue text-to-image jobs and organise generated assets.'],['Video workspace','Optional video generation and project history.'],['Worker pairing','Attach a capable PC for conversion and GPU work.']] },
-};
-
-function renderUpcoming(section) {
-  const info = upcoming[section];
-  page.innerHTML = `<section class="hero"><div><span class="eyebrow">COMING IN A FUTURE MILESTONE</span><h2>${esc(info.title)}</h2><p>${esc(info.description)}</p><span class="tag">Product foundation in progress</span></div><div class="hero-art"><div class="hero-disc"></div></div></section>
-    ${heading('What belongs here', 'Designed as part of one platform, with shared accounts and permissions.')}
-    <div class="feature-grid">${info.features.map(feature => `<div class="feature-card"><div class="feature-glyph">${info.icon}</div><h3>${esc(feature[0])}</h3><p>${esc(feature[1])}</p></div>`).join('')}</div>`;
-}
-
 const settingsSections = [ ['sources','Sources'],['metadata','Metadata & Guide'],['users','Users & Access'],['workers','Downloads & Workers'],['appearance','Appearance & Playback'],['system','System'] ];
 
 function renderSourceRows() {
@@ -516,11 +506,7 @@ async function renderSettings() {
       ${updaterPanel(updater)}
       <section class="surface"><h2>Coming later</h2><p class="field-note">A guided first-time installer, resource budgeting, diagnostics history and offline restore tooling are still planned.</p></section>`;
   } else {
-    const explanations = {
-      workers:['Downloads & Workers','Acquisition queues, explicit file conversion and trusted paired worker computers will be managed here, without mandatory on-NAS transcoding.'],
-    };
-    const [title,description] = explanations[state.settingsTab];
-    contents = emptyState(title, `${description} This settings area is not active in the foundation milestone.`, '⚙');
+    contents = await workers.contents(true);
   }
   page.innerHTML = `<div class="settings-layout"><div class="settings-menu">${settingsSections.map(section => `<button class="${state.settingsTab === section[0] ? 'active':''}" data-settings="${section[0]}">${section[1]}</button>`).join('')}</div><div class="settings-content">${contents}</div></div>`;
   if (state.settingsTab === 'sources') {syncSourceForm();scheduleSourcePoll();}
@@ -574,6 +560,7 @@ async function renderGames() {
 }
 
 const space = spacePages({page,state,api,esc,notify});
+const workers = workerPages({page,state,api,esc,notify});
 async function renderPage() {
   switch (state.page) {
     case 'home': return renderHome();
@@ -582,7 +569,8 @@ async function renderPage() {
     case 'play': return renderGames();
     case 'settings': return renderSettings();
     case 'community': case 'my-space': return space.render(state.page);
-    default: return renderUpcoming(state.page);
+    case 'create': return workers.render();
+    default: return renderHome();
   }
 }
 
@@ -978,6 +966,7 @@ page.addEventListener('error', event => { if (event.target?.matches?.('.media-ar
 
 page.addEventListener('submit', async event => {
   const form = event.target;
+  if(form.dataset.workerForm) return workers.submit(event);
   if(form.dataset.spaceForm) return space.submit(event);
   if(form.id==='smart-collection-create-form' || form.dataset.smartRulesForm) {
     event.preventDefault();
@@ -1062,6 +1051,7 @@ page.addEventListener('submit', async event => {
 page.addEventListener('click', async event => {
   const target = event.target.closest('button');
   if (!target) return;
+  if(target.dataset.workerAction) return workers.click(event);
   if(target.dataset.spaceAction) return space.click(event);
   if(target.dataset.game) {
     const title=target.closest('article').querySelector('h3').textContent;
