@@ -82,7 +82,7 @@ export async function spaceApi(req:IncomingMessage,res:ServerResponse,url:URL,us
   if(m){
     const other=int(m[1]);
     if(method==='PATCH'){changed(db.prepare('UPDATE community_friends SET accepted=1 WHERE sender=? AND recipient=? AND accepted=0').run(other,uid));return reply({ok:true});}
-    if(method==='DELETE'){changed(db.prepare('DELETE FROM community_friends WHERE (sender=? AND recipient=?) OR (sender=? AND recipient=?)').run(uid,other,other,uid));return reply({ok:true});}
+    if(method==='DELETE'){transaction(()=>{changed(db.prepare('DELETE FROM community_friends WHERE (sender=? AND recipient=?) OR (sender=? AND recipient=?)').run(uid,other,other,uid));db.prepare('DELETE FROM space_shares WHERE (user_id=? AND file_id IN (SELECT id FROM space_files WHERE user_id=?)) OR (user_id=? AND file_id IN (SELECT id FROM space_files WHERE user_id=?))').run(uid,other,other,uid);});return reply({ok:true});}
   }
   if(path==='/api/community/reviews'){
     if(method==='GET')return reply({items:db.prepare('SELECT r.title_id,r.rating,r.review,r.updated,u.username,r.user_id=? AS own,t.title FROM community_reviews r JOIN users u ON u.id=r.user_id JOIN titles t ON t.id=r.title_id WHERE r.user_id=? OR EXISTS(SELECT 1 FROM community_friends f WHERE f.accepted=1 AND ((f.sender=? AND f.recipient=r.user_id) OR (f.recipient=? AND f.sender=r.user_id))) ORDER BY r.updated DESC LIMIT 100').all(uid,uid,uid,uid)});

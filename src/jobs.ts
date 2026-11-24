@@ -46,13 +46,17 @@ function active(wid:number,id:number,lease:unknown):Job {
 }
 function expireJobs(){
   const cutoff=Date.now()-120000;
-  db.prepare("UPDATE worker_jobs SET status='failed',message='Worker disconnected before reporting completion. Retry manually.',lease='',updated=? WHERE status='running' AND worker_id IN (SELECT id FROM paired_workers WHERE last_seen<?)").run(Date.now(),cutoff);
+  tx(()=>{
+    const expired=db.prepare("SELECT * FROM worker_jobs WHERE status='running' AND worker_id IN (SELECT id FROM paired_workers WHERE last_seen<?)").all(cutoff) as unknown as Job[];
+    for(const job of expired){cleanupFile(job);db.prepare("UPDATE worker_jobs SET status='failed',message='Worker disconnected before reporting completion.',lease='',updated=? WHERE id=?").run(Date.now(),job.id);}
+  });
 }
 function cleanupFile(j:Job){if(j.file_id!==null)db.prepare('DELETE FROM space_files WHERE id=? AND user_id=? AND received<size').run(j.file_id,j.user_id);}
 export async function workerApi(req:IncomingMessage,res:ServerResponse,url:URL,body:Body,send:Send):Promise<void>{
   const w=worker(req),path=url.pathname,reply=(x:unknown)=>send(res,200,x);
   if(req.method!=='POST')return fail(405,'Worker requests must be POST.');
   const x=await body(req,400000);
+  expireJobs();
   db.prepare('UPDATE paired_workers SET last_seen=? WHERE id=?').run(Date.now(),w.id);
   if(path==='/api/worker/heartbeat'){
     if(!Array.isArray(x.capabilities)||x.capabilities.some(k=>typeof k!=='string'||!kinds.includes(k)))return fail(400,'Invalid worker capabilities.');
@@ -60,7 +64,6 @@ export async function workerApi(req:IncomingMessage,res:ServerResponse,url:URL,b
     return reply({ok:true});
   }
   if(path==='/api/worker/claim'){
-    expireJobs();
     return reply(tx(()=>{
       if(db.prepare("SELECT id FROM worker_jobs WHERE worker_id=? AND status='running'").get(w.id))return {job:null};
       const caps=JSON.parse(w.capabilities) as string[];
@@ -124,12 +127,13 @@ export async function jobsApi(req:IncomingMessage,res:ServerResponse,url:URL,use
   if(path==='/api/jobs/workers'){
     if(method==='GET'){
       expireJobs();
-      const rows=db.prepare('SELECT id,name,capabilities,last_seen FROM paired_workers ORDER BY name').all() as unknown as Worker[];
+      const rows=db.prepare('SELECT id,name,capabilities,last_seen FROM paired_workers WHERE name NOT LIKE '% (revoked)' ORDER BY name').all() as unknown as Worker[];
       return reply({items:rows.map(w=>({id:w.id,name:w.name,capabilities:JSON.parse(w.capabilities),online:Date.now()-w.last_seen<120000}))});
     }
     if(method==='POST'){
       admin(user);const x=await body(req),label=str(x.name,80),secret=token();
-      if(Number(db.prepare('SELECT COUNT(*) AS n FROM paired_workers').get()?.n)>=20)fail(409,'Worker limit reached.');
+      if(label.endsWith(' (revoked)'))fail(400,'Choose a different worker name.');
+      if(Number(db.prepare("SELECT COUNT(*) AS n FROM paired_workers WHERE name NOT LIKE '% (revoked)'").get()?.n)>=20)fail(409,'Worker limit reached.');
       const id=Number(db.prepare('INSERT INTO paired_workers(name,token_hash) VALUES(?,?)').run(label,digest(secret)).lastInsertRowid);
       return reply({id,token:secret},201);
     }

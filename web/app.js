@@ -504,7 +504,7 @@ async function renderSettings() {
       <button id="download-backup" class="button button-primary" ${status.backupBusy ? 'disabled' : ''}>${status.backupBusy ? 'Backup in progress…' : 'Download backup (.tar.gz)'}</button>
       <p class="field-note">A temporary, consistent SQLite snapshot is created on the NAS, streamed to your browser and removed afterwards. No cloud upload or scheduler is involved. Restoring is an offline, administrator-managed operation.</p></section>
       ${updaterPanel(updater)}
-      <section class="surface"><h2>Coming later</h2><p class="field-note">A guided first-time installer, resource budgeting, diagnostics history and offline restore tooling are still planned.</p></section>`;
+`;
   } else {
     contents = await workers.contents(true);
   }
