@@ -118,11 +118,12 @@ async function transfer(job:Job,file:string):Promise<string>{
   }catch(error){throw new Error('Saved on worker as '+basename(file)+'; transfer failed: '+(error instanceof Error?error.message:'unknown error'));}
 }
 console.log('Hearthwave worker ready: '+root+' · '+capabilities.join(', '));
+let lastHeartbeat=0;
 while(true){
   try{
-    await api('heartbeat',{capabilities});
+    if(Date.now()-lastHeartbeat>=60000){await api('heartbeat',{capabilities});lastHeartbeat=Date.now();}
     const {job}=await api('claim',{}) as {job:Job|null};
-    if(!job){await delay(5000);continue;}
+    if(!job){await delay(30000);continue;}
     console.log('Running job '+job.id+' ('+job.kind+')');
     const heartbeat=setInterval(()=>{void api('heartbeat',{capabilities}).catch(()=>{});},15000);
     try{

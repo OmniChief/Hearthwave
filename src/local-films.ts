@@ -1,4 +1,3 @@
-import { db, enrichTitleMetadata } from './db.ts';
 import { providerJson } from './adapters/network.ts';
 import { libraryMatchKey } from './catalogue.ts';
 import type { ImportItem } from './model.ts';
@@ -33,34 +32,3 @@ export async function lookupLocalFilm(raw: string, year: number | null): Promise
     imdbId:meta.id, year:Number(String(meta.year || meta.releaseInfo).slice(0,4)) || null };
 }
 
-// Indexing finishes independently of the network. Start with existing imports after an update.
-let running = false;
-let requested = false;
-export function fillLocalFilmMetadata() {
-  requested = true;
-  if (running) return;
-  running = true;
-  void (async () => {
-    const next = db.prepare('SELECT t.id,t.title,t.year,t.artwork,t.description FROM titles t ' +
-      "WHERE t.id>? AND t.kind='film' AND (COALESCE(t.artwork,'')='' OR COALESCE(t.description,'')='') " +
-      "AND EXISTS (SELECT 1 FROM variants v JOIN sources s ON s.id=v.source_id WHERE v.title_id=t.id AND s.type='folder') " +
-      'ORDER BY t.id LIMIT 1');
-    while (requested) {
-      requested = false;
-      let cursor = 0;
-      for (;;) {
-        const film = next.get(cursor) as {id:number; title:string; year:number|null; artwork:string; description:string} | undefined;
-        if (!film) break;
-        cursor = film.id;
-        const info = await lookupLocalFilm(film.title, film.year);
-        if (info) {
-          if (film.artwork) delete info.artwork;
-          if (film.description) delete info.description;
-          enrichTitleMetadata(film.id, info);
-        }
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
-    }
-  })().catch(error => console.warn('Local movie metadata lookup paused:', error.message))
-    .finally(() => { running = false; });
-}

@@ -56,14 +56,14 @@ export async function workerApi(req:IncomingMessage,res:ServerResponse,url:URL,b
   const w=worker(req),path=url.pathname,reply=(x:unknown)=>send(res,200,x);
   if(req.method!=='POST')return fail(405,'Worker requests must be POST.');
   const x=await body(req,400000);
-  expireJobs();
-  db.prepare('UPDATE paired_workers SET last_seen=? WHERE id=?').run(Date.now(),w.id);
+  if(Date.now()-w.last_seen>=30000){expireJobs();db.prepare('UPDATE paired_workers SET last_seen=? WHERE id=?').run(Date.now(),w.id);}
   if(path==='/api/worker/heartbeat'){
     if(!Array.isArray(x.capabilities)||x.capabilities.some(k=>typeof k!=='string'||!kinds.includes(k)))return fail(400,'Invalid worker capabilities.');
-    db.prepare('UPDATE paired_workers SET capabilities=? WHERE id=?').run(JSON.stringify([...new Set(x.capabilities)]),w.id);
+    const caps=JSON.stringify([...new Set(x.capabilities)]);if(caps!==w.capabilities)db.prepare('UPDATE paired_workers SET capabilities=? WHERE id=?').run(caps,w.id);
     return reply({ok:true});
   }
   if(path==='/api/worker/claim'){
+    if(!db.prepare("SELECT 1 FROM worker_jobs WHERE worker_id=? AND status='queued' LIMIT 1").get(w.id))return reply({job:null});
     return reply(tx(()=>{
       if(db.prepare("SELECT id FROM worker_jobs WHERE worker_id=? AND status='running'").get(w.id))return {job:null};
       const caps=JSON.parse(w.capabilities) as string[];
@@ -155,7 +155,7 @@ export async function jobsApi(req:IncomingMessage,res:ServerResponse,url:URL,use
     if(method==='POST'){
       const x=await body(req),kind=str(x.kind,16),wid=int(x.workerId);
       if(!kinds.includes(kind))fail(400,'Unsupported job type.');
-      if(kind==='download'||kind==='convert')admin(user);
+      admin(user);
       const w=db.prepare('SELECT id,name,capabilities,last_seen FROM paired_workers WHERE id=?').get(wid) as Worker|undefined;
       if(!w||!(JSON.parse(w.capabilities) as string[]).includes(kind))fail(400,'Choose a worker that supports this job.');
       let payload:Input;

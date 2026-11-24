@@ -8,7 +8,8 @@ import { readFile, realpath, stat } from 'node:fs/promises';
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
-import { fillLocalFilmMetadata, lookupLocalFilm } from './local-films.ts';
+import { lookupLocalFilm } from './local-films.ts';
+import { startMetadata, metadataStatus, metadataBusy, cancelMetadata } from './maintenance.ts';
 import { liveGenres, parseM3u, scanFolder } from './catalogue.ts';
 import { gameInfo, gameSystem } from './games.ts';
 import { libraryGenres } from './library-genres.ts';
@@ -56,11 +57,19 @@ function beginSourceJob(id:number,kind:SourceJob['kind']):SourceJob {
 }
 class ScanCancelled extends Error {constructor(){super('Scan cancelled. Existing catalogue entries were kept.');}}
 const failures = new Map<string, { count: number; until: number }>();
-const episodeJobs = new Map<number, {status:'running'|'ready'|'error';started:number;finished:number;error:string}>();
+const episodeJobs = new Map<number, {status:'running'|'ready'|'error';started:number;finished:number;error:string;processed:number;total:number;episodes:number}>();
 const guideCache = new Map<number, {expires:number;programmes:GuideProgramme[];source:string}>();
 const importingGuides = new Set<number>();
+const guideJobs=new Map<number,{phase:'running'|'completed'|'error';channels:number;programmes:number;error:string}>();
+let providerGuideRefresh:number|null=null;
+let systemOperation=false;
 const refreshingMetadata=new Set<number>();
 const metadataLastAttempt=new Map<number,number>();
+function maintenanceActive():boolean {
+  return !!(inProgress.size||importingGuides.size||refreshingMetadata.size||providerGuideRefresh!==null||metadataBusy()||[...episodeJobs.values()].some(j=>j.status==='running')||backupBusy()||systemOperation);
+}
+function requireIdle():void {if(maintenanceActive())throw new HttpError(409,'Another administrator operation is running. Check Settings → Metadata & Guide or Sources for its progress.');}
+function activity(){return {busy:maintenanceActive(),sources:Object.fromEntries(sourceJobs),episodes:Object.fromEntries(episodeJobs),guides:Object.fromEntries(guideJobs),metadata:metadataStatus(),titleMetadata:[...refreshingMetadata],providerGuide:providerGuideRefresh,backup:backupBusy(),systemOperation};}
 
 class HttpError extends Error {
   status: number;
@@ -199,6 +208,7 @@ function connectionConfig(type: SourceType, raw: unknown): ProviderConfig {
 }
 
 function startImport(source: SourceRow, items: AsyncIterable<ImportItem>): void {
+  requireIdle();
   if (inProgress.has(source.id)) throw new HttpError(409, 'This source is already being imported.');
   inProgress.add(source.id);
   const job=beginSourceJob(source.id,'scan');
@@ -223,7 +233,6 @@ function startImport(source: SourceRow, items: AsyncIterable<ImportItem>): void 
       if(job.cancelRequested) throw new ScanCancelled();
       if (buffer.length) {importBatch(source.id, buffer, generation);job.indexed+=buffer.length;}
       completeImport(source.id, generation);
-      if (source.type === 'folder') fillLocalFilmMetadata();
       job.phase='completed';
     } catch (error) {
       const cancelled=job.cancelRequested || error instanceof ScanCancelled;
@@ -236,6 +245,7 @@ function startImport(source: SourceRow, items: AsyncIterable<ImportItem>): void 
 }
 
 function startDiscovery(source: SourceRow): void {
+  requireIdle();
   if (inProgress.has(source.id)) throw new HttpError(409, 'This source is already busy.');
   inProgress.add(source.id);
   const job=beginSourceJob(source.id,'discover');
@@ -257,6 +267,7 @@ function startDiscovery(source: SourceRow): void {
 }
 
 function startEpisodeDiscovery(seriesId: number): void {
+  requireIdle();
   const current = episodeJobs.get(seriesId);
   if (current?.status === 'running') throw new HttpError(409,'Episodes are already being retrieved.');
   if (current && Date.now() - current.started < 60_000) throw new HttpError(429,'Wait one minute before refreshing this show again.');
@@ -265,7 +276,8 @@ function startEpisodeDiscovery(seriesId: number): void {
   if (!show || show.kind !== 'series') throw new HttpError(404,'Series not found.');
   const variants = listVariants(seriesId).filter(row=>row.url.startsWith('xtream-series:') || row.url.startsWith('stalker-series:')).slice(0,8);
   if (!variants.length) throw new HttpError(404,'This series has no supported provider connection.');
-  episodeJobs.set(seriesId,{status:'running',started:Date.now(),finished:0,error:''});
+  const job={status:'running' as 'running'|'ready'|'error',started:Date.now(),finished:0,error:'',processed:0,total:variants.length,episodes:0};
+  episodeJobs.set(seriesId,job);
   if (episodeJobs.size > 500) {
     for (const [id,job] of episodeJobs) { if (id !== seriesId && job.status !== 'running') { episodeJobs.delete(id); break; } }
   }
@@ -276,22 +288,23 @@ function startEpisodeDiscovery(seriesId: number): void {
     const errors: string[] = [];
     for (const [sourceId,sourceVariants] of grouped) {
       const source = getSource(sourceId);
-      if (!source) continue;
+      if (!source) {job.processed+=sourceVariants.length;continue;}
       try {
         const collected: ImportItem[] = [];
-        for (const variant of sourceVariants) collected.push(...await discoverSeriesEpisodes(source,variant.url,show.title,show.year));
+        for (const variant of sourceVariants) {const found=await discoverSeriesEpisodes(source,variant.url,show.title,show.year);collected.push(...found);job.episodes+=found.length;}
         if (!collected.length) throw new ProviderError('Provider returned no playable episodes; existing episodes were kept.');
         replaceSeriesEpisodes(seriesId,sourceId,collected);
         successful++;
       } catch (error) {
         errors.push(`${source.name}: ${error instanceof Error ? error.message.slice(0,180) : 'Could not load episodes.'}`);
-      }
+      } finally {job.processed+=sourceVariants.length;}
     }
-    episodeJobs.set(seriesId,{status:successful ? 'ready' : 'error',started:episodeJobs.get(seriesId)?.started || Date.now(),finished:Date.now(),error:errors.join(' · ').slice(0,350)});
+    Object.assign(job,{status:successful?'ready':'error',finished:Date.now(),error:errors.join(' · ').slice(0,350)});
   })();
 }
 
 function startGuideImport(feed:GuideFeed):void {
+  requireIdle();
   if (importingGuides.has(feed.id)) throw new HttpError(409,'This guide is already importing.');
   if (importingGuides.size>=1) throw new HttpError(429,'Only one guide can import at a time on a low-memory server.');
   const address=new URL(feed.location);
@@ -299,15 +312,18 @@ function startGuideImport(feed:GuideFeed):void {
   if (/(?:^|\.)open-epg\.com$/i.test(address.hostname) && Number.isFinite(previous) && Date.now()-previous<6*3600_000)
     throw new HttpError(429,'Open-EPG only updates daily. Wait at least six hours between successful imports of this feed.');
   importingGuides.add(feed.id);
+  if(guideJobs.size>=100)guideJobs.delete(guideJobs.keys().next().value!);
+  const job={phase:'running' as 'running'|'completed'|'error',channels:0,programmes:0,error:''};guideJobs.set(feed.id,job);
   setGuideStatus(feed.id,'importing');
   const generation=randomUUID();
   void (async()=>{
     try {
-      const result=await importXmltv(feed,generation);
-      guideCache.clear();
+      const result=await importXmltv(feed,generation,(channels,programmes)=>Object.assign(job,{channels,programmes}));
+      job.phase='completed';guideCache.clear();
       console.log(`Guide ${feed.id} imported: ${result.channels} channels, ${result.programmes} programmes`);
     } catch (error) {
       const message=error instanceof Error ? error.message : 'Guide import failed.';
+      job.phase='error';job.error=message.slice(0,250);
       abortGuideImport(feed.id,generation,message);
       console.error(`Guide ${feed.id} import failed:`,message);
     } finally { importingGuides.delete(feed.id); }
@@ -384,7 +400,7 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const path = url.pathname;
   const method = req.method || 'GET';
-  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.27.0', pid: process.pid });
+  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.28.0', pid: process.pid });
   if (path === '/api/session' && method === 'GET') {
     const current = session(req);
     return send(res, 200, { needsSetup: !hasUsers(), user: current?.user || null, csrf: current?.csrf || null });
@@ -444,10 +460,23 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     if(method!=='GET') requireWrite(req);
     return spaceApi(req,res,url,current.user,body,send);
   }
+  if(path==='/api/system/activity'&&method==='GET'){
+    if(current.user.role!=='admin')throw new HttpError(403,'Administrator access required.');
+    return send(res,200,activity());
+  }
+  if(path==='/api/system/metadata'&&method==='POST'){
+    requireWrite(req,true);const input=await body(req);requireIdle();
+    if(input.kind!=='film'&&input.kind!=='game')throw new HttpError(400,'Choose films or games.');
+    if(input.retry!==undefined&&typeof input.retry!=='boolean')throw new HttpError(400,'Invalid retry setting.');
+    return send(res,202,{job:startMetadata(input.kind,input.retry===true)});
+  }
+  if(path==='/api/system/metadata/cancel'&&method==='POST'){
+    requireWrite(req,true);if(!metadataBusy())throw new HttpError(409,'No metadata job is active.');cancelMetadata();return send(res,202,{job:metadataStatus()});
+  }
   if (path === '/api/system/status' && method === 'GET') {
     if (current.user.role !== 'admin') throw new HttpError(403, 'Administrator access required.');
     const databaseInfo = await stat(join(dataDir, 'hearthwave.sqlite'));
-    return send(res, 200, { version: '0.27.0', schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, databaseBytes: databaseInfo.size, rssBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(process.uptime()), backupBusy: backupBusy() });
+    return send(res, 200, { version: '0.28.0', schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, databaseBytes: databaseInfo.size, rssBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(process.uptime()), backupBusy: backupBusy() });
   }
   if(path==='/api/system/update/check' && method==='GET') {
     if(current.user.role!=='admin') throw new HttpError(403,'Administrator access required.');
@@ -461,13 +490,14 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     requireWrite(req,true);
     const input=await body(req);
     if(typeof input.sha!=='string' || !/^[a-f0-9]{40}$/.test(input.sha)) throw new HttpError(400,'Choose a verified GitHub commit first.');
-    await startUpdate(input.sha,shutdownForUpdate);
+    requireIdle();systemOperation=true;
+    try{await startUpdate(input.sha,shutdownForUpdate);}catch(error){systemOperation=false;throw error;}
     return send(res,202,{accepted:true,message:'Preparing the verified update. Hearthwave will restart when ready.'});
   }
   if (path === '/api/system/backup' && method === 'POST') {
     requireWrite(req, true);
-    if((await updateStatus()).busy) throw new HttpError(409,'Wait for the active update to finish before exporting the database.');
-    return streamBackup(res);
+    requireIdle();systemOperation=true;
+    try{if((await updateStatus()).busy)throw new HttpError(409,'Wait for the active update to finish before exporting the database.');return await streamBackup(res);}finally{systemOperation=false;}
   }
   if (path === '/api/preferences' && method === 'GET') return send(res,200,getUserPreferences(current.user.id));
   if (path === '/api/preferences' && method === 'POST') {
@@ -592,12 +622,10 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     }
     const config = connectionConfig(type,input.config);
     const source = addSource({ name, type, location, config });
-    if (type === 'm3u' && location) startImport(source, playlistItems(location));
     if (type === 'direct') {
       const generation = randomUUID();
       importBatch(source.id, [{ kind: 'channel', title: name, sourceRef: 'direct', url: location }], generation);
       completeImport(source.id, generation);
-      if (source.type === 'folder') fillLocalFilmMetadata();
     }
     return send(res, 201, { source: safelyPublicSource(getSource(source.id)!) });
   }
@@ -675,7 +703,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   }
   if (path === '/api/guide/feeds' && method === 'GET') {
     if (current.user.role !== 'admin') throw new HttpError(403,'Administrator access required.');
-    return send(res,200,{feeds:listGuideFeeds().map(publicGuideFeed)});
+    return send(res,200,{feeds:listGuideFeeds().map(feed=>({...publicGuideFeed(feed),job:guideJobs.get(feed.id)||null}))});
   }
   if (path === '/api/guide/feeds' && method === 'POST') {
     requireWrite(req,true);
@@ -745,11 +773,11 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     const typedView=view as 'all'|'favourites'|'continue'|'watchlist',typedSort=sort as 'title'|'year'|'added'|'activity';
     const liveGenre=kind==='channel'?genre:'',libraryGenre=kind==='channel'?'':genre;
     const rows=listTitles(typedKind,current.user.id,query,typedView,typedSort,limit,offset,country,liveGenre,libraryGenre,collection) as Array<Record<string,unknown> & {game_path?:string}>;
-    const items=await Promise.all(rows.map(async ({game_path,...row})=>{
-      if(!game_path) return row;
-      const info=await gameInfo(game_path);
-      return {...row,core:info.core,system:info.system,artwork:info.cover || row.artwork};
-    }));
+    const items=rows.map(({game_path,...row})=>{
+      if(!game_path)return row;
+      const info=gameInfo(game_path);
+      return {...row,core:info.core,system:info.system};
+    });
     return send(res,200,{
       items,
       total:countTitles(typedKind,current.user.id,query,typedView,country,liveGenre,libraryGenre,collection),
@@ -770,7 +798,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     if(!['film','series'].includes(getTitle(titleId)?.kind || '')) throw new HttpError(404,'Film or series not found.');
     if(refreshingMetadata.has(titleId) || refreshingMetadata.size>=2) throw new HttpError(409,'Another metadata refresh is already running.');
     if(Date.now()-(metadataLastAttempt.get(titleId)||0)<60_000) throw new HttpError(429,'Wait one minute before refreshing this title again.');
-    refreshingMetadata.add(titleId);
+    requireIdle();refreshingMetadata.add(titleId);
     try {
       const seen=new Set<number>();
       const variants=listVariants(titleId).filter(v=>{
@@ -838,19 +866,23 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       return send(res,200,{series:title,items:listSeriesEpisodes(titleId,current.user.id),status:episodeJobs.get(titleId) || {status:'idle',error:''}});
     }
     if (method === 'POST' && episodesMatch[2] === 'refresh') {
-      requireWrite(req);
+      requireWrite(req,true);
       startEpisodeDiscovery(titleId);
       return send(res,202,{status:'running'});
     }
   }
   const guideMatch = /^\/api\/titles\/(\d+)\/guide$/.exec(path);
-  if (guideMatch && method === 'GET') {
+  if (guideMatch && (method === 'GET'||method==='POST')) {
     const titleId = positiveId(guideMatch[1]);
     if (getTitle(titleId)?.kind !== 'channel') throw new HttpError(404,'Live channel not found.');
     const xmltv=storedGuide(titleId);
-    if (xmltv.programmes.length) return send(res,200,{...xmltv,cached:true,kind:'xmltv'});
-    const cached = guideCache.get(titleId);
-    if (cached && cached.expires > Date.now()) return send(res,200,{programmes:cached.programmes,source:cached.source,cached:true});
+    if(method==='GET'){
+      if(xmltv.programmes.length)return send(res,200,{...xmltv,cached:true,kind:'xmltv'});
+      const cached=guideCache.get(titleId);
+      return send(res,200,cached&&cached.expires>Date.now()?{programmes:cached.programmes,source:cached.source,cached:true}:{...xmltv,cached:true,kind:'xmltv'});
+    }
+    requireWrite(req,true);requireIdle();providerGuideRefresh=titleId;
+    try{
     const variants = listVariants(titleId).filter(v=>['stalker','xtream'].includes(v.source_type)).slice(0,2);
     let programmes: GuideProgramme[] = [];
     let sourceName = '';
@@ -865,9 +897,10 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
         console.error(`Guide lookup failed for source ${source.id}:`,error instanceof Error ? error.message : 'Unknown error');
       }
     }
-    guideCache.set(titleId,{expires:Date.now()+5*60_000,programmes,source:sourceName});
+    guideCache.set(titleId,{expires:Date.now()+6*3600_000,programmes,source:sourceName});
     if (guideCache.size > 100) guideCache.delete(guideCache.keys().next().value!);
     return send(res,200,{programmes,source:sourceName,cached:false});
+    }finally{providerGuideRefresh=null;}
   }
   const variantMatch = /^\/api\/titles\/(\d+)\/variants$/.exec(path);
   if (variantMatch && method === 'GET') {
@@ -984,7 +1017,6 @@ const server = createServer(async (req, res) => {
 const port = Number(process.env.PORT || 9999);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT must be between 1 and 65535.');
 server.listen(port, process.env.HOST || '0.0.0.0', () => console.log(`Hearthwave ready on port ${port}`));
-fillLocalFilmMetadata();
 const shutdown = () => { server.close(() => { db.close(); process.exit(0); }); };
 const shutdownForUpdate = () => {
   shutdown();

@@ -70,19 +70,22 @@ async function coverIndex(label:string) {
   return result;
 }
 
-export async function gameInfo(path:string) {
+export function gameInfo(path:string) {
+  const system=gameSystem(path);
+  return {filename:basename(path),core:system?.core||'',system:system?.label||''};
+}
+export function clearGameArtworkCache(){covers.clear();}
+export async function fetchGameArtwork(path:string):Promise<string> {
   const system=gameSystem(path);
   const filename=basename(path);
-  if(!system) return {filename,core:'',system:'',cover:''};
+  if(!system)return '';
   let cache=covers.get(system.label);
   if(!cache || cache.until<Date.now()) {
-    const entry={until:Date.now()+86400000,result:coverIndex(system.label).catch(()=>{
-      entry.until=Date.now()+60000;
-      return new Map<string,string>();
-    })};
+    if(covers.size>=2)covers.delete(covers.keys().next().value!);
+    const entry={until:Date.now()+86400000,result:coverIndex(system.label)};
     cache=entry; covers.set(system.label,entry);
   }
   const index=await cache.result;
   const name=basename(filename,extname(filename));
-  return {filename,core:system.core,system:system.label,cover:index.get(name.toLowerCase()) || index.get(titleKey(name)) || ''};
+  return index.get(name.toLowerCase()) || index.get(titleKey(name)) || '';
 }

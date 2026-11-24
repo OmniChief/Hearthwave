@@ -14,6 +14,8 @@ let failedPlaybackGeneration = -1;
 let latestUpdateCheck = null;
 let updatePollTimer = null;
 let updateStartedHere = false;
+let activityTimer=null;
+let activityState=null;
 let updateWaitStarted = 0;
 const $ = (selector) => document.querySelector(selector);
 const page = $('#page');
@@ -109,7 +111,7 @@ async function navigate(destination, recordHistory = true) {
   state.guideRequest++;
   state.libraryRequest++;
   state.liveRequest++;
-  clearTimeout(state.sourcePollTimer);
+  clearTimeout(state.sourcePollTimer);clearTimeout(activityTimer);clearTimeout(updatePollTimer);
   state.seriesDetail = null;
   state.detailId = null;
   state.seriesEpisodes = [];
@@ -275,24 +277,20 @@ async function renderSeriesDetail() {
   if (state.seriesDetail !== seriesId || state.page !== 'library') return;
   state.items = [result.series,...result.items];
   state.seriesEpisodes = result.items;
-  let status = result.status;
-  if (status.status === 'idle' && !result.items.length) {
-    try { await api(`/api/titles/${seriesId}/episodes/refresh`,{method:'POST'}); status = {status:'running',error:''}; }
-    catch (error) { status = {status:'error',error:error.message}; }
-  }
+  const status = result.status;
   const seasons = [...new Set(result.items.map(row => row.season || 0))].sort((a,b)=>b-a);
-  page.innerHTML = `<section class="surface"><button class="button button-quiet button-small" data-series-back>← Back to Library</button><div class="section-heading"><div><span class="eyebrow">SERIES</span><h2>${esc(result.series.title)}</h2><p>${esc(result.series.year || 'Year unknown')} · ${result.items.length} episode${result.items.length === 1 ? '' : 's'} across ${seasons.length} season${seasons.length === 1 ? '' : 's'}</p>${detail.title.description ? `<p class="detail-description">${esc(detail.title.description)}</p>`:''}</div><div class="row-actions">${watchlistButton(detail.title)}<button class="star-button ${detail.title.favourite?'is-favourite':''}" data-favourite="${seriesId}" data-next="${detail.title.favourite?'0':'1'}" aria-label="${detail.title.favourite?'Remove from':'Add to'} favourites">${detail.title.favourite?'★':'☆'}</button>${state.session.user.role==='admin'?`<button class="button button-quiet button-small" data-metadata-refresh="${seriesId}">Fetch metadata</button>`:''}<button class="button button-quiet button-small" data-series-refresh="${seriesId}" ${status.status === 'running' ? 'disabled':''}>${status.status === 'running' ? 'Loading…':'Refresh episodes'}</button></div></div>
+  page.innerHTML = `<section class="surface"><button class="button button-quiet button-small" data-series-back>← Back to Library</button><div class="section-heading"><div><span class="eyebrow">SERIES</span><h2>${esc(result.series.title)}</h2><p>${esc(result.series.year || 'Year unknown')} · ${result.items.length} episode${result.items.length === 1 ? '' : 's'} across ${seasons.length} season${seasons.length === 1 ? '' : 's'}</p>${detail.title.description ? `<p class="detail-description">${esc(detail.title.description)}</p>`:''}</div><div class="row-actions">${watchlistButton(detail.title)}<button class="star-button ${detail.title.favourite?'is-favourite':''}" data-favourite="${seriesId}" data-next="${detail.title.favourite?'0':'1'}" aria-label="${detail.title.favourite?'Remove from':'Add to'} favourites">${detail.title.favourite?'★':'☆'}</button>${state.session.user.role==='admin'?`<button class="button button-quiet button-small" data-metadata-refresh="${seriesId}">Fetch metadata</button>`:''}${state.session.user.role==='admin'?`<button class="button button-quiet button-small" data-series-refresh="${seriesId}" ${status.status==='running'?'disabled':''}>${status.status==='running'?'Loading…':'Refresh episodes'}</button>`:''}</div></div>
   ${collectionControls(seriesId,collectionList.collections)}
   <label class="autoplay-setting"><input type="checkbox" id="autoplay-next" ${state.autoplayNext?'checked':''}> Automatically play the next episode when one finishes <small>Saved to your household profile</small></label>
-  ${status.status === 'running' ? '<p class="field-note">Retrieving episode information from the configured providers. This runs only when requested.</p>':''}
+  ${status.status==='running'?`<p class="field-note">Retrieving episodes · ${status.processed||0}/${status.total||0} connections · ${status.episodes||0} episodes received</p><progress max="${Math.max(1,status.total||1)}" value="${status.processed||0}"></progress>`:''}
   ${status.error ? `<p class="field-note alert-note">${esc(status.error)}</p>`:''}
   ${seasons.map(season => `<details class="season-accordion" ${season===seasons[0]?'open':''}><summary>${season ? `Season ${season}` : 'Unknown season'} <small>${result.items.filter(row => (row.season||0)===season).length} episodes</small></summary><div class="episode-list">${result.items.filter(row => (row.season || 0) === season).map(row => {
     const image=typeof (row.artwork||detail.title.artwork)==='string' && /^https?:\/\//i.test(row.artwork||detail.title.artwork)?`<img src="${esc(row.artwork||detail.title.artwork)}" loading="lazy" referrerpolicy="no-referrer" alt="">`:'';
     return `<div class="episode-row"><div class="episode-thumbnail">${image||'<span>▻</span>'}</div><div class="episode-copy"><strong>${row.episode ? `Episode ${row.episode}` : 'Episode'}${row.episode_name?` · ${esc(row.episode_name)}`:''}</strong>${row.description?`<span class="episode-summary">${esc(row.description)}</span>`:''}<small>${row.source_count} source${row.source_count === 1 ? '' : 's'}${Number(row.position_seconds)>10?` · ${Math.floor(row.position_seconds/60)}m watched`:''}</small></div><div class="episode-controls"><button class="button button-quiet button-small" data-episode-detail="${row.id}">Details</button><button class="button button-primary button-small" data-play="${row.id}">Play</button></div></div>`;
   }).join('')}</div></details>`).join('')}
-  ${!result.items.length && status.status !== 'running' ? emptyState('No episodes found yet','Refresh this series to ask its providers for available seasons and episodes.','▣') : ''}</section>`;
+  ${!result.items.length && status.status !== 'running' ? emptyState('No episodes found yet',state.session.user.role==='admin'?'Click Refresh episodes to retrieve them manually.':'Ask an administrator to refresh this series.','▣') : ''}</section>`;
   clearTimeout(state.seriesRefreshTimer);
-  if (status.status === 'running') state.seriesRefreshTimer = setTimeout(() => { if (state.page === 'library' && state.seriesDetail === seriesId && !state.detailId) renderSeriesDetail().catch(error=>notify(error.message,true)); },2500);
+  if (status.status === 'running' && state.session.user.role==='admin') state.seriesRefreshTimer = setTimeout(() => { if (state.page === 'library' && state.seriesDetail === seriesId && !state.detailId) renderSeriesDetail().catch(error=>notify(error.message,true)); },2500);
 }
 
 async function showLiveGuide(titleId) {
@@ -305,7 +303,7 @@ async function showLiveGuide(titleId) {
   try {
     const result = await api(`/api/titles/${titleId}/guide`);
     if (!panel.isConnected) return;
-    panel.innerHTML = `<div class="row-actions"><h2>${esc(channel?.title || 'Channel')} · Programme guide</h2><button class="button button-quiet button-small" data-guide-close>← Close guide</button></div><p class="field-note">${result.source ? `Guide from ${esc(result.source)} · ` : ''}XMLTV timestamps use your device timezone; other provider times are shown as supplied.</p>${result.programmes.length ? `<div class="episode-list">${result.programmes.map(row => `<div class="episode-row"><div><strong>${esc(row.title)}</strong><small>${esc(localGuideTime(row.start))}${row.end ? ` – ${esc(localGuideTime(row.end))}`:''}</small>${row.description ? `<p class="field-note">${esc(row.description)}</p>`:''}</div></div>`).join('')}</div>` : '<p class="field-note">No guide entries were returned for this channel. Live playback is unaffected.</p>'}${state.session.user.role==='admin'?`<div class="guide-map-actions"><button class="button button-quiet button-small" data-guide-map="${titleId}">Match an XMLTV channel</button></div><div id="guide-map-editor"></div>`:''}`;
+    panel.innerHTML = `<div class="row-actions"><h2>${esc(channel?.title || 'Channel')} · Programme guide</h2><button class="button button-quiet button-small" data-guide-close>← Close guide</button></div><p class="field-note">${result.source ? `Guide from ${esc(result.source)} · ` : ''}XMLTV timestamps use your device timezone; other provider times are shown as supplied.</p>${result.programmes.length ? `<div class="episode-list">${result.programmes.map(row => `<div class="episode-row"><div><strong>${esc(row.title)}</strong><small>${esc(localGuideTime(row.start))}${row.end ? ` – ${esc(localGuideTime(row.end))}`:''}</small>${row.description ? `<p class="field-note">${esc(row.description)}</p>`:''}</div></div>`).join('')}</div>` : '<p class="field-note">No guide entries were returned for this channel. Live playback is unaffected.</p>'}${state.session.user.role==='admin'?`<div class="guide-map-actions"><button class="button button-quiet button-small" data-provider-guide-refresh="${titleId}">Fetch provider guide</button><button class="button button-quiet button-small" data-guide-map="${titleId}">Match an XMLTV channel</button></div><div id="guide-map-editor"></div>`:''}`;
   } catch (error) { if (panel.isConnected) panel.innerHTML = `<h2>Programme guide unavailable</h2><p class="field-note">${esc(error.message)}</p>`; }
 }
 
@@ -435,9 +433,9 @@ function updaterPanel(status) {
   </section>`;
 }
 
-function scheduleUpdatePolling() {
+function scheduleUpdatePolling(busy=updateStartedHere) {
   clearTimeout(updatePollTimer);
-  if(state.page!=='settings' || state.settingsTab!=='system') return;
+  if(!busy || state.page!=='settings' || state.settingsTab!=='system') return;
   updatePollTimer=setTimeout(async()=>{
     if(state.page!=='settings' || state.settingsTab!=='system') return;
     try {
@@ -455,7 +453,7 @@ function scheduleUpdatePolling() {
       }
       if(status.busy || updateStartedHere) {
         if(updateStartedHere && Date.now()-updateWaitStarted>300000) {updateStartedHere=false;notify('Update status timed out. Reconnect to Hearthwave and check Settings > System.',true);return;}
-        scheduleUpdatePolling();
+        scheduleUpdatePolling(true);
       }
     } catch {
       if(updateStartedHere && Date.now()-updateWaitStarted<300000) scheduleUpdatePolling();
@@ -463,8 +461,48 @@ function scheduleUpdatePolling() {
   },2000);
 }
 
+function maintenancePanel(activity,controls=true){
+  const j=activity.metadata;
+  const active=[];
+  for(const [id,job] of Object.entries(activity.sources||{}))if(['running','cancelling'].includes(job.phase))active.push('Source '+id+' · '+job.kind+' · '+job.indexed+' indexed / '+job.seen+' received');
+  for(const [id,job] of Object.entries(activity.episodes||{}))if(job.status==='running')active.push('Series '+id+' · '+job.processed+'/'+job.total+' connections · '+job.episodes+' episodes');
+  for(const [id,job] of Object.entries(activity.guides||{}))if(job.phase==='running')active.push('XMLTV feed '+id+' · '+job.channels+' channels / '+job.programmes+' programmes');
+  for(const id of activity.titleMetadata||[])active.push('Title '+id+' · fetching metadata');
+  if(activity.providerGuide!==null)active.push('Channel '+activity.providerGuide+' · fetching provider guide');
+  if(activity.backup)active.push('Preparing database backup');
+  if(activity.systemOperation&&!activity.backup)active.push('System maintenance / update');
+  if(j&&['running','cancelling'].includes(j.phase))active.push('Manual '+j.kind+' metadata lookup');
+  return '<section id="maintenance-panel" class="surface"><h2>Administrator activity</h2><p class="field-note">'+(activity.busy?'Administrator operation in progress. Only one heavy NAS job can run at once.':'Idle — no catalogue, metadata or guide maintenance is running.')+'</p>'+
+    active.map(item=>'<p>'+esc(item)+'</p>').join('')+
+    (j?'<div class="list-row"><div><strong>'+esc(j.kind==='game'?'Game artwork':'Local film metadata')+' · '+esc(j.phase)+'</strong><small>'+j.processed+'/'+j.total+' checked · '+j.matched+' updated · '+j.missed+' no match · '+j.failed+' failed</small><small>'+esc(j.current||j.error||'')+'</small><progress max="'+Math.max(1,j.total)+'" value="'+j.processed+'"></progress></div>'+(['running','cancelling'].includes(j.phase)?'<button class="button button-danger button-small" data-maintenance-cancel '+(j.cancelRequested?'disabled':'')+'>Cancel</button>':'')+'</div>':'')+
+    (controls?'<p>Metadata retrieval never starts automatically. Each run checks up to 500 missing local films or game covers. Recent unsuccessful matches are skipped for 24 hours unless you explicitly retry them.</p><label class="checkbox-row"><input type="checkbox" id="maintenance-retry"> Include recent unmatched titles</label><div class="row-actions"><button class="button button-primary" data-maintenance-start="film" '+(activity.busy?'disabled':'')+'>Fetch film metadata</button><button class="button button-primary" data-maintenance-start="game" '+(activity.busy?'disabled':'')+'>Fetch game artwork</button></div>':'')+
+    '<button class="button button-quiet button-small" data-maintenance-refresh>Refresh activity</button></section>';
+}
+function scheduleActivityPolling(){
+  clearTimeout(activityTimer);
+  if(state.page!=='settings'||!['metadata','system'].includes(state.settingsTab)||!activityState?.busy)return;
+  activityTimer=setTimeout(()=>refreshActivity().catch(()=>{}),5000);
+}
+async function refreshActivity(){
+  if(state.page!=='settings'||!['metadata','system'].includes(state.settingsTab))return;
+  const tab=state.settingsTab,result=await api('/api/system/activity');
+  if(state.page!=='settings'||state.settingsTab!==tab)return;
+  const wasBusy=activityState?.busy;
+  activityState=result;
+  const p=$('#maintenance-panel');if(p)p.outerHTML=maintenancePanel(result,tab==='metadata');
+  if(tab==='metadata'&&wasBusy&&!result.busy){await renderSettings();return;}
+  if(tab==='metadata'){
+    for(const [id,job] of Object.entries(result.guides||{})){
+      const button=page.querySelector('[data-guide-import="'+Number(id)+'"]');
+      const row=button?.closest('.list-row');const label=row?.querySelector('small');
+      if(label&&job.phase==='running')label.textContent='importing · '+job.channels+' channels · '+job.programmes+' programmes received';
+    }
+  }
+  scheduleActivityPolling();
+}
+
 async function renderSettings() {
-  clearTimeout(state.sourcePollTimer);
+  clearTimeout(state.sourcePollTimer);clearTimeout(activityTimer);clearTimeout(updatePollTimer);
   if (state.settingsTab === 'sources') {const result=await api('/api/sources');state.sources=result.sources;state.sourceJobs=result.jobs||{};}
   let contents = '';
   if (state.settingsTab === 'sources') {
@@ -484,15 +522,16 @@ async function renderSettings() {
       <section class="surface" id="provider-folders-panel" hidden></section>
       <section class="surface" id="m3u-import-panel" hidden><h2>Import M3U playlist</h2><p class="field-note">Paste an authorised playlist. Stream entries are indexed progressively; the server does not proxy or transcode them.</p><form class="field-stack" id="m3u-form"><input type="hidden" name="sourceId"><label>M3U text<textarea name="playlist" spellcheck="false" required placeholder="#EXTM3U\n#EXTINF:-1 tvg-id=..."></textarea></label><button class="button button-primary" type="submit">Import playlist</button></form></section>`;
   } else if (state.settingsTab === 'metadata') {
-    const feeds=(await api('/api/guide/feeds')).feeds;
-    contents=`<div class="info-banner">XMLTV feeds are imported when an administrator clicks Import. No NAS scheduler is required. Existing guide data stays available until a new import succeeds.</div>
+    const [guideResult,activity]=await Promise.all([api('/api/guide/feeds'),api('/api/system/activity')]);
+    const feeds=guideResult.feeds;activityState=activity;
+    contents=`${maintenancePanel(activity)}<div class="info-banner">XMLTV feeds are imported when an administrator clicks Import. No NAS scheduler is required. Existing guide data stays available until a new import succeeds.</div>
       <div class="two-col"><section class="surface"><h2>Add XMLTV guide</h2><p class="field-note">Choose a prepared guide or enter any public XMLTV/XMLTV.gz URL. UK and US public files update roughly daily, so importing once a day is sufficient.</p><div class="row-actions"><button class="button button-quiet button-small" data-guide-preset="GB">Use UK example</button><button class="button button-quiet button-small" data-guide-preset="US">Use US example</button></div><form id="guide-form" class="field-stack">
         <label>Guide name<input name="name" required maxlength="100" placeholder="UK free guide"></label>
         <label>Region<select name="country"><option value="GB">United Kingdom</option><option value="US">United States</option><option value="">Other / mixed</option></select></label>
         <label>XMLTV URL<input name="location" type="url" required maxlength="2048" placeholder="https://example.org/guide.xml.gz"></label>
         <button class="button button-primary" type="submit">Add guide feed</button></form></section>
       <section class="surface"><h2>Configured guides</h2><p class="field-note">The import reads a compressed XMLTV stream in bounded chunks. It never transcodes videos.</p>
-        ${feeds.length?feeds.map(feed=>`<div class="list-row"><div><strong>${esc(feed.name)}</strong> <span class="tag">${esc(feed.country||'Mixed')}</span><small>${esc(feed.status)} · ${feed.channel_count} channels · ${feed.programme_count} programmes${feed.last_import ? ` · Last import ${esc(feed.last_import)}`:''}${feed.last_error ? ` · ${esc(feed.last_error)}`:''}</small></div><div class="row-actions"><button class="button button-quiet button-small" data-guide-import="${feed.id}" ${feed.status==='importing'?'disabled':''}>Import</button><button class="button button-danger button-small" data-guide-remove="${feed.id}">Remove</button></div></div>`).join(''):'<p class="field-note">No XMLTV guides configured.</p>'}
+        <div id="guide-status-list">${feeds.length?feeds.map(feed=>`<div class="list-row"><div><strong>${esc(feed.name)}</strong> <span class="tag">${esc(feed.country||'Mixed')}</span><small>${esc(feed.status)} · ${feed.job?.phase==='running'?`${feed.job.channels} channels · ${feed.job.programmes} programmes received`: `${feed.channel_count} channels · ${feed.programme_count} programmes`}${feed.last_import ? ` · Last import ${esc(feed.last_import)}`:''}${feed.last_error ? ` · ${esc(feed.last_error)}`:''}</small></div><div class="row-actions"><button class="button button-quiet button-small" data-guide-import="${feed.id}" ${feed.status==='importing'?'disabled':''}>Import</button><button class="button button-danger button-small" data-guide-remove="${feed.id}">Remove</button></div></div>`).join(''):'<p class="field-note">No XMLTV guides configured.</p>'}</div>
         <button class="button button-quiet button-small" id="refresh-guides">Refresh status</button></section></div>`;
   } else if (state.settingsTab === 'users') {
     const users = (await api('/api/users')).users;
@@ -503,7 +542,8 @@ async function renderSettings() {
       <div class="info-banner">This is a preference, not a conversion setting. If the preferred quality is unavailable, all existing sources remain available as fallbacks. Your selection is saved to your account and works across devices. No NAS transcoding is performed.</div></section>
       <section class="surface"><h2>TV controls</h2><p class="field-note">Use arrows to move between controls, OK/Enter to select and Back/Escape to return. The player also lets you choose a connection directly. TV manufacturers differ in which remote buttons they expose to the browser.</p></section>`;
   } else if (state.settingsTab === 'system') {
-    const [status,updater] = await Promise.all([api('/api/system/status'),api('/api/system/update/status')]);
+    const [status,updater,activity] = await Promise.all([api('/api/system/status'),api('/api/system/update/status'),api('/api/system/activity')]);
+    activityState=activity;
     const days = Math.floor(status.uptimeSeconds / 86400);
     const hours = Math.floor(status.uptimeSeconds % 86400 / 3600);
     contents = `<section class="surface"><h2>Server overview</h2><p class="field-note">Local diagnostics from this Hearthwave process. Memory measures the server, not your browser.</p>
@@ -514,13 +554,14 @@ async function renderSettings() {
       <button id="download-backup" class="button button-primary" ${status.backupBusy ? 'disabled' : ''}>${status.backupBusy ? 'Backup in progress…' : 'Download backup (.tar.gz)'}</button>
       <p class="field-note">A temporary, consistent SQLite snapshot is created on the NAS, streamed to your browser and removed afterwards. No cloud upload or scheduler is involved. Restoring is an offline, administrator-managed operation.</p></section>
       ${updaterPanel(updater)}
-`;
+      ${maintenancePanel(activity,false)}`;
   } else {
     contents = await workers.contents(true);
   }
   page.innerHTML = `<div class="settings-layout"><div class="settings-menu">${settingsSections.map(section => `<button class="${state.settingsTab === section[0] ? 'active':''}" data-settings="${section[0]}">${section[1]}</button>`).join('')}</div><div class="settings-content">${contents}</div></div>`;
   if (state.settingsTab === 'sources') {syncSourceForm();scheduleSourcePoll();}
-  if (state.settingsTab === 'system') scheduleUpdatePolling();
+  if (state.settingsTab === 'system') scheduleUpdatePolling(updateStartedHere||Boolean($('#updater-panel')?.querySelector('#check-update')?.disabled));
+  if(['metadata','system'].includes(state.settingsTab))scheduleActivityPolling();
 }
 
 function syncSourceForm() {
@@ -753,17 +794,6 @@ function failSource(generation,message,code='unknown') {
   disposeMedia();
   if(presentation(state.activeTitle?.kind)!=='photo') currentMedia().pause();
   $('#player-message').textContent=message;
-  const item=state.variants[state.variantIndex];
-  if (item?.resolve && state.resolvedUrl && code!=='provider') {
-    $('#player-message').textContent='Playback failed. Checking the provider response…';
-    void api(`/api/variants/${item.id}/check-playback`,{method:'POST'}).then(result=>{
-      if(generation!==state.playbackGeneration || $('#player-overlay').hidden) return;
-      $('#player-message').textContent=result.message || message;
-      if(result.message) setPlaybackStatus(generation,'Failed','provider');
-    }).catch(()=>{
-      if(generation===state.playbackGeneration && !$('#player-overlay').hidden) $('#player-message').textContent=message;
-    });
-  }
 }
 
 /** An authenticated <img> only decodes the one selected photo in the viewer. */
@@ -944,7 +974,7 @@ $('#auth-form').addEventListener('submit', async (event) => {
 $('#sign-out').addEventListener('click', async () => {
   await rooms.detach(true);
   try { await api('/api/logout', { method:'POST' }); } catch { /* Expired sessions may already be gone. */ }
-  state.session = null;
+  state.session = null;clearTimeout(state.sourcePollTimer);clearTimeout(state.seriesRefreshTimer);clearTimeout(activityTimer);clearTimeout(updatePollTimer);closePlayer();
   showAuth(false);
 });
 
@@ -1070,6 +1100,9 @@ page.addEventListener('submit', async event => {
 page.addEventListener('click', async event => {
   const target = event.target.closest('button');
   if (!target) return;
+  if(target.dataset.maintenanceStart){try{target.disabled=true;await api('/api/system/metadata',{method:'POST',body:{kind:target.dataset.maintenanceStart,retry:$('#maintenance-retry')?.checked===true}});await refreshActivity();}catch(error){notify(error.message,true);target.disabled=false;}return;}
+  if(target.hasAttribute('data-maintenance-cancel')){try{await api('/api/system/metadata/cancel',{method:'POST'});await refreshActivity();}catch(error){notify(error.message,true);}return;}
+  if(target.hasAttribute('data-maintenance-refresh'))return refreshActivity();
   if(target.hasAttribute('data-open-requests')){state.requestView=true;state.detailId=null;state.seriesDetail=null;state.collectionOverview=false;state.collectionId=0;return renderPage();}
   if(target.dataset.requestAction)return requests.click(event,renderPage);
   if(target.dataset.roomAction) return rooms.click(event,()=>space.render('community'));
@@ -1200,6 +1233,7 @@ page.addEventListener('click', async event => {
     } catch(error) {target.disabled=false;target.textContent='Fetch metadata';notify(error.message,true);}
     return;
   }
+  if(target.dataset.providerGuideRefresh){target.disabled=true;target.textContent='Fetching provider guide…';try{await api(`/api/titles/${target.dataset.providerGuideRefresh}/guide`,{method:'POST'});await showLiveGuide(target.dataset.providerGuideRefresh);}catch(error){notify(error.message,true);target.disabled=false;target.textContent='Fetch provider guide';}return;}
   if (target.dataset.guideMap) return showGuideMappingEditor(target.dataset.guideMap);
   if (target.dataset.guideUnmap) {
     const titleId=target.dataset.guideUnmap;
@@ -1376,7 +1410,7 @@ for(const media of [$('#player'),$('#music-player')]) {
       state.lastMediaTime=media.currentTime;
       if(state.playbackStarted) {clearPlaybackRecovery();if(currentPlaybackAttempt()?.status==='Buffering') setPlaybackStatus(state.playbackGeneration,'Playing');}
     }
-    if(!state.activeTitle || state.activeTitle.kind==='channel' || Date.now()-state.lastProgressSave<10000) return;
+    if(!state.activeTitle || state.activeTitle.kind==='channel' || Date.now()-state.lastProgressSave<30000) return;
     state.lastProgressSave=Date.now();
     api(`/api/titles/${state.activeTitle.id}/progress`,{method:'POST',body:{seconds:media.currentTime}}).catch(()=>{});
   });

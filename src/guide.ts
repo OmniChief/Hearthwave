@@ -94,7 +94,7 @@ export class XmltvParser {
   }
 }
 
-export async function importXmltv(feed:GuideFeed,generation:string):Promise<{channels:number;programmes:number}> {
+export async function importXmltv(feed:GuideFeed,generation:string,onProgress:(channels:number,programmes:number)=>void=()=>{}):Promise<{channels:number;programmes:number}> {
   let channels:GuideChannelInput[]=[];
   let programmes:GuideProgrammeInput[]=[];
   let channelCount=0;
@@ -102,6 +102,7 @@ export async function importXmltv(feed:GuideFeed,generation:string):Promise<{cha
   const flush=()=> {
     if (channels.length) { writeGuideChannels(feed.id,generation,channels); channels=[]; }
     if (programmes.length) { writeGuideProgrammes(feed.id,generation,programmes); programmes=[]; }
+    onProgress(channelCount,programmeCount);
   };
   const parser=new XmltvParser(record=> {
     if (record.type==='channel') {

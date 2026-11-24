@@ -13,7 +13,7 @@ export function workerPages({page,state,api,esc,notify}){
     const supported=kind=>workers.items.some(w=>w.capabilities.includes(kind));
     if(!admin){
       return section('Creative studio','<p>Generate image and video assets on your paired PC using its configured ComfyUI workflows. The NAS only manages jobs and receives small outputs.</p>'+
-        ['image','video'].map(kind=>section(kind==='image'?'Image generation':'Video generation',supported(kind)?form(kind,select(workers.items,kind)+'<label>Prompt<textarea name="prompt" maxlength="4000" required></textarea></label>','Queue '+kind):'<p>No '+kind+'-capable worker is connected. Ask an administrator to configure a '+kind+' workflow.</p>')).join(''))+
+        ['image','video'].map(kind=>section(kind==='image'?'Image generation':'Video generation',state.session.user.role!=='admin'?'<p>Only an administrator can start production jobs.</p>':supported(kind)?form(kind,select(workers.items,kind)+'<label>Prompt<textarea name="prompt" maxlength="4000" required></textarea></label>','Queue '+kind):'<p>No '+kind+'-capable worker is connected. Ask an administrator to configure a '+kind+' workflow.</p>')).join(''))+
         section('Your creative and download history',refresh+rows(jobs.items));
     }
     const workersList=workers.items.map(w=>'<div class="list-row"><div><strong>'+esc(w.name)+'</strong><small>'+esc((w.online?'Online':'Offline')+' · '+(w.capabilities.join(', ')||'No capabilities reported'))+'</small></div><button class="button button-quiet button-small" data-worker-action="revoke" data-id="'+w.id+'">Revoke</button></div>').join('');
