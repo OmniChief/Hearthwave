@@ -691,6 +691,8 @@ function renderPlaybackDiagnostics() {
   $('#stalker-header-check').disabled=!current || current.headerBusy || !['Failed','Paused'].includes(current.status);
   $('#stalker-get-check').hidden=!state.stalkerDebug;
   $('#stalker-get-check').disabled=$('#stalker-header-check').disabled;
+  $('#stalker-compare-check').hidden=!state.stalkerDebug;
+  $('#stalker-compare-check').disabled=$('#stalker-header-check').disabled;
   if(state.stalkerDebug) debugReport.value=playbackReport(attempts,browserPlaybackCapabilities($('#player')))+'\n'+clientDebugSnapshot();
   const caps=browserPlaybackCapabilities($('#player'));
   $('#player-browser-support').innerHTML=caps.map(([label,value])=>`<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join('');
@@ -1445,6 +1447,7 @@ async function checkStalkerHeaders(method){
 }
 $('#stalker-header-check').addEventListener('click',()=>checkStalkerHeaders('HEAD'));
 $('#stalker-get-check').addEventListener('click',()=>checkStalkerHeaders('GET'));
+$('#stalker-compare-check').addEventListener('click',()=>checkStalkerHeaders('COMPARE'));
 $('#player-diagnostics-copy').addEventListener('click',()=>{
   const report=playbackReport(state.playbackAttempts,browserPlaybackCapabilities($('#player')))+(state.stalkerDebug?'\n'+clientDebugSnapshot():'');
   const copy=navigator.clipboard?.writeText?.(report);

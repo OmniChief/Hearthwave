@@ -1,4 +1,4 @@
-import { providerJson, ProviderError, validateProviderUrl } from './network.ts';
+import { providerJson, ProviderError, validateProviderUrl, inspectMediaHeaders } from './network.ts';
 import type { SourceRow } from '../db.ts';
 import type { GuideProgramme, ImportItem, ProviderCategory } from '../model.ts';
 
@@ -241,6 +241,10 @@ class StalkerClient {
     await this.session();
     return this.request(type,action,params,this.token);
   }
+  /** Used only in the admin header comparison. Never send credentials to a different origin. */
+  diagnosticDeviceHeaders():{origin:string;headers:Record<string,string>} {
+    return {origin:new URL(this.endpoint).origin,headers:{'User-Agent':magAgent,'X-User-Agent':'Model: MAG250; Link: Ethernet',Cookie:'mac='+encodeURIComponent(this.source.config.mac||'')+'; stb_lang=en; timezone=GMT',...(this.token?{Authorization:'Bearer '+this.token}:{})}};
+  }
   async resolve(kind: Kind, cmd: string, series = ''): Promise<string> {
     const params = { cmd, series, forced_storage:kind === 'live' ? 'false' : '', disable_ad:'false', download:'false', force_ch_link_check:'false' };
     const type = kind === 'live' ? 'itv' : 'vod';
@@ -253,7 +257,7 @@ class StalkerClient {
         const address = playbackAddress(result.cmd) || playbackAddress(result.url);
         if (address) {
           this.trace?.push('Selected: create_link; '+addressHint(address));
-          if(this.trace){const media=new URL(address),portal=new URL(this.endpoint);this.trace.push('Media destination: '+(media.hostname===portal.hostname?'same portal hostname':'different hostname')+'; port '+(media.port||(media.protocol==='https:'?'443':'80'))+'; '+(media.origin===portal.origin?'same portal origin':'different origin'));let original:string|null=null;try{original=playbackAddress(cmd);}catch{}this.trace.push('Stored and generated addresses: '+(address===original?'identical':'different'));}
+          if(this.trace){const media=new URL(address),portal=new URL(this.endpoint);this.trace.push('Media destination: '+(media.hostname===portal.hostname?'same portal hostname':'different hostname')+'; port '+(media.port||(media.protocol==='https:'?'443':'80'))+'; '+(media.origin===portal.origin?'same portal origin':'different origin'));let original:string|null=null;try{original=playbackAddress(cmd);}catch{}this.trace.push('Stored and generated addresses: '+(address===original?'identical':'different'));const known=['type','format','output','stream','channel','id','play_token','token','mac','username','password'];this.trace.push('Generated query fields (names only): '+(known.filter(k=>media.searchParams.has(k)).join(', ')||'none recognised')+'; other fields '+Array.from(media.searchParams.keys()).filter(k=>!known.includes(k)).length+'; HTML-escaped separators '+(address.includes('&amp;')?'present':'absent'));}
           return address;
         }
       } catch (error) {
@@ -416,13 +420,18 @@ export async function* importProvider(source: SourceRow, categories: ProviderCat
   } else throw new ProviderError('This source cannot be scanned with a provider adapter.',400);
 }
 
-export async function resolveProviderStream(source: SourceRow, encoded: string, trace?: string[]): Promise<string> {
+function decodeStalkerStream(source:SourceRow,encoded:string):{kind:Kind;cmd:string;series?:string} {
   if (source.type !== 'stalker' || !encoded.startsWith('stalker:')) throw new ProviderError('This version is not a Stalker stream.',400);
   let data: {kind:Kind;cmd:string;series?:string};
   try { data = JSON.parse(encoded.slice('stalker:'.length)); }
   catch { throw new ProviderError('Stored provider stream metadata is invalid.'); }
   if (!['live','vod','series'].includes(data.kind) || !data.cmd || (data.series != null && !/^\d{1,4}$/.test(data.series))) throw new ProviderError('Provider stream command is missing or invalid.');
-  return new StalkerClient(source,trace).resolve(data.kind,data.cmd,data.series || '');
+  return data;
+}
+
+export async function resolveProviderStream(source:SourceRow,encoded:string,trace?:string[]):Promise<string>{
+  const data=decodeStalkerStream(source,encoded);
+  return new StalkerClient(source,trace).resolve(data.kind,data.cmd,data.series||'');
 }
 
 function episodeNumber(value: unknown): number {
@@ -590,4 +599,27 @@ export async function debugStalkerStream(source:SourceRow,encoded:string) {
   const trace=['Delivery: client direct HTTP(S); no NAS media proxy or probe.'];
   try {const url=await resolveProviderStream(source,encoded,trace);return {url,trace};}
   catch(error) {trace.push('Resolution failed: '+(error instanceof ProviderError?'provider error '+error.status:'network/transport error'));return {url:null,trace};}
+}
+
+
+/** Compare direct media request requirements using separate fresh links, never relay media. */
+export async function compareStalkerMediaRequests(source:SourceRow,encoded:string,browserOrigin:string,userAgent:string):Promise<string[]> {
+  const output:string[]=['Admin media request comparison; GET response headers only. Separate fresh link per test.'];
+  for(const mode of ['browser-origin','native-no-origin','registered-device'] as const){
+    const trace:string[]=[];
+    try {
+      const data=decodeStalkerStream(source,encoded);
+      const client=new StalkerClient(source,trace);
+      const address=await client.resolve(data.kind,data.cmd,data.series||'');
+      output.push('--- '+mode+' ---');
+      const options={sendOrigin:mode==='browser-origin',userAgent,...(mode==='registered-device'?{device:client.diagnosticDeviceHeaders()}:{})};
+      const result=await inspectMediaHeaders(address,Boolean(source.config.allowLan),browserOrigin,'GET',options);
+      output.push(...result);
+      if(result.some(line=>/^HTTP 429\b/.test(line))){output.push('Rate limit reached; remaining checks skipped.');break;}
+    } catch(error) {
+      output.push('--- '+mode+' ---',...trace,'Fresh link failed: '+(error instanceof ProviderError?'provider error '+error.status:'network/transport error'));
+      break;
+    }
+  }
+  return output;
 }

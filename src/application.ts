@@ -15,7 +15,7 @@ import { qualityPreferences, type QualityPreference } from './quality.ts';
 import { BackupError, backupBusy, streamBackup } from './backup.ts';
 import { UpdateError, checkForUpdate, startUpdate, updateStatus } from './updater.ts';
 import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, completeImport, countTitles, createCollection, createSmartCollection, createUser, dashboardStats, dataDir, db, deleteCollection, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, libraryGenreCounts, listCategories, listCollections, listGuideFeeds, listSeriesEpisodes, liveSourceCounts, listSources, listTitles, listVariants, loadSession, ownedCollection, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, renameCollection, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setCollectionMembership, setFavourite, setWatchlisted, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, updateSmartCollectionRules, type GuideFeed, type SmartRules, type SourceRow } from './db.ts';
-import { discoverProvider, discoverSeriesEpisodes, fetchTitleMetadata, importProvider, providerGuide, resolveProviderStream, debugStalkerStream, type ProviderScanProgress } from './adapters/providers.ts';
+import { discoverProvider, discoverSeriesEpisodes, fetchTitleMetadata, importProvider, providerGuide, resolveProviderStream, debugStalkerStream, compareStalkerMediaRequests, type ProviderScanProgress } from './adapters/providers.ts';
 import { importXmltv } from './guide.ts';
 import { localSubtitles, subtitleVtt } from './subtitles.ts';
 import { checkMediaResponse, inspectMediaHeaders, fetchM3u, ProviderError, validateProviderUrl } from './adapters/network.ts';
@@ -965,6 +965,10 @@ async function dispatchApi(req:IncomingMessage,res:ServerResponse,url:URL,body:B
       const input=await body(req);
       let origin='';
       try {const u=new URL(String(input.origin||''));if(['http:','https:'].includes(u.protocol)&&u.origin===input.origin&&u.origin.length<=512)origin=u.origin;}catch{}
+      if(input.method==='COMPARE'){
+        const agent=String(req.headers['user-agent']||'').slice(0,512).replace(/[^\x20-\x7e]/g,'');
+        return send(res,200,{trace:await compareStalkerMediaRequests(source,variant.url,origin,agent)});
+      }
       const result=await debugStalkerStream(source,variant.url);
       if(!result.url)return send(res,200,{trace:['Header check: fresh link resolution failed.',...result.trace]});
       const method=input.method==='GET'?'GET':'HEAD';

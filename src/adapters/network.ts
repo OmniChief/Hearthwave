@@ -249,7 +249,7 @@ function diagnosticNetworkError(error:unknown):string {
 }
 
 /** Explicit admin diagnostic: never read, buffer, or relay a media body. */
-export async function inspectMediaHeaders(address:string, allowLan:boolean, browserOrigin:string, method:'HEAD'|'GET'='HEAD'):Promise<string[]> {
+export async function inspectMediaHeaders(address:string, allowLan:boolean, browserOrigin:string, method:'HEAD'|'GET'='HEAD',options:{sendOrigin?:boolean; userAgent?:string; device?:{origin:string;headers:Record<string,string>}}={}):Promise<string[]> {
   const trace:string[]=['NAS '+method+' header check: fresh link; close at response headers; no media body consumed or forwarded.'];
   try {
     return await withSlot(async()=>{
@@ -265,9 +265,11 @@ export async function inspectMediaHeaders(address:string, allowLan:boolean, brow
           trace.push('DNS resolved: IPv'+pinned.family);
           phase='HTTP connection/response';
           const transport=url.protocol==='https:'?https:http;
+          const deviceHeaders=options.device?.origin===url.origin?options.device.headers:{};
+          trace.push('Request: Origin '+(browserOrigin&&options.sendOrigin!==false?'sent':'omitted')+'; registered device headers '+(Object.keys(deviceHeaders).length?'sent':'not sent'));
           const response=await new Promise<http.IncomingMessage>((resolve,reject)=>{
             const req=transport.request(url,{method,agent:false,autoSelectFamily:false,signal,maxHeaderSize:16*1024,
-              headers:{Accept:'*/*',...(browserOrigin?{Origin:browserOrigin}:{})},
+              headers:{Accept:'*/*',...(options.userAgent?{'User-Agent':options.userAgent}:{}),...(browserOrigin&&options.sendOrigin!==false?{Origin:browserOrigin}:{}),...deviceHeaders},
               lookup:(_host,_options,done)=>done(null,pinned.address,pinned.family)},resolve);
             req.once('error',reject);req.end();
           });
