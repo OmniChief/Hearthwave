@@ -588,7 +588,8 @@ function browseFilter(kind:BrowseKind,query:string,view:CatalogueView,country:st
   if(libraryGenre){terms.push('EXISTS(SELECT 1 FROM library_genres lg WHERE lg.title_id=t.id AND lg.genre=?)');params.push(libraryGenre);}
   const rootOnly=kind!=='episode'&&!collection&&!(kind==='library'&&view==='continue');
   const variantFilter=rootOnly?' AND v.series_parent_id IS NULL':'';
-  terms.push('(EXISTS(SELECT 1 FROM variants v WHERE v.title_id=t.id'+variantFilter+')'+(['channel','all'].includes(kind)?' OR (t.kind=\'channel\' AND '+activeEpg+')':'')+')');
+  // EPG defines station identity, not availability: only indexed provider streams make a station visible.
+  terms.push('EXISTS(SELECT 1 FROM variants v WHERE v.title_id=t.id'+variantFilter+')');
   const filter=collectionClause(collection,userId);
   return {where:terms.join(' AND ')+filter.sql,params:[...params,...filter.params],variantFilter};
 }
@@ -692,7 +693,7 @@ export function channelGenreCounts(country='',query='',userId=0,view:CatalogueVi
     WHERE t.kind='channel' AND t.title LIKE ? ESCAPE '\\'
       AND (?<>'favourites' OR EXISTS(SELECT 1 FROM favourites f WHERE f.user_id=? AND f.title_id=t.id))
       AND (?='' OR (?='other' AND t.channel_country NOT IN ('GB','US')) OR t.channel_country=?)
-      AND (EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL) OR ${activeEpg})
+      AND EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL)
     GROUP BY t.live_genre`).all(search,view,userId,country,country,country) as Array<{name:string;count:number}>;
 }
 
@@ -713,7 +714,7 @@ export function getTitleDetail(id:number,userId:number): unknown | undefined {
     FROM titles t LEFT JOIN favourites f ON f.title_id=t.id AND f.user_id=?
     LEFT JOIN progress p ON p.title_id=t.id AND p.user_id=?
     LEFT JOIN watchlist w ON w.title_id=t.id AND w.user_id=?
-    WHERE t.id=? AND (EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id) OR (t.kind='channel' AND ${activeEpg}))`)
+    WHERE t.id=? AND EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id)`)
     .get(userId,userId,userId,id);
 }
 
@@ -923,12 +924,12 @@ export function storedGuide(titleId:number,limit=12,windowStart?:number,windowEn
 
 export function guideGrid(country:string,limit=40,query='',offset=0,windowStart?:number,windowEnd?:number):{items:unknown[];total:number} {
   const search='%'+query.replace(/[\\%_]/g,'\\$&')+'%';
-  const filter="t.kind='channel' AND (?='' OR t.channel_country=?) AND t.title LIKE ? ESCAPE '\\' AND (EXISTS(SELECT 1 FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL) OR "+activeEpg+")";
+  const filter="t.kind='channel' AND (?='' OR t.channel_country=?) AND t.title LIKE ? ESCAPE '\\' AND EXISTS(SELECT 1 FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL)";
   const total=Number(db.prepare('SELECT COUNT(*) AS total FROM titles t WHERE '+filter).get(country,country,search)?.total||0);
   const rows=db.prepare("SELECT t.id,t.kind,t.title,t.artwork,t.channel_country,(SELECT COUNT(*) FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL) AS source_count FROM titles t WHERE "+filter+" ORDER BY CASE t.channel_country WHEN 'GB' THEN 0 WHEN 'US' THEN 1 ELSE 2 END, CASE WHEN "+activeEpg+" THEN 0 ELSE 1 END,t.title COLLATE NOCASE,t.id LIMIT ? OFFSET ?").all(country,country,search,limit,offset) as Array<{id:number;title:string;artwork:string;channel_country:string;source_count:number}>;
   return {items:rows.map(row=>{const guide=storedGuide(row.id,48,windowStart,windowEnd);return {...row,artwork:row.artwork||guide.icon,guide};}),total};
 }
 export function dashboardStats():{items:number;channels:number;sources:number}{
-  const counts=db.prepare("SELECT SUM(CASE WHEN kind NOT IN ('channel','game') THEN 1 ELSE 0 END) AS items,SUM(CASE WHEN kind='channel' THEN 1 ELSE 0 END) AS channels FROM titles t WHERE kind<>'game' AND (EXISTS(SELECT 1 FROM variants v WHERE v.title_id=t.id) OR (t.kind='channel' AND "+activeEpg+"))").get();
+  const counts=db.prepare("SELECT SUM(CASE WHEN kind NOT IN ('channel','game') THEN 1 ELSE 0 END) AS items,SUM(CASE WHEN kind='channel' THEN 1 ELSE 0 END) AS channels FROM titles t WHERE kind<>'game' AND EXISTS(SELECT 1 FROM variants v WHERE v.title_id=t.id)").get();
   return {items:Number(counts?.items||0),channels:Number(counts?.channels||0),sources:Number(db.prepare('SELECT COUNT(*) AS n FROM sources').get()?.n||0)};
 }

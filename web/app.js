@@ -348,7 +348,7 @@ async function renderLive() {
   const selected=result.items;
   state.items=result.items;
   state.channelQueue=selected.filter(item=>item.source_count>0).map(item=>item.id);
-  page.innerHTML = `<div class="preview-banner">Imported EPG stations define the lineup. IPTV and Stalker connections attach to matching stations. Stations without streams show as EPG only; unmatched provider channels remain available.</div>
+  page.innerHTML = `<div class="preview-banner">Imported EPG stations define the lineup. IPTV and Stalker connections attach to matching stations. Only stations with an available indexed stream are listed; unmatched provider channels remain available.</div>
     <div class="toolbar"><button class="pill ${state.liveView==='all'?'active':''}" data-live-view="all">All channels</button><button class="pill ${state.liveView==='favourites'?'active':''}" data-live-view="favourites">★ Favourites</button></div>
     <div class="toolbar">${countries.map(([key,label])=>`<button class="pill ${state.liveCountry===key?'active':''}" data-country="${key}">${label}</button>`).join('')}</div>
     <div class="toolbar"><button class="pill ${state.liveGroup==='all'?'active':''}" data-group="all">All genres</button>${genres.map(genre=>`<button class="pill ${state.liveGroup===genre?'active':''}" data-group="${genre}">${genre} (${genreCounts[genre]||0})</button>`).join('')}</div>
@@ -388,7 +388,7 @@ async function renderGuideGrid() {
     const playing=from<=Date.now() && until>Date.now();
     return `<button type="button" class="guide-programme ${playing?'is-current':''}" style="left:${left.toFixed(3)}%;width:${(right-left).toFixed(3)}%" data-guide-programme="${row.id}" data-programme-index="${index}" title="${esc(programme.title)} · ${esc(clock(from))}–${esc(clock(until))}" aria-label="${esc(programme.title)} on ${esc(row.title)}, ${esc(clock(from))} to ${esc(clock(until))}"><strong>${esc(programme.title)}</strong><small>${esc(clock(from))}–${esc(clock(until))}</small></button>`;
   };
-  page.innerHTML=`<div class="preview-banner">Unified programme listings from your imported XMLTV feeds. Browse times in your device's timezone; channels without matched guide data can still be played.</div>
+  page.innerHTML=`<div class="preview-banner">Programme listings for your available channels from imported XMLTV feeds. Browse times in your device's timezone; channels without matched guide data can still be played.</div>
     ${heading('Programme guide',`${esc(windowLabel)} · ${esc(clock(beginning))}–${esc(clock(ending))}`,'<button class="button button-quiet button-small" data-guide-view="close">← Live channels</button>')}
     <div class="toolbar">${[['','All'],['GB','United Kingdom'],['US','United States']].map(([key,label])=>`<button class="pill ${state.guideCountry===key?'active':''}" data-guide-country="${key}">${label}</button>`).join('')}</div>
     <div class="guide-navigation"><div class="guide-date-nav"><button class="button button-quiet button-small" data-guide-day="-1" ${state.guideDay===0?'disabled':''}>← Previous day</button><strong>${esc(windowLabel)}</strong><button class="button button-quiet button-small" data-guide-day="1" ${state.guideDay===6?'disabled':''}>Next day →</button></div><div class="guide-slot-nav">${[0,6,12,18].map(hour=>`<button class="pill ${state.guideSlot===hour?'active':''}" data-guide-slot="${hour}">${String(hour).padStart(2,'0')}:00–${String(hour+6).padStart(2,'0')}:00</button>`).join('')}<button class="button button-primary button-small" data-guide-now>Now</button></div></div>
