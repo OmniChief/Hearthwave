@@ -1,4 +1,4 @@
-export function spacePages({page,state,api,esc,notify}) {
+export function spacePages({page,state,api,esc,notify,rooms}) {
   const button=(label,action,id,extra='')=>'<button type="button" class="button button-quiet button-small" data-space-action="'+action+'" data-id="'+Number(id)+'" '+extra+'>'+esc(label)+'</button>';
   const form=(action,contents,label)=>'<form class="field-stack" data-space-form="'+action+'">'+contents+'<button class="button button-primary" type="submit">'+label+'</button></form>';
   const surface=(title,content)=>'<section class="surface"><h2>'+title+'</h2>'+content+'</section>';
@@ -21,10 +21,12 @@ export function spacePages({page,state,api,esc,notify}) {
     } else if(section==='community'){
       const [friends,reviews]=await Promise.all([api('/api/community/friends'),api('/api/community/reviews')]);
       if(state.page!==section||state.session?.user.id!==uid)return;
+      const roomContents=await rooms.contents(friends.items);
+      if(state.page!==section||state.session?.user.id!==uid)return;
       const friendships=friends.items.map(f=>row(f.username,f.accepted?'Friend':f.outgoing?'Request sent':'Incoming request',(!f.accepted&&!f.outgoing?button('Accept','friend-accept',f.id):'')+button(f.accepted?'Remove':f.outgoing?'Cancel':'Decline','friend-delete',f.id))).join('');
       const reviewList=reviews.items.map(r=>row(r.title,r.username+' · '+r.rating+'/5 · '+r.review,r.own?button('Delete','review-delete',r.title_id):'')).join('');
       const options=searchResults.map(t=>'<option value="'+t.id+'">'+esc(t.title+(t.year?' ('+t.year+')':'')+' · '+t.kind)+'</option>').join('');
-      page.innerHTML='<div class="feature-grid">'+surface('Friends',form('friend','<label>Username<input name="username" required maxlength="50"></label>','Send friend request')+(friendships||'<p>No friends yet.</p>'))+surface('Media reviews','<p>Reviews are visible only to you and your accepted friends.</p>'+form('search','<label>Find a title<input name="query" required maxlength="80" value="'+esc(query)+'"></label>','Search')+(options?form('review','<label>Title<select name="titleId">'+options+'</select></label><label>Rating<select name="rating">'+[5,4,3,2,1].map(n=>'<option value="'+n+'">'+n+'/5</option>').join('')+'</select></label><label>Review<textarea name="review" maxlength="2000"></textarea></label>','Save review'):(query?'<p>No matching titles.</p>':''))+(reviewList||'<p>No reviews yet.</p>'))+'</div>';
+      page.innerHTML='<div class="feature-grid">'+surface('Friends',form('friend','<label>Username<input name="username" required maxlength="50"></label>','Send friend request')+(friendships||'<p>No friends yet.</p>'))+surface('Media reviews','<p>Reviews are visible only to you and your accepted friends.</p>'+form('search','<label>Find a title<input name="query" required maxlength="80" value="'+esc(query)+'"></label>','Search')+(options?form('review','<label>Title<select name="titleId">'+options+'</select></label><label>Rating<select name="rating">'+[5,4,3,2,1].map(n=>'<option value="'+n+'">'+n+'/5</option>').join('')+'</select></label><label>Review<textarea name="review" maxlength="2000"></textarea></label>','Save review'):(query?'<p>No matching titles.</p>':''))+(reviewList||'<p>No reviews yet.</p>'))+roomContents+'</div>';
     }
   }
   async function submit(event){

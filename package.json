@@ -1,6 +1,6 @@
 {
   "name": "hearthwave",
-  "version": "0.24.0",
+  "version": "0.25.0",
   "private": true,
   "description": "A self-hosted home entertainment hub, organised around what people want to enjoy.",
   "type": "module",
@@ -10,6 +10,6 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning --experimental-strip-types src/server.ts",
     "dev": "node --watch --disable-warning=ExperimentalWarning --experimental-strip-types src/server.ts",
-    "check": "node --disable-warning=ExperimentalWarning --experimental-strip-types --check src/server.ts && node --disable-warning=ExperimentalWarning --experimental-strip-types --check src/updater.ts && node --disable-warning=ExperimentalWarning --experimental-strip-types --check src/update-worker.ts && node --disable-warning=ExperimentalWarning --experimental-strip-types --check src/update-state.ts && node --disable-warning=ExperimentalWarning --experimental-strip-types --check src/update-archive.ts && node --check web/app.js && node --disable-warning=ExperimentalWarning --experimental-strip-types --check src/space.ts && node --check web/space.js && node --disable-warning=ExperimentalWarning --experimental-strip-types --check src/jobs.ts && node --disable-warning=ExperimentalWarning --experimental-strip-types --check src/worker-agent.ts && node --check web/workers.js"
+    "check": "node --disable-warning=ExperimentalWarning --experimental-strip-types --check src/server.ts && node --disable-warning=ExperimentalWarning --experimental-strip-types --check src/updater.ts && node --disable-warning=ExperimentalWarning --experimental-strip-types --check src/update-worker.ts && node --disable-warning=ExperimentalWarning --experimental-strip-types --check src/update-state.ts && node --disable-warning=ExperimentalWarning --experimental-strip-types --check src/update-archive.ts && node --check web/app.js && node --disable-warning=ExperimentalWarning --experimental-strip-types --check src/space.ts && node --check web/space.js && node --disable-warning=ExperimentalWarning --experimental-strip-types --check src/jobs.ts && node --disable-warning=ExperimentalWarning --experimental-strip-types --check src/worker-agent.ts && node --check web/workers.js && node --disable-warning=ExperimentalWarning --experimental-strip-types --check src/rooms.ts && node --check web/rooms.js"
   }
 }

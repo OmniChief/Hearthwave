@@ -1,3 +1,4 @@
+import { watchRooms } from './rooms.js';
 import { workerPages } from './workers.js';
 import { spacePages } from './space.js';
 import { installTvNavigation } from './tv-navigation.js';
@@ -67,7 +68,7 @@ function showAuth(needsSetup) {
 }
 
 function showShell() {
-  space.reset(); workers.reset();
+  space.reset(); workers.reset(); rooms.reset();
   $('#auth').hidden = true;
   $('#shell').hidden = false;
   $('#current-user').textContent = state.session.user.username;
@@ -559,7 +560,8 @@ async function renderGames() {
     : emptyState('No games indexed', 'Scan your ROM folder under Settings > Sources.', '◈'));
 }
 
-const space = spacePages({page,state,api,esc,notify});
+const rooms = watchRooms({page,state,api,esc,notify,startPlayback});
+const space = spacePages({page,state,api,esc,notify,rooms});
 const workers = workerPages({page,state,api,esc,notify});
 async function renderPage() {
   switch (state.page) {
@@ -612,7 +614,8 @@ function resetMediaElement(media) {
   media.load();
 }
 
-async function startPlayback(titleId,preferredId=null) {
+async function startPlayback(titleId,preferredId=null,roomPosition=null) {
+  rooms.beforePlayback(titleId);
   const request=++state.playbackRequest;
   const result = await api(`/api/titles/${titleId}/variants`);
   if(request!==state.playbackRequest) return;
@@ -628,7 +631,7 @@ async function startPlayback(titleId,preferredId=null) {
   const queued=mediaQueue(state.browseItems,title.kind);
   state.mediaQueue=queued.includes(Number(title.id)) ? queued : kind==='video'?[]:[Number(title.id)];
   renderVariantPicker();
-  state.pendingSeek = kind==='photo' ? 0 : Number(title.position_seconds) || 0;
+  state.pendingSeek = kind==='photo' ? 0 : (Number.isFinite(roomPosition)?Math.max(0,roomPosition):Number(title.position_seconds)||0);
   $('#player').hidden=kind!=='video';
   $('#music-panel').hidden=kind!=='audio';
   $('#photo-viewer').hidden=kind!=='photo';
@@ -894,6 +897,7 @@ async function jumpLocalMedia(direction) {
 }
 
 function closePlayer() {
+  void rooms.detach(true);
   state.playbackRequest++;
   state.playbackGeneration++;
   clearPlaybackRecovery();
@@ -926,6 +930,7 @@ $('#auth-form').addEventListener('submit', async (event) => {
 });
 
 $('#sign-out').addEventListener('click', async () => {
+  await rooms.detach(true);
   try { await api('/api/logout', { method:'POST' }); } catch { /* Expired sessions may already be gone. */ }
   state.session = null;
   showAuth(false);
@@ -966,6 +971,7 @@ page.addEventListener('error', event => { if (event.target?.matches?.('.media-ar
 
 page.addEventListener('submit', async event => {
   const form = event.target;
+  if(form.dataset.roomForm) return rooms.submit(event,()=>space.render('community'));
   if(form.dataset.workerForm) return workers.submit(event);
   if(form.dataset.spaceForm) return space.submit(event);
   if(form.id==='smart-collection-create-form' || form.dataset.smartRulesForm) {
@@ -1051,6 +1057,7 @@ page.addEventListener('submit', async event => {
 page.addEventListener('click', async event => {
   const target = event.target.closest('button');
   if (!target) return;
+  if(target.dataset.roomAction) return rooms.click(event,()=>space.render('community'));
   if(target.dataset.workerAction) return workers.click(event);
   if(target.dataset.spaceAction) return space.click(event);
   if(target.dataset.game) {
