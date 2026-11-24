@@ -415,7 +415,8 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
   stream.pipe(res);
 }
 
-async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+async function api(req: IncomingMessage, res: ServerResponse, url: URL, readBody:typeof body=body, writeJson:typeof send=send): Promise<void> {
+  const body=readBody,send=writeJson;
   const path = url.pathname;
   const method = req.method || 'GET';
   if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: applicationVersion, pid: process.pid });
@@ -1017,7 +1018,19 @@ const server = createServer(async (req, res) => {
         return await loungeRequest(req,res,url,{
           session,login:authenticate,issueSession,logout:(request,response,token)=>{removeSession(token);setCookie(request,response,'',0);},
           refreshEpisodes:startEpisodeDiscovery,episodeStatus:id=>episodeJobs.get(id),
-          activity,version:applicationVersion
+          activity,version:applicationVersion,
+          call:async(method,path,values={})=>{
+            const identity=requireUser(req);
+            const target=new URL(path,'http://localhost');
+            // Only the fixed JSON endpoints used by the server-rendered forms are eligible.
+            const allowed=/^\/api\/(?:requests(?:\/\d+(?:\/matches)?)?|space\/events(?:\/\d+)?|space\/files(?:\/\d+(?:\/share(?:\/\d+)?)?)?|community\/(?:friends(?:\/\d+)?|reviews(?:\/\d+)?|titles|rooms(?:\/\d+(?:\/(?:chat|invite))?)?|rooms\/titles)|jobs(?:\/workers(?:\/\d+)?|\/\d+)?|sources(?:\/\d+(?:\/(?:scan|discover|categories|cancel))?)?|guide\/feeds(?:\/\d+(?:\/import)?)?|users|system\/(?:status|activity|metadata(?:\/cancel)?|update\/(?:check|status|install))|titles\/\d+\/metadata\/refresh)$/;
+            if(target.origin!=='http://localhost'||!allowed.test(target.pathname)||!['GET','POST','PATCH','DELETE'].includes(method))throw new HttpError(400,'Unsupported television operation.');
+            const adapted=Object.create(req) as IncomingMessage;
+            Object.defineProperties(adapted,{method:{value:method},headers:{value:{...req.headers,'x-csrf-token':identity.csrf}}});
+            let result:unknown;
+            await api(adapted,res,target,async()=>values,(_res,status,data)=>{if(status>=400)throw new HttpError(status,'The operation could not be completed.');result=data;});
+            return result;
+          }
         });
       }catch(error){
         const status=error instanceof HttpError||error instanceof ProviderError?error.status:500;

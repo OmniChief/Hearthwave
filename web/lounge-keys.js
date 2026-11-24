@@ -34,7 +34,7 @@
     for (i = 0; i < nodes.length; i++) {
       node = nodes[i]; tag = String(node.tagName).toLowerCase();
       if (node.disabled || !node.offsetWidth || !node.offsetHeight) { continue; }
-      if ((tag === 'a' && node.href) || (tag === 'input' && node.type !== 'hidden') || tag === 'select' || tag === 'button' || (tag === 'video' && node.play) || (tag === 'audio' && node.play)) { list[list.length] = node; }
+      if ((tag === 'a' && node.href) || (tag === 'input' && node.type !== 'hidden') || tag === 'select' || tag === 'textarea' || tag === 'button' || (tag === 'video' && node.play) || (tag === 'audio' && node.play)) { list[list.length] = node; }
     }
     return list;
   }
@@ -158,6 +158,7 @@
   }
   function keydown(event) {
     var ev = event || window.event, code = ev.keyCode || ev.which, node = currentControl(), tag = node ? String(node.tagName).toLowerCase() : '', typing = tag === 'input' && (node.type === 'text' || node.type === 'password'), choosing = tag === 'select';
+    if (tag === 'textarea') { typing = true; }
     if (isBack(ev)) { return handleBack(ev); }
     if (oldSamsung) {
       if (code === 29460) { code = 38; }

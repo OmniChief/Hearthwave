@@ -6,6 +6,7 @@ import { resolveProviderStream } from './adapters/providers.ts';
 import { libraryGenres } from './library-genres.ts';
 import { liveGenres } from './catalogue.ts';
 import { qualityPreferences, type QualityPreference } from './quality.ts';
+import { renderLoungeFeature, submitLoungeFeature, type LoungeCall } from './lounge-features.ts';
 
 type Identity={user:User;csrf:string;tokenHash:string};
 type Services={
@@ -17,6 +18,7 @@ type Services={
   episodeStatus:(id:number)=>{status:string;processed:number;total:number;episodes:number;error:string}|undefined;
   activity:()=>{busy:boolean};
   version:string;
+  call:LoungeCall;
 };
 type Kind=MediaKind|'library'|'all';
 type View='all'|'favourites'|'watchlist'|'continue';
@@ -122,13 +124,13 @@ function respond(res:ServerResponse,code:number,html:string){
   res.writeHead(code,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'private, no-store','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' http: https:; media-src 'self' http: https:; connect-src 'self'; form-action 'self'; object-src 'none'; frame-ancestors 'none'"});
   res.end(html);
 }
-const navItems=[['home','Home','/tv'],['library','Library',query({screen:'browse',kind:'library'})],['live','Live',query({screen:'browse',kind:'channel'})],['play','Play',query({screen:'browse',kind:'game'})],['saved','My collection',query({screen:'saved'})],['settings','Settings',query({screen:'settings'})]];
+const navItems=[['home','Home','/tv'],['library','Library',query({screen:'browse',kind:'library'})],['live','Live',query({screen:'browse',kind:'channel'})],['play','Play',query({screen:'browse',kind:'game'})],['create','Create',query({screen:'create'})],['community','Community',query({screen:'community'})],['my-space','My Space',query({screen:'my-space'})],['saved','My collection',query({screen:'saved'})],['settings','Settings',query({screen:'settings'})]];
 function frame(res:ServerResponse,user:User|null,section:string,heading:string,content:string,status=200,navigation?:Navigation){
   const rail=user?'<td id="rail" valign="top"><div class="railcaption">YOUR WORLD</div>'+navItems.map(([key,label,path])=>href(path,label,'railitem'+(section===key?' active':''))).join('')+'<div class="railfooter">'+esc(user.username)+'</div></td>':'';
   const back=navigation?backDestination(navigation):'';
   const search=user?'<form class="global-search" action="/tv" method="get">'+hidden('screen','browse')+hidden('kind','all')+'<input type="text" name="q" maxlength="120" aria-label="Search your entertainment"><input class="commit" type="submit" value="Search"></form>':'';
   const backButton=back?'<a id="lounge-back" class="chip backbutton" href="'+esc(back)+'">&#8592; Back</a>':'';
-  let html='<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"><html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>'+esc(heading)+' | Hearthwave</title><link rel="stylesheet" type="text/css" href="/lounge.css?v=0340"><script type="text/javascript" src="/lounge-keys.js?v=0340" defer="defer"></script></head><body><div id="screen"><div id="mast"><a class="wordmark" href="/tv"><span class="emblem">&#9672;</span> hearthwave<span class="accent">.</span></a>'+search+'<span class="edition">YOUR ENTERTAINMENT &nbsp; / &nbsp; TV</span></div><table class="shell" cellpadding="0" cellspacing="0"><tr>'+rail+'<td id="stage" valign="top"><div class="heading"><h1>'+esc(heading)+'</h1><!--LOUNGE_BACK--></div>'+content+'</td></tr></table><div class="footer">Move with arrows &nbsp; &middot; &nbsp; OK to select &nbsp; &middot; &nbsp; Back to return <span>'+href('/?modern=1','Desktop interface','plain')+'</span></div></div></body></html>';
+  let html='<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"><html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>'+esc(heading)+' | Hearthwave</title><link rel="stylesheet" type="text/css" href="/lounge.css?v=0341"><script type="text/javascript" src="/lounge-keys.js?v=0340" defer="defer"></script></head><body><div id="screen"><div id="mast"><a class="wordmark" href="/tv"><span class="emblem">&#9672;</span> hearthwave<span class="accent">.</span></a>'+search+'<span class="edition">YOUR ENTERTAINMENT &nbsp; / &nbsp; TV</span></div><table class="shell" cellpadding="0" cellspacing="0"><tr>'+rail+'<td id="stage" valign="top"><div class="heading"><h1>'+esc(heading)+'</h1><!--LOUNGE_BACK--></div>'+content+'</td></tr></table><div class="footer">Move with arrows &nbsp; &middot; &nbsp; OK to select &nbsp; &middot; &nbsp; Back to return <span>'+href('/?modern=1','Desktop interface','plain')+'</span></div></div></body></html>';
   if(navigation)html=decorateNavigation(html,navigation);
   respond(res,status,html.replace('<!--LOUNGE_BACK-->',backButton));
 }
@@ -211,6 +213,9 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
     const stay=(fallback:string)=>redirect(res,carry(originalRoute||fallback,originalTrail));
     if(f.get('csrf')!==csrf)return error('Your session has expired. Open the page again.',403);
     const op=f.get('op'),id=idOf(f.get('id')),back=internalReturn(f.get('back')),item=id?getTitleDetail(id,user.id) as Entry|undefined:undefined;
+    if(op?.startsWith('feature.')){
+      try{const result=await submitLoungeFeature(op,f,user,s.call);if(result.body)return render(result.section,result.title,result.body);return stay(result.route||query({screen:result.section}));}catch(e){return error((e as Error).message,400);}
+    }
     if(op==='logout'){s.logout(req,res,auth.tokenHash);return redirect(res,'/tv');}
     if(op==='preferences'){
       const quality=f.get('quality') as QualityPreference;
@@ -249,7 +254,7 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
         try{address=await resolveProviderStream(source,choice.url);}catch{return error('This connection could not start playback. Choose another version.',502);}
       }
       if(choice.source_type!=='folder'&&!imageUrl(address))return error('The source does not offer a supported HTTP media address.');
-      if(!originalRoute)navigation.trail=pushRoute(pushRoute(originalTrail,back),detail);
+      if(!originalRoute&&!originalTrail.length)navigation.trail=pushRoute(pushRoute(originalTrail,back),detail);
       const tried=String(f.get('tried')||'').split(',').map(idOf).filter(Boolean).slice(-20);tried.push(choice.id);
       const alternative=playable(item,user.id).find(v=>!tried.includes(v.id));
       const fallback=alternative?post(csrf,'watch',{id,back,variant:alternative.id,tried:tried.join(','),resume:'yes'},'Try next source','fallbackform'):'';
@@ -262,7 +267,7 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
         const parent=db.prepare('SELECT series_parent_id AS id FROM variants WHERE title_id=? AND series_parent_id IS NOT NULL LIMIT 1').get(id) as {id:number}|undefined;
         if(parent){const list=listSeriesEpisodes(parent.id,user.id) as Entry[],at=list.findIndex(x=>x.id===id);if(at>0){adjacent=post(csrf,'watch',{id:list[at-1].id,back},'Next episode','nextform');if(getUserPreferences(user.id).autoplayNext)autoNext='yes';}if(at>=0&&at+1<list.length)adjacent+=post(csrf,'watch',{id:list[at+1].id,back},'Previous episode');}
       }
-      return render(sectionFor(item.kind),item.title,'<div class="toolbar">'+href(detail,'Back to title','chip return-target')+adjacent+'</div><div class="screenmedia">'+media+'</div><div class="toolbar player-toolbar"><input class="commit" type="button" id="media-toggle" value="Play / pause"><input class="commit" type="button" id="media-full" value="Full screen">'+fallback+'</div><div id="media-message" class="caption" data-autonext="'+autoNext+'">'+esc(choice.source_name)+' / '+esc(choice.quality_tier)+' &middot; Native television playback</div><div class="toolbar">'+href(address,'Open stream directly')+href(detail,'Other versions','chip return-target')+'</div>');
+      return render(sectionFor(item.kind),item.title,'<div class="toolbar">'+href(detail,'Back to title','chip return-target')+adjacent+'</div><div class="screenmedia">'+media+'</div><div class="toolbar player-toolbar"><input class="commit" type="button" id="media-toggle" value="Play / pause"><input class="commit" type="button" id="media-full" value="Full screen">'+fallback+'</div><div id="media-message" class="caption" data-autonext="'+autoNext+'">'+esc(choice.source_name)+' / '+esc(choice.quality_tier)+' &middot; Native television playback</div><div class="toolbar">'+href(address,'Open stream directly')+href(detail,'Other versions')+'</div>');
     }
     return error('Unknown action.');
   }
@@ -275,6 +280,7 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
     return redirect(res,'/tv');
   }
   const params=url.searchParams,screen=params.get('screen')||'home';
+  try{const feature=await renderLoungeFeature(screen,params,user,csrf,s.call);if(feature)return render(feature.section,feature.title,feature.body);}catch(e){return error((e as Error).message,400);}
   if(screen==='home'){
     const stats=dashboardStats(),added=catalogue('library',user.id,'all',6,'added'),recent=catalogue('episode',user.id,'continue',6,'activity'),films=catalogue('film',user.id,'continue',6,'activity'),saved=catalogue('library',user.id,'watchlist',6),favourites=catalogue('channel',user.id,'favourites',4),live=catalogue('channel',user.id,'all',4);
     const focus=[...films,...recent].slice(0,6);
@@ -295,7 +301,7 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
     const requestedSort=params.get('sort'),sort=requestedSort==='year'||requestedSort==='added'||requestedSort==='activity'||requestedSort==='title'?requestedSort:view==='continue'?'activity':'title';
     const state={screen:'browse',kind,view,q:search,region:country,genre,collection:cid,page:number,sort};
     const back=query(state),rows=listTitles(kind,user.id,search,view,sort,limit+1,number*limit,country,kind==='channel'?genre:'',kind==='channel'?'':genre,collection) as Entry[];
-    const kindbar=sectionFor(kind)==='library'?'<div class="toolbar">'+(['library','film','series','episode','music','photo'] as Kind[]).map(k=>href(query({screen:'browse',kind:k}),kindNames[k],k===kind?'primary':'chip')).join('')+'</div>':kind==='channel'?'<div class="toolbar">'+href(query({screen:'guide'}),'Programme guide')+'</div>':'';
+    const kindbar=sectionFor(kind)==='library'?'<div class="toolbar">'+(['library','film','series','episode','music','photo'] as Kind[]).map(k=>href(query({screen:'browse',kind:k}),kindNames[k],k===kind?'primary':'chip')).join('')+href(query({screen:'saved'}),'Collections')+href(query({screen:'requests'}),'Media requests')+'</div>':kind==='channel'?'<div class="toolbar">'+href(query({screen:'guide'}),'Programme guide')+'</div>':'';
     const filter='<form class="filter" method="get" action="/tv">'+hidden('screen','browse')+hidden('kind',kind)+hidden('collection',cid)+'<label>Find <input type="text" name="q" maxlength="120" value="'+esc(search)+'"></label><label>Show '+select('view',[['all','All'],['favourites','Favourites'],['watchlist','Watchlist'],['continue','In progress']],view)+'</label>'+
       (kind==='channel'?'<label>Region '+select('region',[['','Everywhere'],['GB','UK'],['US','US'],['other','Other']],country)+'</label>':'')+(categories.length?'<label>Genre '+select('genre',[['','Any'],...categories.map(x=>[x,x] as [string,string])],genre)+'</label>':'')+(kind==='channel'?'':'<label>Sort '+select('sort',[['title','Title A–Z'],['year','Newest release'],['added','Recently added'],['activity','Recently watched']],sort)+'</label>')+'<input type="submit" class="commit" value="Find"></form>';
     const pages='<div class="toolbar pagination">'+(number?href(query({...state,page:number-1}),'Previous'):'')+'<span class="caption">Page '+(number+1)+'</span>'+(rows.length>limit?href(query({...state,page:number+1}),'Next'):'')+'</div>';
@@ -318,7 +324,7 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
   }
   if(screen==='settings'){
     const preferences=getUserPreferences(user.id);
-    return render('settings','Your preferences','<div class="panel"><h2>Playback</h2><form method="post" action="/tv/submit">'+hidden('csrf',csrf)+hidden('op','preferences')+'<p><label>Preferred quality '+select('quality',[['auto','Best available'],['fhd','1080p or lower'],['hd','720p or lower'],['sd','Standard definition']],preferences.qualityPreference)+'</label></p><p><label>Autoplay next episode '+select('autoplay',[['yes','On'],['no','Off']],preferences.autoplayNext?'yes':'no')+'</label></p><input type="submit" class="commit" value="Save preferences"></form></div><div class="panel"><h2>Account</h2><p>'+esc(user.username)+' &middot; '+esc(user.role)+'</p><p>Hearthwave '+esc(s.version)+'</p>'+(user.role==='admin'?'<p>Maintenance: '+(s.activity().busy?'Running':'Idle')+'. Manage imports and workers in the desktop interface.</p>':'')+post(csrf,'logout',{},'Sign out')+'</div>');
+    return render('settings','Your preferences','<div class="toolbar">'+(user.role==='admin'?href(query({screen:'admin',tab:'sources'}),'Sources')+href(query({screen:'admin',tab:'metadata'}),'Metadata & Guide')+href(query({screen:'admin',tab:'users'}),'Users & Access')+href(query({screen:'create'}),'Downloads & Workers')+href(query({screen:'admin',tab:'system'}),'System'):'')+'</div><div class="panel"><h2>Playback</h2><form method="post" action="/tv/submit">'+hidden('csrf',csrf)+hidden('op','preferences')+'<p><label>Preferred quality '+select('quality',[['auto','Best available'],['fhd','1080p or lower'],['hd','720p or lower'],['sd','Standard definition']],preferences.qualityPreference)+'</label></p><p><label>Autoplay next episode '+select('autoplay',[['yes','On'],['no','Off']],preferences.autoplayNext?'yes':'no')+'</label></p><input type="submit" class="commit" value="Save preferences"></form></div><div class="panel"><h2>Account</h2><p>'+esc(user.username)+' &middot; '+esc(user.role)+'</p><p>Hearthwave '+esc(s.version)+'</p>'+(user.role==='admin'?'<p>Maintenance: '+(s.activity().busy?'Running':'Idle')+' . Select an administrator section above to manage imports and workers.</p>':'')+post(csrf,'logout',{},'Sign out')+'</div>');
   }
   if(screen==='item'){
     const id=idOf(params.get('id')),item=id?getTitleDetail(id,user.id) as Entry|undefined:undefined,back=internalReturn(params.get('back'));
