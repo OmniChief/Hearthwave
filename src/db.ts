@@ -409,6 +409,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS live_epg_links (
   PRIMARY KEY(title_id,feed_id,channel_id)
 );
 CREATE INDEX IF NOT EXISTS live_epg_feed ON live_epg_links(feed_id,channel_id);
+CREATE TABLE IF NOT EXISTS live_variant_aliases(variant_id INTEGER PRIMARY KEY REFERENCES variants(id) ON DELETE CASCADE,alias TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS live_variant_identity (
   variant_id INTEGER PRIMARY KEY REFERENCES variants(id) ON DELETE CASCADE,
   original_title_id INTEGER NOT NULL, name TEXT NOT NULL, country TEXT NOT NULL,
@@ -416,7 +417,16 @@ CREATE TABLE IF NOT EXISTS live_variant_identity (
 );`);
 const activeEpg = "EXISTS(SELECT 1 FROM live_epg_links el JOIN guide_feeds ef ON ef.id=el.feed_id JOIN guide_channels ec ON ec.feed_id=ef.id AND ec.generation=ef.generation AND ec.channel_id=el.channel_id WHERE el.title_id=t.id)";
 
-const upsertTitle = db.prepare(`
+export function liveSourceCounts():Record<number,{streams:number;channels:number;matched:number;selectedLive:number}>{
+  const rows=db.prepare("SELECT v.source_id,COUNT(*) AS streams,COUNT(DISTINCT v.title_id) AS channels,SUM(CASE WHEN "+activeEpg+" THEN 1 ELSE 0 END) AS matched FROM variants v JOIN titles t ON t.id=v.title_id WHERE t.kind='channel' AND v.series_parent_id IS NULL GROUP BY v.source_id").all() as Array<{source_id:number;streams:number;channels:number;matched:number}>;
+  const counts:Record<number,{streams:number;channels:number;matched:number;selectedLive:number}>={};
+  for(const row of rows)counts[row.source_id]={streams:row.streams,channels:row.channels,matched:row.matched,selectedLive:0};
+  for(const row of db.prepare("SELECT source_id,COUNT(*) AS n FROM provider_categories WHERE kind='live' AND selected=1 GROUP BY source_id").all() as Array<{source_id:number;n:number}>){
+    const current=counts[row.source_id]||(counts[row.source_id]={streams:0,channels:0,matched:0,selectedLive:0});current.selectedLive=row.n;
+  }
+  return counts;
+}
+const upsertTitle = db.prepare(
   INSERT INTO titles (canonical_key,kind,title,year,season,episode,group_name,artwork,channel_key,channel_country,description,genres,rating,duration_seconds,match_key,imdb_id,tmdb_id,live_genre)
   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   ON CONFLICT(canonical_key) DO UPDATE SET
@@ -442,6 +452,7 @@ const upsertVariant = db.prepare(`
     title_id=excluded.title_id, url=excluded.url,quality=excluded.quality,
     group_name=excluded.group_name,generation=excluded.generation,epg_id=excluded.epg_id
 `);
+const saveLiveAlias=db.prepare('INSERT INTO live_variant_aliases(variant_id,alias) SELECT id,? FROM variants WHERE source_id=? AND source_ref=? ON CONFLICT(variant_id) DO UPDATE SET alias=excluded.alias');
 const rememberLiveVariant=db.prepare(`INSERT INTO live_variant_identity(variant_id,original_title_id,name,country,artwork)
           SELECT id,?,?,?,? FROM variants WHERE source_id=? AND source_ref=?
           ON CONFLICT(variant_id) DO UPDATE SET original_title_id=CASE WHEN live_variant_identity.name=excluded.name AND live_variant_identity.country=excluded.country THEN live_variant_identity.original_title_id ELSE excluded.original_title_id END,name=excluded.name,country=excluded.country,artwork=excluded.artwork`);
@@ -526,6 +537,7 @@ export function importBatch(sourceId: number, items: ImportItem[], generation: s
       upsertVariant.run(titleId, sourceId, item.sourceRef, secrets.seal(item.url, true), item.quality || '', item.group || '', generation,(item.externalId || '').trim().toLowerCase().slice(0,200));
       if(item.kind==='channel'){
         rememberLiveVariant.run(titleId,item.title.slice(0,300),country,item.artwork||'',sourceId,item.sourceRef);
+        saveLiveAlias.run((item.channelAlias||'').trim().slice(0,300),sourceId,item.sourceRef);
       }
       if (item.kind==='film' || item.kind==='series') syncLibraryGenres(titleId);
     }
@@ -612,6 +624,7 @@ export function listTitles(kind:BrowseKind,userId:number,query='',view:Catalogue
   return db.prepare("WITH selected AS MATERIALIZED (SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,t.artwork,t.channel_country,t.live_genre,CASE WHEN f.title_id IS NULL THEN 0 ELSE 1 END AS favourite,CASE WHEN w.title_id IS NULL THEN 0 ELSE 1 END AS watchlisted,p.position_seconds,p.updated_at AS activity_at FROM titles t"+
     joins.sql+" WHERE "+filter.where+" ORDER BY "+order+" LIMIT ? OFFSET ?) "+
     "SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,t.artwork,t.channel_country,t.live_genre,t.favourite,t.watchlisted,t.position_seconds,CASE WHEN "+activeEpg+" THEN 1 ELSE 0 END AS epg_backed,"+
+    "CASE WHEN t.kind='channel' THEN (SELECT GROUP_CONCAT(DISTINCT s.type) FROM variants v JOIN sources s ON s.id=v.source_id WHERE v.title_id=t.id AND v.series_parent_id IS NULL) ELSE NULL END AS source_types,"+
     "(SELECT MIN(v.id) FROM variants v WHERE v.title_id=t.id"+filter.variantFilter+") AS variant_id,"+
     "(SELECT COUNT(*) FROM variants v WHERE v.title_id=t.id"+filter.variantFilter+") AS source_count,"+
     "CASE WHEN t.kind='game' THEN (SELECT v.source_ref FROM variants v WHERE v.title_id=t.id"+filter.variantFilter+" ORDER BY v.id LIMIT 1) END AS game_path "+

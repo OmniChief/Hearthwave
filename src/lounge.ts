@@ -23,7 +23,7 @@ type Services={
 };
 type Kind=MediaKind|'library'|'all';
 type View='all'|'favourites'|'watchlist'|'continue';
-type Entry={id:number;kind:MediaKind;title:string;artwork?:string;year?:number;season?:number;episode?:number;episode_name?:string;description?:string;position_seconds?:number;favourite?:number;watchlisted?:number;source_count?:number;epg_backed?:number;genres?:string;rating?:number;duration_seconds?:number;live_genre?:string};
+type Entry={id:number;kind:MediaKind;title:string;artwork?:string;year?:number;season?:number;episode?:number;episode_name?:string;description?:string;position_seconds?:number;favourite?:number;watchlisted?:number;source_count?:number;epg_backed?:number;source_types?:string;genres?:string;rating?:number;duration_seconds?:number;live_genre?:string};
 const kinds:Kind[]=['library','all','film','series','episode','channel','music','photo','game'];
 const kindNames:Record<Kind,string>={all:'Everything',library:'Your library',film:'Films',series:'Series',episode:'Episodes',channel:'Live television',music:'Music',photo:'Photos',game:'Games'};
 const views:View[]=['all','favourites','watchlist','continue'];
@@ -172,7 +172,7 @@ function channelList(items:Entry[],back:string,csrf:string){
   if(!items.length)return '<div class="blank">No channels to display.</div>';
   return '<table class="listing channel-list" cellspacing="0" cellpadding="0">'+items.map(item=>{
     const art=imageUrl(item.artwork),fields={id:item.id,back};
-    return '<tr><td class="channel-logo">'+(art?'<img src="'+esc(art)+'" alt="">':'&#9658;')+'</td><td>'+href(itemUrl(item,back),item.title,'stationlink')+'<span class="caption">'+esc([item.live_genre,(item.source_count?item.source_count+' sources'+(item.epg_backed?' / EPG matched':' / Provider only'):'EPG only / no connection')].filter(Boolean).join(' / '))+'</span></td><td class="channel-actions">'+(item.source_count?post(csrf,'watch',fields,'Watch'):'<span class="caption">EPG only</span>')+href(itemUrl(item,back),'Guide')+post(csrf,'star',fields,item.favourite?'★':'☆')+'</td></tr>';
+    return '<tr><td class="channel-logo">'+(art?'<img src="'+esc(art)+'" alt="">':'&#9658;')+'</td><td>'+href(itemUrl(item,back),item.title,'stationlink')+'<span class="caption">'+esc([item.live_genre,(item.source_count?item.source_count+' sources'+(item.epg_backed?' / EPG matched':' / Provider only')+(item.source_types?' / '+item.source_types.split(',').map(type=>({m3u:'IPTV (M3U)',xtream:'IPTV (Xtream)',stalker:'Stalker',direct:'Direct'} as Record<string,string>)[type]||type).join(' + '):''):'EPG only / no connection')].filter(Boolean).join(' / '))+'</span></td><td class="channel-actions">'+(item.source_count?post(csrf,'watch',fields,'Watch'):'<span class="caption">EPG only</span>')+href(itemUrl(item,back),'Guide')+post(csrf,'star',fields,item.favourite?'★':'☆')+'</td></tr>';
   }).join('')+'</table>';
 }
 function shelf(items:Entry[],back:string,csrf:string){

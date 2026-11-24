@@ -14,7 +14,7 @@ import { libraryGenres } from './library-genres.ts';
 import { qualityPreferences, type QualityPreference } from './quality.ts';
 import { BackupError, backupBusy, streamBackup } from './backup.ts';
 import { UpdateError, checkForUpdate, startUpdate, updateStatus } from './updater.ts';
-import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, completeImport, countTitles, createCollection, createSmartCollection, createUser, dashboardStats, dataDir, db, deleteCollection, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, libraryGenreCounts, listCategories, listCollections, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, ownedCollection, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, renameCollection, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setCollectionMembership, setFavourite, setWatchlisted, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, updateSmartCollectionRules, type GuideFeed, type SmartRules, type SourceRow } from './db.ts';
+import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, completeImport, countTitles, createCollection, createSmartCollection, createUser, dashboardStats, dataDir, db, deleteCollection, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, libraryGenreCounts, listCategories, listCollections, listGuideFeeds, listSeriesEpisodes, liveSourceCounts, listSources, listTitles, listVariants, loadSession, ownedCollection, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, renameCollection, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setCollectionMembership, setFavourite, setWatchlisted, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, updateSmartCollectionRules, type GuideFeed, type SmartRules, type SourceRow } from './db.ts';
 import { discoverProvider, discoverSeriesEpisodes, fetchTitleMetadata, importProvider, providerGuide, resolveProviderStream, type ProviderScanProgress } from './adapters/providers.ts';
 import { importXmltv } from './guide.ts';
 import { localSubtitles, subtitleVtt } from './subtitles.ts';
@@ -236,7 +236,7 @@ function connectionConfig(type: SourceType, raw: unknown): ProviderConfig {
   return config;
 }
 
-function startImport(source: SourceRow, items: AsyncIterable<ImportItem>): void {
+function startImport(source: SourceRow, items: AsyncIterable<ImportItem>,expectsLive=source.type==='m3u'): void {
   requireIdle();
   if (inProgress.has(source.id)) throw new HttpError(409, 'This source is already being imported.');
   inProgress.add(source.id);
@@ -262,6 +262,8 @@ function startImport(source: SourceRow, items: AsyncIterable<ImportItem>): void 
       }
       if(job.cancelRequested) throw new ScanCancelled();
       if (buffer.length) {importBatch(source.id, buffer, generation);job.indexed+=buffer.length;}
+      if(!seen)throw new Error('The provider returned no indexable entries. Existing entries were retained.');
+      if(expectsLive&&!hasChannels)throw new Error('The selected Live folders returned no indexable channels. Existing channels were retained.');
       completeImport(source.id, generation);
       if(hasChannels&&db.prepare("SELECT 1 FROM guide_feeds WHERE generation<>'' LIMIT 1").get()){job.folder='Organising Live lineup';await organiseLive(source.id);}
       job.phase='completed';
@@ -631,7 +633,7 @@ async function dispatchApi(req:IncomingMessage,res:ServerResponse,url:URL,body:B
   }
   if (path === '/api/sources' && method === 'GET') {
     if (current.user.role !== 'admin') throw new HttpError(403, 'Administrator access required.');
-    return send(res, 200, { sources: listSources().map(safelyPublicSource),jobs:Object.fromEntries(sourceJobs) });
+    return send(res, 200, { sources: listSources().map(safelyPublicSource),liveCounts:liveSourceCounts(),jobs:Object.fromEntries(sourceJobs) });
   }
   if (path === '/api/sources' && method === 'POST') {
     requireWrite(req, true);
@@ -704,7 +706,7 @@ async function dispatchApi(req:IncomingMessage,res:ServerResponse,url:URL,body:B
         startImport(source, importProvider(source,selected,(progress:ProviderScanProgress)=>{
           const job=sourceJobs.get(id);
           if(job && job.kind==='scan') Object.assign(job,progress);
-        }));
+        }),selected.some(row=>row.kind==='live'));
       } else throw new HttpError(400, 'This source does not support scanning.');
       return send(res, 202, { status: 'scanning' });
     }

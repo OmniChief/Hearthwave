@@ -32,6 +32,7 @@ export interface ImportItem {
   episode?: number | null;
   episodeName?: string;
   externalId?: string;
+  channelAlias?: string;
   sourceRef: string;
   url: string;
   quality?: string;

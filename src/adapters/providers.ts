@@ -242,7 +242,7 @@ export async function discoverProvider(source: SourceRow): Promise<Category[]> {
     for (const kind of providerKinds()) {
       const action = kind === 'series' ? 'get_series_categories' : `get_${kind}_categories`;
       const response = await client.action(action);
-      for (const row of objects(response)) {
+      for (const row of xtreamList(response)) {
         const id = field(row.category_id);
         if (id && id.length <= 80) discovered.push({kind,id,name:(field(row.category_name) || 'Other').slice(0,160)});
       }
@@ -260,11 +260,28 @@ export async function discoverProvider(source: SourceRow): Promise<Category[]> {
   return discovered.slice(0,3000);
 }
 
+// Some Xtream implementations wrap lists in data/items/results instead of returning a bare array.
+function xtreamList(value:unknown):Entry[]{
+  let current=value;
+  for(let depth=0;depth<4;depth++){
+    if(Array.isArray(current))return objects(current);
+    if(!current||typeof current!=='object')break;
+    const row=current as Entry;
+    const nested=row.data??row.items??row.results??row.streams??row.categories;
+    if(nested!=null){current=nested;continue;}
+    const entries=Object.entries(row);
+    if(entries.every(([key])=>/^\d+$/.test(key)))return objects(row);
+    break;
+  }
+  throw new ProviderError('Xtream returned an unsupported channel or category list. Existing entries were retained.');
+}
 function xtreamRows(rows: unknown, source: SourceRow, category: ProviderCategory): ImportItem[] {
   const client = xtreamClient(source);
   const items: ImportItem[] = [];
-  for (const row of objects(rows)) {
-    if (row.category_id != null && field(row.category_id) !== category.category_id) continue;
+  for (const row of xtreamList(rows)) {
+    const memberships=Array.isArray(row.category_ids)?row.category_ids.map(field):[];
+    const primary=field(row.category_id);
+    if(primary&&primary!=='0'&&primary!==category.category_id&&!memberships.includes(category.category_id))continue;
     const id = field(row.stream_id || row.series_id || row.id);
     if (!/^\d+$/.test(id)) continue;
     const name = field(row.name || row.title);
@@ -275,7 +292,8 @@ function xtreamRows(rows: unknown, source: SourceRow, category: ProviderCategory
     items.push({
       kind:kind === 'live' ? 'channel' : kind === 'vod' ? 'film' : 'series', title:name,
       year:yearFrom(row.releaseDate || row.release_date || row.year || name),
-      externalId:kind === 'live' ? field(row.epg_channel_id || row.xmltv_id) : '',
+      externalId:kind === 'live' ? field(row.epg_channel_id || row.xmltv_id || row.tvg_id || row.epg_id) : '',
+      channelAlias:kind==='live'?field(row.tvg_name || row.epg_name):'',
       sourceRef:`${kind}:${id}`, url:kind === 'series' ? `xtream-series:${id}` : client.url(kind,id,ext),
       quality:quality(name),group:category.name,artwork:artwork(row.stream_icon || row.cover || row.backdrop_path),
       description:description(row.plot || row.description),genres:genres(row.genre || row.genres),

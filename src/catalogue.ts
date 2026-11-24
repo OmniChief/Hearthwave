@@ -48,8 +48,9 @@ export function channelCountry(title: string, group = '', hint = ''): string {
   };
   const explicit = normalize(hint);
   if (explicit) return explicit;
-  const prefix = /^\s*\[?(UK|GB|US|USA|EN|ENGLISH|CA|CANADA)\]?\s*[-:|]/i.exec(title)?.[1];
-  if (prefix) return normalize(prefix);
+  const prefix = /^\s*(?:\[(UK|GB|US|USA|EN|ENGLISH|CA|CANADA)\]\s*|\|?(UK|GB|US|USA|EN|ENGLISH|CA|CANADA)\s*[-:|])/i.exec(title);
+  const pref=prefix?.[1]||prefix?.[2];
+  if (pref) return normalize(pref);
   const category = /^(?:\W*)(UK|GB|US|USA|EN|ENGLISH|CA|CANADA)(?:\W|$)/i.exec(group)?.[1];
   return normalize(category || '');
 }
@@ -87,18 +88,20 @@ export function parseM3u(content: string): ImportItem[] {
   for (const line of content.split(/\r?\n/)) {
     const text = line.trim();
     if (text.startsWith('#EXTINF:')) {
-      const comma = text.indexOf(',');
+      // A comma inside a quoted EXTINF attribute is not the title delimiter.
+      let comma=-1,quote='';
+      for(let k=8;k<text.length;k++){const c=text[k];if(quote){if(c===quote)quote='';}else if(c==='"'||c==="'")quote=c;else if(c===','){comma=k;break;}}
       if (comma < 0) { meta = null; continue; }
       const attrs: Record<string, string> = {};
-      for (const match of text.slice(0, comma).matchAll(/([\w-]+)="([^"]*)"/g)) attrs[match[1]] = match[2];
+      for (const match of text.slice(0, comma).matchAll(/([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s,]+))/g)) attrs[match[1].toLowerCase()] = match[2]??match[3]??match[4]??'';
       meta = { title: text.slice(comma + 1).trim() || attrs['tvg-name'] || 'Untitled channel', attrs };
     } else if (meta && text && !text.startsWith('#')) {
       try {
         const url = new URL(text);
         if (!['http:', 'https:'].includes(url.protocol)) throw new Error();
-        const region = meta.attrs['tvg-country'] || meta.attrs['tvg-language'] || '';
+        const region = channelCountry(meta.title,meta.attrs['group-title']||'',meta.attrs['tvg-country']||'') || channelCountry('', '', (meta.attrs['tvg-id']||'').match(/[._-](uk|gb|us|usa|ca)$/i)?.[1]||'');
         const quality = /\b(4K|UHD|FHD|1080P|720P|HD|SD)\b/i.exec(meta.title)?.[1]?.toUpperCase() || '';
-        items.push({ kind: 'channel', title: meta.title, externalId: meta.attrs['tvg-id'], sourceRef: String(items.length), url: text, quality, group: meta.attrs['group-title'] || '', region, artwork: meta.attrs['tvg-logo'] || '' });
+        items.push({ kind: 'channel', title: meta.title, externalId: meta.attrs['tvg-id'], channelAlias:meta.attrs['tvg-name'], sourceRef: String(items.length), url: text, quality, group: meta.attrs['group-title'] || '', region, artwork: meta.attrs['tvg-logo'] || '' });
         if (items.length > 25000) throw new Error('Playlist exceeds the 25,000-channel safety limit.');
       } catch (error) { if (error instanceof Error && error.message.includes('25,000')) throw error; }
       meta = null;
