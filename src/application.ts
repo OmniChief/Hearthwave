@@ -1,4 +1,5 @@
 import { spaceApi, SpaceError } from './space.ts';
+import { television, televisionPage, isLegacyTelevision } from './television.ts';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createReadStream, readFileSync } from 'node:fs';
 import { readFile, realpath, stat } from 'node:fs/promises';
@@ -24,6 +25,7 @@ const webRoot = join(dirname(fileURLToPath(import.meta.url)), '..', 'web');
 const applicationVersion=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8')).version as string;
 const allowedAssets: Record<string, string> = {
   '/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/tv-navigation.js': 'tv-navigation.js', '/playback-variants.js': 'playback-variants.js', '/hls-playback.js': 'hls-playback.js', '/playback-diagnostics.js': 'playback-diagnostics.js', '/local-media.js': 'local-media.js', '/space.js': 'space.js', '/workers.js': 'workers.js', '/rooms.js': 'rooms.js', '/requests.js': 'requests.js', '/vendor/hls.light.min.js': 'vendor/hls.light.min.js',
+  '/tv.css':'tv.css','/tv.js':'tv.js','/legacy.js':'legacy.js',
   '/styles.css': 'styles.css', '/manifest.webmanifest': 'manifest.webmanifest',
   '/game.html':'game.html', '/game.js':'game.js',
   '/sw.js': 'sw.js', '/icon.svg': 'icon.svg',
@@ -117,14 +119,32 @@ function requireWrite(req: IncomingMessage, admin = false): User {
 }
 function setCookie(req: IncomingMessage, res: ServerResponse, value: string, age: number): void {
   const secure = Boolean((req.socket as { encrypted?: boolean }).encrypted) || req.headers['x-forwarded-proto'] === 'https';
-  res.setHeader('Set-Cookie', `hw_session=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${age}${secure ? '; Secure' : ''}`);
+  res.setHeader('Set-Cookie', `hw_session=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${age}; Expires=${new Date(Date.now()+age*1000).toUTCString()}${secure ? '; Secure' : ''}`);
 }
 function signIn(req: IncomingMessage, res: ServerResponse, user: User): void {
-  const token = randomBytes(32).toString('hex');
-  const csrf = randomBytes(24).toString('hex');
-  saveSession(hash(token), user.id, csrf, Date.now() + 30 * 24 * 60 * 60 * 1000);
-  setCookie(req, res, token, 30 * 24 * 60 * 60);
+  const csrf=issueSession(req,res,user);
   send(res, 200, { user, csrf, needsSetup: false });
+}
+function issueSession(req:IncomingMessage,res:ServerResponse,user:User):string{
+  const token=randomBytes(32).toString('hex'),csrf=randomBytes(24).toString('hex');
+  saveSession(hash(token),user.id,csrf,Date.now()+30*24*60*60*1000);
+  setCookie(req,res,token,30*24*60*60);return csrf;
+}
+function authenticate(req:IncomingMessage,input:Record<string,unknown>):User {
+    const remote = req.socket.remoteAddress || 'unknown';
+    const entry = failures.get(remote);
+    const attempts = entry && Date.now() < entry.until ? entry.count : 0;
+    if (attempts >= 5) throw new HttpError(429, 'Too many attempts. Try again in one minute.');
+    const username = textField(input.username, 'username', 50);
+    const password = textField(input.password, 'password', 256);
+    const user = findUser(username);
+    if (!user || !verifyPassword(password, user.password_hash)) {
+      failures.set(remote, { count: attempts + 1, until: Date.now() + 60_000 });
+      if (failures.size > 1000) failures.clear();
+      throw new HttpError(401, 'Username or password is incorrect.');
+    }
+    failures.delete(remote);
+    return {id:user.id,username:user.username,role:user.role};
 }
 async function body(req: IncomingMessage, max = 1024 * 1024): Promise<Record<string, unknown>> {
   if (!req.headers['content-type']?.startsWith('application/json')) throw new HttpError(415, 'Expected application/json.');
@@ -416,21 +436,8 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     } catch { throw new HttpError(409, 'The setup account could not be created.'); }
   }
   if (path === '/api/login' && method === 'POST') {
-    const remote = req.socket.remoteAddress || 'unknown';
-    const entry = failures.get(remote);
-    const attempts = entry && Date.now() < entry.until ? entry.count : 0;
-    if (attempts >= 5) throw new HttpError(429, 'Too many attempts. Try again in one minute.');
-    const input = await body(req);
-    const username = textField(input.username, 'username', 50);
-    const password = textField(input.password, 'password', 256);
-    const user = findUser(username);
-    if (!user || !verifyPassword(password, user.password_hash)) {
-      failures.set(remote, { count: attempts + 1, until: Date.now() + 60_000 });
-      if (failures.size > 1000) failures.clear();
-      throw new HttpError(401, 'Username or password is incorrect.');
-    }
-    failures.delete(remote);
-    return signIn(req, res, { id: user.id, username: user.username, role: user.role });
+    const input=await body(req);
+    return signIn(req,res,authenticate(req,input));
   }
   if (path === '/api/logout' && method === 'POST') {
     const current = requireUser(req);
@@ -1002,6 +1009,24 @@ const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url || '/', 'http://localhost');
     if (url.pathname.startsWith('/api/')) return await api(req, res, url);
+    if ((url.pathname==='/'||url.pathname==='/index.html')&&req.method==='GET'&&url.searchParams.get('modern')!=='1'&&isLegacyTelevision(req.headers['user-agent']||'')) {
+      res.writeHead(302,{'Location':'/tv','Cache-Control':'no-store'});res.end();return;
+    }
+    if(url.pathname==='/tv'||url.pathname.startsWith('/tv/')){
+      try {
+        return await television(req,res,url,{
+          session,login:authenticate,issueSession,logout:(request,response,token)=>{removeSession(token);setCookie(request,response,'',0);},
+          refreshEpisodes:startEpisodeDiscovery,episodeStatus:id=>episodeJobs.get(id),
+          activity,version:applicationVersion
+        });
+      }catch(error){
+        const status=error instanceof HttpError||error instanceof ProviderError?error.status:500;
+        if(status===500)console.error('TV request failed:',error);
+        if(!res.headersSent)televisionPage(res,status,'Unable to complete request',session(req)?.user||null,'<p>'+ (status===500?'The operation failed. Return to the TV home page.':String((error as Error).message).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'))+'</p><p><a class="button" href="/tv">TV home</a></p>');
+        else res.destroy();
+        return;
+      }
+    }
     if(url.pathname==='/game.html') {
       res.setHeader('X-Frame-Options','SAMEORIGIN');
       res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self' 'unsafe-eval' blob: https://cdn.emulatorjs.org; style-src 'self' 'unsafe-inline' https://cdn.emulatorjs.org; connect-src 'self' blob: data: https://cdn.emulatorjs.org; img-src 'self' blob: data: https://cdn.emulatorjs.org; font-src data: https://cdn.emulatorjs.org; worker-src 'self' blob:; media-src blob: data:; frame-ancestors 'self'; object-src 'none'");
