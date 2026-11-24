@@ -19,6 +19,7 @@ type Services={
   activity:()=>{busy:boolean};
   version:string;
   call:LoungeCall;
+  backup:()=>Promise<void>;
 };
 type Kind=MediaKind|'library'|'all';
 type View='all'|'favourites'|'watchlist'|'continue';
@@ -112,7 +113,12 @@ function decorateNavigation(html:string,n:Navigation):string{
   // A search/filter submission is also a navigation step. POST mutations carry
   // the originating GET route separately so Back never replays a submission.
   html=html.replace(/<form\b[^>]*\baction="\/tv"[^>]*>/gi,tag=>tag+hidden('nav',encodeTrail(pushRoute(n.trail,n.route))));
-  html=html.replace(/<form\b[^>]*\baction="\/tv\/submit"[^>]*>/gi,tag=>tag+hidden('nav',encodeTrail(n.trail))+hidden('route',n.route));
+  html=html.replace(/<form\b[^>]*\baction="\/tv\/submit"[^>]*>[\s\S]*?<\/form>/gi,form=>{
+    const id=/<input type="hidden" name="id" value="(\d+)">/.exec(form)?.[1];
+    const anchor=id?'lounge-item-'+id:'';
+    const origin=n.route&&anchor&&used.has(anchor)?n.route.split('#')[0]+'#'+anchor:n.route;
+    return form.replace(/^[^>]+>/,tag=>tag+hidden('nav',encodeTrail(n.trail))+hidden('route',origin));
+  });
   return html;
 }
 
@@ -124,13 +130,13 @@ function respond(res:ServerResponse,code:number,html:string){
   res.writeHead(code,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'private, no-store','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' http: https:; media-src 'self' http: https:; connect-src 'self'; form-action 'self'; object-src 'none'; frame-ancestors 'none'"});
   res.end(html);
 }
-const navItems=[['home','Home','/tv'],['library','Library',query({screen:'browse',kind:'library'})],['live','Live',query({screen:'browse',kind:'channel'})],['play','Play',query({screen:'browse',kind:'game'})],['create','Create',query({screen:'create'})],['community','Community',query({screen:'community'})],['my-space','My Space',query({screen:'my-space'})],['saved','My collection',query({screen:'saved'})],['settings','Settings',query({screen:'settings'})]];
+const navItems=[['home','Home','/tv'],['library','Library',query({screen:'browse',kind:'library'})],['live','Live',query({screen:'browse',kind:'channel'})],['play','Play',query({screen:'browse',kind:'game'})],['create','Create',query({screen:'create'})],['community','Community',query({screen:'community'})],['my-space','My Space',query({screen:'my-space'})],['saved','Collections',query({screen:'collections'})],['settings','Settings',query({screen:'settings'})]];
 function frame(res:ServerResponse,user:User|null,section:string,heading:string,content:string,status=200,navigation?:Navigation){
   const rail=user?'<td id="rail" valign="top"><div class="railcaption">YOUR WORLD</div>'+navItems.map(([key,label,path])=>href(path,label,'railitem'+(section===key?' active':''))).join('')+'<div class="railfooter">'+esc(user.username)+'</div></td>':'';
   const back=navigation?backDestination(navigation):'';
   const search=user?'<form class="global-search" action="/tv" method="get">'+hidden('screen','browse')+hidden('kind','all')+'<input type="text" name="q" maxlength="120" aria-label="Search your entertainment"><input class="commit" type="submit" value="Search"></form>':'';
   const backButton=back?'<a id="lounge-back" class="chip backbutton" href="'+esc(back)+'">&#8592; Back</a>':'';
-  let html='<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"><html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>'+esc(heading)+' | Hearthwave</title><link rel="stylesheet" type="text/css" href="/lounge.css?v=0341"><script type="text/javascript" src="/lounge-keys.js?v=0340" defer="defer"></script></head><body><div id="screen"><div id="mast"><a class="wordmark" href="/tv"><span class="emblem">&#9672;</span> hearthwave<span class="accent">.</span></a>'+search+'<span class="edition">YOUR ENTERTAINMENT &nbsp; / &nbsp; TV</span></div><table class="shell" cellpadding="0" cellspacing="0"><tr>'+rail+'<td id="stage" valign="top"><div class="heading"><h1>'+esc(heading)+'</h1><!--LOUNGE_BACK--></div>'+content+'</td></tr></table><div class="footer">Move with arrows &nbsp; &middot; &nbsp; OK to select &nbsp; &middot; &nbsp; Back to return <span>'+href('/?modern=1','Desktop interface','plain')+'</span></div></div></body></html>';
+  let html='<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"><html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>'+esc(heading)+' | Hearthwave</title><link rel="stylesheet" type="text/css" href="/lounge.css?v=0342"><script type="text/javascript" src="/lounge-keys.js?v=0342" defer="defer"></script></head><body><div id="screen"><div id="mast"><a class="wordmark" href="/tv"><span class="emblem">&#9672;</span> hearthwave<span class="accent">.</span></a>'+search+'<span class="edition">YOUR ENTERTAINMENT &nbsp; / &nbsp; TV</span></div><table class="shell" cellpadding="0" cellspacing="0"><tr>'+rail+'<td id="stage" valign="top"><div class="heading"><h1>'+esc(heading)+'</h1><!--LOUNGE_BACK--></div>'+content+'</td></tr></table><div class="footer">Move with arrows &nbsp; &middot; &nbsp; OK to select &nbsp; &middot; &nbsp; Back to return <span>'+href('/?modern=1','Desktop interface','plain')+'</span></div></div></body></html>';
   if(navigation)html=decorateNavigation(html,navigation);
   respond(res,status,html.replace('<!--LOUNGE_BACK-->',backButton));
 }
@@ -144,7 +150,7 @@ function redirect(res:ServerResponse,path:string){res.writeHead(303,{'Location':
 async function formData(req:IncomingMessage):Promise<URLSearchParams>{
   if(!/^application\/x-www-form-urlencoded(?:;|$)/i.test(req.headers['content-type']||''))throw new Error('Unsupported form encoding.');
   let length=0;const parts:Buffer[]=[];
-  for await(const chunk of req){const b=Buffer.from(chunk);length+=b.length;if(length>8192)throw new Error('Form exceeds the limit.');parts.push(b);}
+  for await(const chunk of req){const b=Buffer.from(chunk);length+=b.length;if(length>32768)throw new Error('Form exceeds the limit.');parts.push(b);}
   return new URLSearchParams(Buffer.concat(parts).toString('utf8'));
 }
 function loginScreen(req:IncomingMessage,res:ServerResponse,message='',status=200){
@@ -213,6 +219,7 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
     const stay=(fallback:string)=>redirect(res,carry(originalRoute||fallback,originalTrail));
     if(f.get('csrf')!==csrf)return error('Your session has expired. Open the page again.',403);
     const op=f.get('op'),id=idOf(f.get('id')),back=internalReturn(f.get('back')),item=id?getTitleDetail(id,user.id) as Entry|undefined:undefined;
+    if(op==='feature.backup'){if(user.role!=='admin')return error('Administrator access required.',403);try{return await s.backup();}catch(e){return error((e as Error).message,409);}}
     if(op?.startsWith('feature.')){
       try{const result=await submitLoungeFeature(op,f,user,s.call);if(result.body)return render(result.section,result.title,result.body);return stay(result.route||query({screen:result.section}));}catch(e){return error((e as Error).message,400);}
     }
@@ -249,15 +256,15 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
       const choice=f.has('variant')?getVariant(idOf(f.get('variant'))):playable(item,user.id)[0];
       if(!choice||choice.title_id!==id||['series','game'].includes(item.kind)||/^(xtream|stalker)-series:/.test(choice.url))return error('This version is not playable.',404);
       let address=choice.source_type==='folder'?'/api/media/'+choice.id+'/file':choice.url;
+      const tried=String(f.get('tried')||'').split(',').map(idOf).filter(Boolean).slice(0,20);if(!tried.includes(choice.id))tried.push(choice.id);
+      const alternative=tried.length<20?playable(item,user.id).find(v=>!tried.includes(v.id)):undefined;
+      const fallback=alternative?post(csrf,'watch',{id,back,variant:alternative.id,tried:tried.join(','),resume:f.get('resume')==='yes'?'yes':'no'},'Try next source','fallbackform'):'';
       if(choice.source_type==='stalker'&&address.startsWith('stalker:')){
         const source=getSource(choice.source_id);if(!source)return error('This connection is no longer available.',404);
-        try{address=await resolveProviderStream(source,choice.url);}catch{return error('This connection could not start playback. Choose another version.',502);}
+        try{address=await resolveProviderStream(source,choice.url);}catch{return render(sectionFor(item.kind),item.title,'<p class="notice">This connection could not start playback.</p>'+fallback+href(detail,'Other versions'),502);}
       }
       if(choice.source_type!=='folder'&&!imageUrl(address))return error('The source does not offer a supported HTTP media address.');
       if(!originalRoute&&!originalTrail.length)navigation.trail=pushRoute(pushRoute(originalTrail,back),detail);
-      const tried=String(f.get('tried')||'').split(',').map(idOf).filter(Boolean).slice(-20);tried.push(choice.id);
-      const alternative=playable(item,user.id).find(v=>!tried.includes(v.id));
-      const fallback=alternative?post(csrf,'watch',{id,back,variant:alternative.id,tried:tried.join(','),resume:'yes'},'Try next source','fallbackform'):'';
       const offset=f.get('resume')==='yes'?Math.max(0,Number(item.position_seconds)||0):0;
       const attrs=' id="media" src="'+esc(address)+'" controls="controls" autoplay="autoplay" preload="metadata" data-item="'+id+'" data-kind="'+esc(item.kind)+'" data-offset="'+offset+'" data-token="'+esc(csrf)+'"';
       const tag=item.kind==='music'?'audio':'video';
@@ -267,7 +274,14 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
         const parent=db.prepare('SELECT series_parent_id AS id FROM variants WHERE title_id=? AND series_parent_id IS NOT NULL LIMIT 1').get(id) as {id:number}|undefined;
         if(parent){const list=listSeriesEpisodes(parent.id,user.id) as Entry[],at=list.findIndex(x=>x.id===id);if(at>0){adjacent=post(csrf,'watch',{id:list[at-1].id,back},'Next episode','nextform');if(getUserPreferences(user.id).autoplayNext)autoNext='yes';}if(at>=0&&at+1<list.length)adjacent+=post(csrf,'watch',{id:list[at+1].id,back},'Previous episode');}
       }
-      return render(sectionFor(item.kind),item.title,'<div class="toolbar">'+href(detail,'Back to title','chip return-target')+adjacent+'</div><div class="screenmedia">'+media+'</div><div class="toolbar player-toolbar"><input class="commit" type="button" id="media-toggle" value="Play / pause"><input class="commit" type="button" id="media-full" value="Full screen">'+fallback+'</div><div id="media-message" class="caption" data-autonext="'+autoNext+'">'+esc(choice.source_name)+' / '+esc(choice.quality_tier)+' &middot; Native television playback</div><div class="toolbar">'+href(address,'Open stream directly')+href(detail,'Other versions')+'</div>');
+      if(item.kind==='channel'){
+        const ref=navigation.trail.map(x=>new URL(x,'http://hearthwave.invalid')).reverse().find(u=>u.searchParams.get('kind')==='channel');
+        const q=(ref?.searchParams.get('q')||'').slice(0,120),r=ref?.searchParams.get('region')||'',g=ref?.searchParams.get('genre')||'',region=['GB','US','other'].includes(r)?r:'',genre=liveGenres.includes(g as typeof liveGenres[number])?g:'',view=ref?.searchParams.get('view')==='favourites'?'favourites':'all',page=pageNo(ref?.searchParams.get('page'));
+        const start=Math.max(0,(page-1)*12),channels=listTitles('channel',user.id,q,view,'title',36,start,region,genre) as Entry[],at=channels.findIndex(v=>v.id===id);
+        if(at>0)adjacent+=post(csrf,'watch',{id:channels[at-1].id,back},'Previous channel','prevchannel');
+        if(at>=0&&at+1<channels.length)adjacent+=post(csrf,'watch',{id:channels[at+1].id,back},'Next channel','nextchannel');
+      }
+      return render(sectionFor(item.kind),item.title,'<div class="toolbar">'+href(detail,'Back','chip return-target')+adjacent+'</div><div class="screenmedia">'+media+'</div><div class="toolbar player-toolbar"><input class="commit" type="button" id="media-toggle" value="Play / pause"><input class="commit" type="button" id="media-full" value="Full screen">'+fallback+'</div><div id="media-message" class="caption" data-autonext="'+autoNext+'">'+esc(choice.source_name)+' / '+esc(choice.quality_tier)+' &middot; Native television playback</div><div class="toolbar">'+href(address,'Open stream directly')+href(detail,'Other versions')+'</div>');
     }
     return error('Unknown action.');
   }
@@ -301,22 +315,22 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
     const requestedSort=params.get('sort'),sort=requestedSort==='year'||requestedSort==='added'||requestedSort==='activity'||requestedSort==='title'?requestedSort:view==='continue'?'activity':'title';
     const state={screen:'browse',kind,view,q:search,region:country,genre,collection:cid,page:number,sort};
     const back=query(state),rows=listTitles(kind,user.id,search,view,sort,limit+1,number*limit,country,kind==='channel'?genre:'',kind==='channel'?'':genre,collection) as Entry[];
-    const kindbar=sectionFor(kind)==='library'?'<div class="toolbar">'+(['library','film','series','episode','music','photo'] as Kind[]).map(k=>href(query({screen:'browse',kind:k}),kindNames[k],k===kind?'primary':'chip')).join('')+href(query({screen:'saved'}),'Collections')+href(query({screen:'requests'}),'Media requests')+'</div>':kind==='channel'?'<div class="toolbar">'+href(query({screen:'guide'}),'Programme guide')+'</div>':'';
+    const kindbar=sectionFor(kind)==='library'?'<div class="toolbar">'+(['library','film','series','episode','music','photo'] as Kind[]).map(k=>href(query({screen:'browse',kind:k}),kindNames[k],k===kind?'primary':'chip')).join('')+href(query({screen:'collections'}),'Collections')+href(query({screen:'requests'}),'Media requests')+'</div>':kind==='channel'?'<div class="toolbar">'+href(query({screen:'guide'}),'Programme guide')+'</div>':'';
     const filter='<form class="filter" method="get" action="/tv">'+hidden('screen','browse')+hidden('kind',kind)+hidden('collection',cid)+'<label>Find <input type="text" name="q" maxlength="120" value="'+esc(search)+'"></label><label>Show '+select('view',[['all','All'],['favourites','Favourites'],['watchlist','Watchlist'],['continue','In progress']],view)+'</label>'+
       (kind==='channel'?'<label>Region '+select('region',[['','Everywhere'],['GB','UK'],['US','US'],['other','Other']],country)+'</label>':'')+(categories.length?'<label>Genre '+select('genre',[['','Any'],...categories.map(x=>[x,x] as [string,string])],genre)+'</label>':'')+(kind==='channel'?'':'<label>Sort '+select('sort',[['title','Title A–Z'],['year','Newest release'],['added','Recently added'],['activity','Recently watched']],sort)+'</label>')+'<input type="submit" class="commit" value="Find"></form>';
     const pages='<div class="toolbar pagination">'+(number?href(query({...state,page:number-1}),'Previous'):'')+'<span class="caption">Page '+(number+1)+'</span>'+(rows.length>limit?href(query({...state,page:number+1}),'Next'):'')+'</div>';
     return render(sectionFor(kind),collection?.name||kindNames[kind],kindbar+filter+(kind==='channel'?channelList(rows.slice(0,limit),back,csrf):shelf(rows.slice(0,limit),back,csrf))+pages);
   }
   if(screen==='guide'){
-    const number=pageNo(params.get('page')),region=['GB','US','other'].includes(params.get('region')||'')?params.get('region')!:'',limit=8;
+    const slot=Math.max(-4,Math.min(40,Math.floor(Number(params.get('slot'))||0))),number=pageNo(params.get('page')),region=['GB','US','other'].includes(params.get('region')||'')?params.get('region')!:'',limit=8;
     const rows=listTitles('channel',user.id,'','all','title',limit+1,number*limit,region) as Entry[];
-    const here=query({screen:'guide',region,page:number});
-    const now=Math.floor(Date.now()/1000);
+    const here=query({screen:'guide',region,page:number,slot});
+    const now=Math.floor(Date.now()/10800000)*10800+slot*10800;
     const listing=rows.slice(0,limit).map(row=>{
-      const schedule=storedGuide(row.id,3,now,now+3*3600).programmes;
-      return '<tr><td class="station">'+href(itemUrl(row,here),row.title,'stationlink')+'</td><td>'+(schedule.length?schedule.map(p=>'<div class="programme"><span class="time">'+esc(programmeTime(p.start))+'</span> '+esc(p.title)+'</div>').join(''):'<span class="caption">Guide not available</span>')+'</td></tr>';
+      const schedule=storedGuide(row.id,12,now,now+3*3600).programmes;
+      return '<tr><td class="station">'+(imageUrl(row.artwork)?'<img class="guide-logo" src="'+esc(imageUrl(row.artwork))+'" alt="">':'')+href(itemUrl(row,here),row.title,'stationlink')+post(csrf,'watch',{id:row.id,back:here},'Watch')+'</td><td>'+(schedule.length?schedule.map(p=>'<div class="programme"><span class="time">'+esc(programmeTime(p.start))+'</span> '+esc(p.title)+'</div>').join(''):'<span class="caption">Guide not available</span>')+'</td></tr>';
     }).join('');
-    return render('live','On now','<div class="toolbar">'+href(query({screen:'browse',kind:'channel'}),'All channels')+[['','All'],['GB','UK'],['US','US'],['other','Other']].map(([key,label])=>href(query({screen:'guide',region:key}),label,key===region?'primary':'chip')).join('')+'</div><table class="listing" cellspacing="0" cellpadding="0">'+listing+'</table><div class="toolbar">'+(number?href(query({screen:'guide',region,page:number-1}),'Previous'):'')+(rows.length>limit?href(query({screen:'guide',region,page:number+1}),'Next'):'')+'</div>');
+    return render('live','On now','<div class="toolbar">'+href(query({screen:'browse',kind:'channel'}),'All channels')+[['','All'],['GB','UK'],['US','US'],['other','Other']].map(([key,label])=>href(query({screen:'guide',region:key,slot}),label,key===region?'primary':'chip')).join('')+'</div><div class="toolbar">'+(slot>-4?href(query({screen:'guide',region,slot:slot-1,page:number}),'Earlier'):'')+'<span class="caption">'+esc(new Date(now*1000).toLocaleString('en-GB'))+' – '+esc(programmeTime(new Date((now+10800)*1000).toISOString()))+'</span>'+href(query({screen:'guide',region,slot:0}),'Now')+(slot<40?href(query({screen:'guide',region,slot:slot+1,page:number}),'Later'):'')+'</div><table class="listing" cellspacing="0" cellpadding="0">'+listing+'</table><div class="toolbar">'+(number?href(query({screen:'guide',region,page:number-1,slot}),'Previous'):'')+(rows.length>limit?href(query({screen:'guide',region,page:number+1,slot}),'Next'):'')+'</div>');
   }
   if(screen==='saved'){
     const groups=listCollections(user.id);
@@ -350,8 +364,9 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
       if(sources.length){const selected=sources[0];
         content+='<div class="toolbar">'+post(csrf,'watch',{...fields,variant:selected.id},item.kind==='photo'?'View':'Play now','heroform')+((item.position_seconds||0)>10?post(csrf,'watch',{...fields,variant:selected.id,resume:'yes'},'Resume at '+Math.floor((item.position_seconds||0)/60)+' min','heroform'):'')+'</div><h2>Available versions</h2><table class="listing" cellspacing="0" cellpadding="0">'+sources.map(v=>'<tr><td>'+esc(v.source_name)+'</td><td class="caption">'+esc(v.quality_tier)+'</td><td>'+post(csrf,'watch',{...fields,variant:v.id},'Play')+'</td></tr>').join('')+'</table>';
       }else content+='<p class="blank">No playable versions are available.</p>';
-      if(item.kind==='channel')content+='<h2>Programme schedule</h2>'+programmeList(id);
+      if(item.kind==='channel')content+='<h2>Programme schedule</h2>'+programmeList(id)+(user.role==='admin'?post(csrf,'feature.guide-refresh',{id},'Refresh provider guide')+href(query({screen:'guide-mapping',id}),'Map guide channel'):'');
     }
+    if(user.role==='admin'&&['film','series'].includes(item.kind))content+=post(csrf,'feature.title-metadata',{id},'Fetch metadata');
     if(!['channel','game'].includes(item.kind)){
       const shelves=listCollections(user.id,id).filter(c=>c.mode==='manual');
       if(shelves.length)content+='<h2>Personal shelves</h2><div class="toolbar">'+shelves.map(c=>post(csrf,'collection',{...fields,collection:c.id,include:c.included?'no':'yes'},(c.included?'Remove from ':'Add to ')+c.name)).join('')+'</div>';

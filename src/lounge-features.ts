@@ -1,4 +1,5 @@
 import type {User} from './model.ts';
+import { libraryGenres } from './library-genres.ts';
 export type LoungeCall=(method:'GET'|'POST'|'PATCH'|'DELETE',path:string,values?:Record<string,unknown>)=>Promise<any>;
 type Page={section:string;title:string;body:string};
 type Result={section:string;title:string;route?:string;body?:string};
@@ -21,7 +22,28 @@ const get=(f:URLSearchParams,key:string)=>f.get(key)||'';
 const admin=(u:User)=>{if(u.role!=='admin')throw Error('Administrator access required.');};
 const tabs=(screen:string,items:Array<[string,string]>)=>'<div class="toolbar">'+items.map(([tab,label])=>link(url(screen,{tab}),label)).join('')+'</div>';
 const settingsTabs:Array<[string,string]>=[['sources','Sources'],['metadata','Metadata & Guide'],['users','Users & Access'],['system','System']];
+function collectionRules(c:any={}){
+  const choose=(key:string,label:string,choices:Array<[string,string]>,value:string)=>'<label class="feature-field">'+h(label)+'<select name="'+key+'">'+choices.map(([k,n])=>'<option value="'+h(k)+'"'+(k===value?' selected="selected"':'')+'>'+h(n)+'</option>').join('')+'</select></label>';
+  const input=(key:string,label:string,value:unknown,max:number)=>'<label class="feature-field">'+h(label)+'<input type="text" name="'+key+'" value="'+h(value)+'" maxlength="'+max+'"></label>';
+  return choose('kind','Media type',[['all','All media'],['film','Films'],['series','Series'],['episode','Episodes'],['music','Music'],['photo','Photos']],c.rule_kind||'all')+choose('genre','Genre',[['','Any'],...libraryGenres.map(g=>[g,g] as [string,string])],c.rule_genre||'')+choose('view','Watch status',[['all','Any'],['favourites','Favourites'],['continue','In progress'],['unwatched','Not started']],c.rule_view||'all')+input('yearFrom','Year from',c.rule_year_from,4)+input('yearTo','Year to',c.rule_year_to,4)+input('query','Title contains',c.rule_query,80);
+}
 export async function renderLoungeFeature(screen:string,p:URLSearchParams,user:User,csrf:string,call:LoungeCall):Promise<Page|null>{
+  if(screen==='collections'||screen==='collection-edit'){
+    const data=await call('GET','/api/collections');
+    if(screen==='collection-edit'){
+      const cid=num(p.get('id')),c=data.collections.find((row:any)=>row.id===cid);if(!c)throw Error('Collection not found.');
+      return {section:'saved',title:c.name,body:panel('Manage collection',link(url('browse',{kind:'library',collection:cid}),'Open collection')+form(csrf,'collection-rename',{id:cid},'<label class="feature-field">Name<input name="name" type="text" maxlength="70" value="'+h(c.name)+'"></label>','Rename')+(c.mode==='smart'?form(csrf,'collection-rules',{id:cid},collectionRules(c),'Save smart rules'):'')+link(url('collection-remove',{id:cid}),'Remove collection'))};
+    }
+    return {section:'saved',title:'Collections',body:panel('Your collections',rows(data.collections,c=>'<strong>'+h(c.name)+'</strong>'+note(c.mode==='smart'?'Smart collection':c.item_count+' titles')+link(url('browse',{kind:'library',collection:c.id}),'Open')+link(url('collection-edit',{id:c.id}),'Manage')))+panel('New collection',form(csrf,'collection-create',{mode:'manual'},text('name','Name',70),'Create collection'))+panel('New smart collection',form(csrf,'collection-create',{mode:'smart'},text('name','Name',70)+collectionRules(),'Create smart collection'))};
+  }
+  if(screen==='collection-remove'){
+    const cid=num(p.get('id')),data=await call('GET','/api/collections'),c=data.collections.find((row:any)=>row.id===cid);if(!c)throw Error('Collection not found.');
+    return {section:'saved',title:'Remove collection',body:panel('Confirm removal',note('Remove '+c.name+'? Media files and titles are retained.')+button(csrf,'collection-remove',{id:cid},'Remove')+link(url('collection-edit',{id:cid}),'Cancel'))};
+  }
+  if(screen==='guide-mapping'){
+    admin(user);const cid=num(p.get('id')),q=(p.get('q')||'').slice(0,120),data=await call('GET','/api/titles/'+cid+'/guide/mapping'),matches=q?await call('GET','/api/guide/channels?q='+encodeURIComponent(q)):{channels:[]};
+    return {section:'live',title:'Map programme guide',body:panel('Current mapping',note(data.mapping?data.mapping.name:'Automatic matching')+(data.mapping?button(csrf,'guide-unmap',{id:cid},'Use automatic matching'):''))+'<form action="/tv" method="get">'+field('screen','guide-mapping')+field('id',cid)+text('q','Search imported guide')+'<input class="commit" type="submit" value="Search"></form>'+rows(matches.channels,c=>'<strong>'+h(c.name)+'</strong>'+note(c.source)+button(csrf,'guide-map',{id:cid,feed:c.feed_id,channel:c.channel_id},'Use channel'))};
+  }
   if(screen==='requests'){
     const data=await call('GET','/api/requests'+(user.role==='admin'?'?all=1':''));
     let body=panel('Request a film or series',form(csrf,'request',{},select('kind','Type',[['film','Film'],['series','Series']])+text('title','Title',150)+text('year','Release year (optional)',4)+area('notes','Notes'),'Submit request'));
@@ -107,7 +129,7 @@ export async function renderLoungeFeature(screen:string,p:URLSearchParams,user:U
   }
   if(tab==='system'){
     const status=await call('GET','/api/system/status'),update=await call('GET','/api/system/update/status');
-    return {section:'settings',title:'System',body:navigation+panel('Server overview',note('Version '+status.version+' / SQLite schema '+status.schema)+note('Memory '+Math.round(status.rssBytes/1048576)+' MiB / Database '+Math.round(status.databaseBytes/1048576)+' MiB'))+panel('Built-in updater',note(update.message)+link(url('admin',{tab:'system'}),'Refresh status')+link(url('admin',{tab:'update'}),'Check GitHub'))};
+    return {section:'settings',title:'System',body:navigation+panel('Server overview',note('Version '+status.version+' / SQLite schema '+status.schema)+note('Memory '+Math.round(status.rssBytes/1048576)+' MiB / Database '+Math.round(status.databaseBytes/1048576)+' MiB'))+panel('Built-in updater',note(update.message)+link(url('admin',{tab:'system'}),'Refresh status')+link(url('admin',{tab:'update'}),'Check GitHub'))+panel('Backup',note('Download a consistent database and encrypted configuration snapshot. Keep it private.')+button(csrf,'backup',{},'Download backup'))};
   }
   if(tab==='update'){
     const u=await call('GET','/api/system/update/check');
@@ -116,9 +138,18 @@ export async function renderLoungeFeature(screen:string,p:URLSearchParams,user:U
   return {section:'settings',title:'Settings',body:navigation};
 }
 export async function submitLoungeFeature(op:string,f:URLSearchParams,user:User,call:LoungeCall):Promise<Result>{
-  const v=(key:string)=>get(f,key),section=op.startsWith('feature.request')?'library':op.startsWith('feature.friend')||op.startsWith('feature.review')||op.startsWith('feature.room')?'community':op.startsWith('feature.event')||op.startsWith('feature.file')?'my-space':op.startsWith('feature.job')||op.startsWith('feature.worker')?'create':'settings';
+  const v=(key:string)=>get(f,key),section=op.startsWith('feature.collection')?'saved':op.startsWith('feature.request')?'library':op.startsWith('feature.friend')||op.startsWith('feature.review')||op.startsWith('feature.room')?'community':op.startsWith('feature.event')||op.startsWith('feature.file')?'my-space':op.startsWith('feature.job')||op.startsWith('feature.worker')?'create':'settings';
   const result:Result={section,title:'Operation completed'};
+  const rules=()=>({kind:v('kind'),genre:v('genre'),view:v('view'),query:v('query'),yearFrom:v('yearFrom')?Number(v('yearFrom')):null,yearTo:v('yearTo')?Number(v('yearTo')):null});
   switch(op){
+    case 'feature.collection-create':await call('POST','/api/collections',{name:v('name'),mode:v('mode'),...(v('mode')==='smart'?{rules:rules()}:{})});break;
+    case 'feature.collection-rename':await call('PATCH','/api/collections/'+id(f),{name:v('name')});break;
+    case 'feature.collection-rules':await call('PATCH','/api/collections/'+id(f)+'/rules',{rules:rules()});break;
+    case 'feature.collection-remove':await call('DELETE','/api/collections/'+id(f));result.body=link(url('collections'),'Return to collections');break;
+    case 'feature.guide-refresh':admin(user);await call('POST','/api/titles/'+id(f)+'/guide');break;
+    case 'feature.guide-map':admin(user);await call('POST','/api/titles/'+id(f)+'/guide/mapping',{feedId:id(f,'feed'),channelId:v('channel')});break;
+    case 'feature.guide-unmap':admin(user);await call('DELETE','/api/titles/'+id(f)+'/guide/mapping');break;
+    case 'feature.title-metadata':admin(user);await call('POST','/api/titles/'+id(f)+'/metadata/refresh');break;
     case 'feature.request':await call('POST','/api/requests',{kind:v('kind'),title:v('title'),year:v('year')?Number(v('year')):null,notes:v('notes')});break;
     case 'feature.request-state':await call('PATCH','/api/requests/'+id(f),{status:v('status'),...(v('titleId')?{titleId:id(f,'titleId')}:{})});break;
     case 'feature.friend':await call('POST','/api/community/friends',{username:v('username')});break;

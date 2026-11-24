@@ -171,6 +171,9 @@
     if (code >= 37 && code <= 40) { direction(code); return stop(ev); }
     if (code === 13 && node && tag === 'a') { window.location.href = node.href; return stop(ev); }
     if (code === 13 && node && tag === 'input' && (node.type === 'submit' || node.type === 'button') && node.click) { node.click(); return stop(ev); }
+    if (player && (code === 427 || code === 428 || code === 33 || code === 34)) {
+      if (submitClass(code === 427 || code === 33 ? 'nextchannel' : 'prevchannel')) { return stop(ev); }
+    }
     if (player && player.play && (code === 415 || code === 19 || code === 10252)) {
       try { if (code === 19 || (code === 10252 && !player.paused)) { player.pause(); } else { player.play(); } } catch (err2) {}
       return stop(ev);
@@ -202,7 +205,7 @@
       if (full) { if (player.requestFullscreen || player.webkitRequestFullscreen || player.webkitEnterFullscreen || player.mozRequestFullScreen || player.msRequestFullscreen) { bind(full, 'click', fullMedia); } else { full.style.display = 'none'; } }
       bind(player, 'error', function () {
         var message = document.getElementById('media-message');
-        if (message) { message.innerHTML = 'This television cannot play this source. Use another version or open the stream directly.'; }
+        if (message) { message.innerHTML = 'This television cannot play this source. Use Try next source or choose another version.'; }
       });
     }
     if (player && player.play && !initial) { initial = document.getElementById('media-toggle'); }

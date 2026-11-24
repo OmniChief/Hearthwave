@@ -1019,16 +1019,17 @@ const server = createServer(async (req, res) => {
           session,login:authenticate,issueSession,logout:(request,response,token)=>{removeSession(token);setCookie(request,response,'',0);},
           refreshEpisodes:startEpisodeDiscovery,episodeStatus:id=>episodeJobs.get(id),
           activity,version:applicationVersion,
+          backup:async()=>{requireIdle();systemOperation=true;try{if((await updateStatus()).busy)throw new HttpError(409,'Wait for the active update to finish.');await streamBackup(res);}finally{systemOperation=false;}},
           call:async(method,path,values={})=>{
             const identity=requireUser(req);
             const target=new URL(path,'http://localhost');
             // Only the fixed JSON endpoints used by the server-rendered forms are eligible.
-            const allowed=/^\/api\/(?:requests(?:\/\d+(?:\/matches)?)?|space\/events(?:\/\d+)?|space\/files(?:\/\d+(?:\/share(?:\/\d+)?)?)?|community\/(?:friends(?:\/\d+)?|reviews(?:\/\d+)?|titles|rooms(?:\/\d+(?:\/(?:chat|invite))?)?|rooms\/titles)|jobs(?:\/workers(?:\/\d+)?|\/\d+)?|sources(?:\/\d+(?:\/(?:scan|discover|categories|cancel))?)?|guide\/feeds(?:\/\d+(?:\/import)?)?|users|system\/(?:status|activity|metadata(?:\/cancel)?|update\/(?:check|status|install))|titles\/\d+\/metadata\/refresh)$/;
+            const allowed=/^\/api\/(?:requests(?:\/\d+(?:\/matches)?)?|space\/events(?:\/\d+)?|space\/files(?:\/\d+(?:\/share(?:\/\d+)?)?)?|community\/(?:friends(?:\/\d+)?|reviews(?:\/\d+)?|titles|rooms(?:\/\d+(?:\/(?:chat|invite))?)?|rooms\/titles)|collections(?:\/\d+(?:\/rules)?)?|jobs(?:\/workers(?:\/\d+)?|\/\d+)?|sources(?:\/\d+(?:\/(?:scan|discover|categories|cancel))?)?|guide\/feeds(?:\/\d+(?:\/import)?)?|users|system\/(?:status|activity|metadata(?:\/cancel)?|update\/(?:check|status|install))|titles\/\d+\/(?:metadata\/refresh|guide(?:\/mapping)?)|guide\/channels)$/;
             if(target.origin!=='http://localhost'||!allowed.test(target.pathname)||!['GET','POST','PATCH','DELETE'].includes(method))throw new HttpError(400,'Unsupported television operation.');
             const adapted=Object.create(req) as IncomingMessage;
             Object.defineProperties(adapted,{method:{value:method},headers:{value:{...req.headers,'x-csrf-token':identity.csrf}}});
             let result:unknown;
-            await api(adapted,res,target,async()=>values,(_res,status,data)=>{if(status>=400)throw new HttpError(status,'The operation could not be completed.');result=data;});
+            try{await api(adapted,res,target,async()=>values,(_res,status,data)=>{if(status>=400)throw new HttpError(status,'The operation could not be completed.');result=data;});}catch(error){if(error instanceof HttpError||error instanceof SpaceError||error instanceof UpdateError||error instanceof ProviderError||error instanceof BackupError)throw error;console.error('TV API operation failed:',error);throw new HttpError(500,'The operation could not be completed.');}
             return result;
           }
         });
