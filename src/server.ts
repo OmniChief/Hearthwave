@@ -1,3 +1,4 @@
+import { requestsApi } from './requests.ts';
 import { roomsApi } from './rooms.ts';
 import { jobsApi, workerApi } from './jobs.ts';
 import { spaceApi, SpaceError } from './space.ts';
@@ -23,7 +24,7 @@ import type { GuideProgramme, ImportItem, ProviderCategory, ProviderConfig, Sour
 
 const webRoot = join(dirname(fileURLToPath(import.meta.url)), '..', 'web');
 const allowedAssets: Record<string, string> = {
-  '/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/tv-navigation.js': 'tv-navigation.js', '/playback-variants.js': 'playback-variants.js', '/hls-playback.js': 'hls-playback.js', '/playback-diagnostics.js': 'playback-diagnostics.js', '/local-media.js': 'local-media.js', '/space.js': 'space.js', '/workers.js': 'workers.js', '/rooms.js': 'rooms.js', '/vendor/hls.light.min.js': 'vendor/hls.light.min.js',
+  '/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/tv-navigation.js': 'tv-navigation.js', '/playback-variants.js': 'playback-variants.js', '/hls-playback.js': 'hls-playback.js', '/playback-diagnostics.js': 'playback-diagnostics.js', '/local-media.js': 'local-media.js', '/space.js': 'space.js', '/workers.js': 'workers.js', '/rooms.js': 'rooms.js', '/requests.js': 'requests.js', '/vendor/hls.light.min.js': 'vendor/hls.light.min.js',
   '/styles.css': 'styles.css', '/manifest.webmanifest': 'manifest.webmanifest',
   '/game.html':'game.html', '/game.js':'game.js',
   '/sw.js': 'sw.js', '/icon.svg': 'icon.svg',
@@ -383,7 +384,7 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const path = url.pathname;
   const method = req.method || 'GET';
-  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.26.0', pid: process.pid });
+  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.27.0', pid: process.pid });
   if (path === '/api/session' && method === 'GET') {
     const current = session(req);
     return send(res, 200, { needsSetup: !hasUsers(), user: current?.user || null, csrf: current?.csrf || null });
@@ -427,6 +428,10 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
 
   if(path.startsWith('/api/worker/')) return workerApi(req,res,url,body,send);
   const current = requireUser(req);
+  if(path==='/api/requests'||path.startsWith('/api/requests/')) {
+    if(method!=='GET') requireWrite(req);
+    return requestsApi(req,res,url,current.user,body,send);
+  }
   if(path==='/api/jobs'||path.startsWith('/api/jobs/')) {
     if(method!=='GET') requireWrite(req);
     return jobsApi(req,res,url,current.user,body,send);
@@ -442,7 +447,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   if (path === '/api/system/status' && method === 'GET') {
     if (current.user.role !== 'admin') throw new HttpError(403, 'Administrator access required.');
     const databaseInfo = await stat(join(dataDir, 'hearthwave.sqlite'));
-    return send(res, 200, { version: '0.26.0', schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, databaseBytes: databaseInfo.size, rssBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(process.uptime()), backupBusy: backupBusy() });
+    return send(res, 200, { version: '0.27.0', schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, databaseBytes: databaseInfo.size, rssBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(process.uptime()), backupBusy: backupBusy() });
   }
   if(path==='/api/system/update/check' && method==='GET') {
     if(current.user.role!=='admin') throw new HttpError(403,'Administrator access required.');
