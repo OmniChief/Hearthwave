@@ -214,13 +214,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .episode-row small { font-size:11px; color:var(--muted); margin-top:5px; }
 .alert-note { color:#f6b4ac; }
 .guide-scroll { --guide-channel-width:250px; --guide-time-width:720px; max-width:100%; overflow-x:auto; overscroll-behavior-x:contain; padding-bottom:8px; }
-.guide-grid { display:grid; gap:6px; min-width:calc(var(--guide-channel-width) + var(--guide-time-width) + 26px); }
+.guide-grid { display:grid; gap:6px; min-width:calc(var(--guide-channel-width) + var(--guide-time-width) + 38px); }
 .guide-navigation { display:grid; gap:11px; margin:18px 0; }
 .guide-date-nav,.guide-slot-nav,.guide-pagination { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:9px; }
 .guide-date-nav strong { font-size:15px; color:#f3d4b8; }
 .guide-slot-nav { justify-content:flex-start; }
 .guide-ruler { display:grid; grid-template-columns:var(--guide-channel-width) minmax(var(--guide-time-width),1fr); gap:12px; align-items:end; padding:0 13px 9px; min-width:calc(var(--guide-channel-width) + var(--guide-time-width) + 38px); font-size:11px; color:#b7c5d7; }
-.guide-ruler > div { display:flex; justify-content:space-between; }
+.guide-ruler > div { position:relative; height:16px; }
+.guide-ruler > div > span { position:absolute; top:0; white-space:nowrap; }
+.guide-ruler > div > span:nth-child(1) { left:0; }
+.guide-ruler > div > span:nth-child(2) { left:33.333333%; transform:translateX(-50%); }
+.guide-ruler > div > span:nth-child(3) { left:66.666667%; transform:translateX(-50%); }
+.guide-ruler > div > span:nth-child(4) { right:0; }
 .guide-ruler > span { position:sticky; left:0; z-index:3; background:var(--bg); }
 .guide-row { display:grid; grid-template-columns:var(--guide-channel-width) minmax(var(--guide-time-width),1fr); gap:12px; align-items:center; min-width:calc(var(--guide-channel-width) + var(--guide-time-width) + 38px); border:1px solid var(--stroke); border-radius:12px; background:#19232f; padding:10px 12px; }
 .guide-channel { display:flex; align-items:center; gap:10px; min-width:0; position:sticky; left:0; z-index:3; background:#19232f; padding-right:5px; }
