@@ -18,7 +18,7 @@ import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, complete
 import { discoverProvider, discoverSeriesEpisodes, fetchTitleMetadata, importProvider, providerGuide, resolveProviderStream, debugStalkerStream, type ProviderScanProgress } from './adapters/providers.ts';
 import { importXmltv } from './guide.ts';
 import { localSubtitles, subtitleVtt } from './subtitles.ts';
-import { checkMediaResponse, fetchM3u, ProviderError, validateProviderUrl } from './adapters/network.ts';
+import { checkMediaResponse, inspectMediaHeaders, fetchM3u, ProviderError, validateProviderUrl } from './adapters/network.ts';
 import type { GuideProgramme, ImportItem, ProviderCategory, ProviderConfig, SourceType, User } from './model.ts';
 
 function needsLounge(agent:string):boolean{
@@ -953,13 +953,23 @@ async function dispatchApi(req:IncomingMessage,res:ServerResponse,url:URL,body:B
       url:v.source_type === 'folder' ? `/api/media/${v.id}/file` : v.source_type === 'stalker' ? null : v.url.startsWith('xtream-series:') ? null : v.url,
     })) });
   }
-  const resolveMatch = /^\/api\/variants\/(\d+)\/(resolve|check-playback|debug-playback)$/.exec(path);
+  const resolveMatch = /^\/api\/variants\/(\d+)\/(resolve|check-playback|debug-playback|debug-headers)$/.exec(path);
   if (resolveMatch && method === 'POST') {
     requireWrite(req,resolveMatch[2] !== 'resolve');
     const variant = getVariant(positiveId(resolveMatch[1]));
     if (!variant) throw new HttpError(404,'Source version not found.');
     const source = getSource(variant.source_id);
     if (!source) throw new HttpError(404,'Source connection not found.');
+    if(resolveMatch[2]==='debug-headers') {
+      if(source.type!=='stalker'||variant.source_type!=='stalker'||getTitle(variant.title_id)?.kind!=='channel') throw new HttpError(404,'Stalker live channel not found.');
+      const input=await body(req);
+      let origin='';
+      try {const u=new URL(String(input.origin||''));if(['http:','https:'].includes(u.protocol)&&u.origin===input.origin&&u.origin.length<=512)origin=u.origin;}catch{}
+      const result=await debugStalkerStream(source,variant.url);
+      if(!result.url)return send(res,200,{trace:['Header check: fresh link resolution failed.',...result.trace]});
+      try{return send(res,200,{trace:await inspectMediaHeaders(result.url,Boolean(source.config.allowLan),origin)});}
+      catch(error){return send(res,200,{trace:['Header check: '+(error instanceof ProviderError?'provider error '+error.status:'network/transport error')+'; no media body requested.']});}
+    }
     if(resolveMatch[2]==='debug-playback') {
       if(source.type!=='stalker'||variant.source_type!=='stalker'||getTitle(variant.title_id)?.kind!=='channel') throw new HttpError(404,'Stalker live channel not found.');
       return send(res,200,await debugStalkerStream(source,variant.url));

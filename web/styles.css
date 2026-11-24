@@ -316,3 +316,5 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .game-cover{width:100%;height:13rem;object-fit:contain}.game-frame{width:100%;height:75vh;border:0;background:#10151d}
 
 .watch-chat{max-height:12rem;overflow-y:auto;margin:0.75rem 0;overflow-wrap:anywhere}.watch-chat p{margin:0.5rem 0}#watch-room-panel form{flex-wrap:wrap}#watch-room-panel input{min-width:0;flex:1}#watch-room-panel{margin-top:1rem}
+
+.stalker-debug-report { width:100%; box-sizing:border-box; font:12px/1.5 monospace; resize:vertical; }

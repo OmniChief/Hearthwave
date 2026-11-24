@@ -230,3 +230,42 @@ export function checkMediaResponse(address: string, allowLan: boolean): Promise<
     return 'The provider redirected the media request too many times.';
   });
 }
+
+
+/** Explicit diagnostic only: HEAD never forwards or consumes a media body. */
+export async function inspectMediaHeaders(address:string, allowLan:boolean, browserOrigin:string):Promise<string[]> {
+  return withSlot(async()=>{
+    const trace:string[]=['NAS header check: fresh link, HEAD only; results may differ from the client GET.'];
+    let url=validateProviderUrl(address);
+    const initialOrigin=url.origin;
+    const signal=AbortSignal.timeout(8000);
+    for(let hop=0;hop<=5;hop++){
+      const pinned=await pinnedAddress(url,allowLan&&url.origin===initialOrigin);
+      const transport=url.protocol==='https:'?https:http;
+      const response=await new Promise<http.IncomingMessage>((resolve,reject)=>{
+        const req=transport.request(url,{method:'HEAD',agent:false,autoSelectFamily:false,signal,maxHeaderSize:16*1024,
+          headers:{Accept:'*/*',...(browserOrigin?{Origin:browserOrigin}:{})},
+          lookup:(_host,_options,done)=>done(null,pinned.address,pinned.family)},resolve);
+        req.once('error',reject);req.end();
+      });
+      try {
+        const status=response.statusCode||0,headers=response.headers;
+        const cors=headers['access-control-allow-origin'];
+        const corsHint=cors==='*'?'wildcard':browserOrigin&&cors===browserOrigin?'matches browser origin':cors?'different/invalid origin':'absent';
+        const mime=String(headers['content-type']||'').split(';')[0].trim().toLowerCase();
+        const mediaType=/^(?:video|audio|application|text)\/[a-z0-9.+-]{1,80}$/.test(mime)?mime:'unknown';
+        trace.push('HEAD hop '+(hop+1)+': HTTP '+status+'; '+mediaType+'; CORS '+corsHint);
+        if([301,302,303,307,308].includes(status)&&headers.location){
+          if(hop===5){trace.push('Redirect limit reached.');return trace;}
+          const next=validateProviderUrl(new URL(headers.location,url).href);
+          trace.push('Redirect: '+next.protocol+'; '+(next.origin===url.origin?'same origin':'different origin'));
+          url=next;continue;
+        }
+        if(status===405||status===501)trace.push('Provider does not support HEAD; browser GET may still work.');
+        else if(status>=200&&status<300&&url.origin!==browserOrigin&&!['wildcard','matches browser origin'].includes(corsHint))trace.push('CORS is missing or incompatible on this HEAD response; browser MPEG-TS fetching may be blocked.');
+        return trace;
+      } finally {response.destroy();}
+    }
+    return trace;
+  });
+}

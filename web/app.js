@@ -687,6 +687,8 @@ function renderPlaybackDiagnostics() {
   $('#player-advice').textContent=current?.status==='Playing' ? 'This connection is playing. Browser capability checks are hints, not a guarantee for every video.' : current?.failure!=='none' && current ? connectionAdvice(current.failure,current.format,current.mixedContent) : current?.mixedContent ? connectionAdvice('unknown',current.format,true) : 'If a connection fails, its cause and suggested next step will appear here.';
   const debugReport=$('#stalker-debug-report');
   debugReport.hidden=!state.stalkerDebug;
+  $('#stalker-header-check').hidden=!state.stalkerDebug;
+  $('#stalker-header-check').disabled=!current || current.headerBusy || !['Failed','Paused'].includes(current.status);
   if(state.stalkerDebug) debugReport.value=playbackReport(attempts,browserPlaybackCapabilities($('#player')))+'\n'+clientDebugSnapshot();
   const caps=browserPlaybackCapabilities($('#player'));
   $('#player-browser-support').innerHTML=caps.map(([label,value])=>`<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join('');
@@ -915,6 +917,7 @@ async function playVariant() {
     const dispose=await prepareMedia(media,url,{
       alive, live:state.activeTitle?.kind==='channel',
       onEngine:name=>{if(attempt?.generation===generation){attempt.engine=name;renderPlaybackDiagnostics();}},
+      onDiagnostic:message=>{if(alive()&&state.stalkerDebug&&attempt?.generation===generation){(attempt.engineTrace??=[]).push(message);renderPlaybackDiagnostics();}},
       fatal:(message,code)=>failSource(generation,message,code),
       ready:()=>{
         if(!alive()) return;
@@ -1419,6 +1422,23 @@ $('#player-diagnostics-toggle').addEventListener('click',()=>{
   $('#player-diagnostics-toggle').setAttribute('aria-expanded',String(!panel.hidden));
   $('#player-diagnostics-copy').hidden=!state.stalkerDebug&&!navigator.clipboard?.writeText;
   renderPlaybackDiagnostics();
+});
+$('#stalker-header-check').addEventListener('click',async()=>{
+  const attempt=currentPlaybackAttempt();
+  if(!state.stalkerDebug||state.session?.user?.role!=='admin'||!attempt||attempt.headerBusy||!['Failed','Paused'].includes(attempt.status)) return;
+  // Stop the failed/paused media request before asking the provider for a fresh link.
+  disposeMedia();
+  state.resolvedUrl=null;
+  resetMediaElement($('#player'));
+  clearPlaybackRecovery();
+  attempt.headerBusy=true;
+  attempt.headerTrace=['Checking fresh provider link headers (HEAD only, no video body)…'];
+  renderPlaybackDiagnostics();
+  try {
+    const result=await api('/api/variants/'+attempt.variantId+'/debug-headers',{method:'POST',body:{origin:location.origin}});
+    attempt.headerTrace=result.trace||['No header information returned.'];
+  } catch {attempt.headerTrace=['Header check failed; no stream was relayed.'];}
+  finally {attempt.headerBusy=false;if(currentPlaybackAttempt()===attempt)renderPlaybackDiagnostics();}
 });
 $('#player-diagnostics-copy').addEventListener('click',()=>{
   const report=playbackReport(state.playbackAttempts,browserPlaybackCapabilities($('#player')))+(state.stalkerDebug?'\n'+clientDebugSnapshot():'');

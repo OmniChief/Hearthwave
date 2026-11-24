@@ -34,9 +34,20 @@ function loadLibrary(name,path) {
 }
 
 /** Returns a cleanup function. The caller owns playback-generation checks and source fallback. */
-export async function prepareMedia(video,address,{ready,fatal,alive,live=false,onEngine=()=>{}}) {
+export async function prepareMedia(video,address,{ready,fatal,alive,live=false,onEngine=()=>{},onDiagnostic=()=>{}}) {
   const format = liveStreamFormat(address);
   const hls = format === 'HLS';
+  // Native media does not need JS access to cross-origin stream bytes.
+  // Prefer it only where the device reports support, without changing signed URLs.
+  if ((hls && video.canPlayType('application/vnd.apple.mpegurl')) ||
+      (live && format==='MPEG-TS' && video.canPlayType('video/mp2t'))) {
+    onEngine(hls?'Native HLS':'Native video');
+    onDiagnostic('Native playback selected: device reports support for '+format);
+    video.src=address;
+    video.load();
+    ready();
+    return () => {};
+  }
   if (live && format === 'MPEG-TS') {
     let library;
     try { library=await loadLibrary('mpegts','/vendor/mpegts.js'); }
@@ -46,11 +57,20 @@ export async function prepareMedia(video,address,{ready,fatal,alive,live=false,o
       // Provider playback URLs can contain credentials.
       library.LoggingControl.enableAll=false;
       onEngine('mpegts.js');
-      const player=library.createPlayer({type:'mpegts',isLive:true,url:address});
-      player.on(library.Events.ERROR,(type,detail)=>{
+      onDiagnostic('Browser MPEG-TS engine: cross-origin fetch; credentials omitted');
+      const player=library.createPlayer({type:'mpegts',isLive:true,url:address,cors:true,withCredentials:false});
+      player.on(library.Events.ERROR,(type,detail,info)=>{
         if (!alive()) return;
+        const knownType=Object.keys(library.ErrorTypes||{}).find(key=>library.ErrorTypes[key]===type)||'UNKNOWN';
+        const knownDetail=Object.keys(library.ErrorDetails||{}).find(key=>library.ErrorDetails[key]===detail)||'UNKNOWN';
+        const status=Number(info?.code);
+        const http=knownDetail==='NETWORK_STATUS_CODE_INVALID' && Number.isInteger(status) && status>=100 && status<=599;
+        // Never include the upstream message: it may contain a signed URL.
+        const message=String(info?.msg||info?.message||'');
+        const hint=/cors|cross.origin/i.test(message)?'cross-origin mentioned':/failed to fetch|networkerror|load failed/i.test(message)?'browser fetch rejected':/timeout/i.test(message)?'timeout mentioned':'none';
+        onDiagnostic('MPEG-TS '+knownType+' / '+knownDetail+'; HTTP '+(http?status:'not exposed')+'; hint '+hint);
         if (type===library.ErrorTypes.NETWORK_ERROR) {
-          fatal('The browser could not read the live transport stream. Check the provider response and cross-origin media access.','network');
+          fatal(http?'The stream request returned HTTP '+status+'.':'The browser could not read the direct transport stream. Check provider access and CORS.','network');
         } else {
           fatal(detail===library.ErrorDetails.MEDIA_FORMAT_UNSUPPORTED ? 'The provider response was not a supported transport stream.' : 'The browser could not decode the live transport stream.','decode');
         }
@@ -98,6 +118,9 @@ export async function prepareMedia(video,address,{ready,fatal,alive,live=false,o
     engine.on(Hls.Events.MANIFEST_PARSED,()=>{if(alive()&&!nativeTried) ready();});
     engine.on(Hls.Events.ERROR,(_event,data)=>{
       if (!alive() || nativeTried || !data?.fatal) return;
+      const detail=Object.values(Hls.ErrorDetails||{}).includes(data.details)?data.details:'unknown';
+      const status=Number(data.response?.code);
+      onDiagnostic('HLS failure: '+detail+'; HTTP '+(Number.isInteger(status)&&status>=100&&status<=599?status:'not exposed'));
       if (data.type===Hls.ErrorTypes.MEDIA_ERROR && !mediaRecovered) {mediaRecovered=true;engine.recoverMediaError();return;}
       if (data.type===Hls.ErrorTypes.NETWORK_ERROR && !/^manifest/i.test(data.details || '') && !networkRecovered) {networkRecovered=true;engine.startLoad();return;}
       if(nativeFallback()) return;
