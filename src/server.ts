@@ -1,3 +1,4 @@
+import { spaceApi, SpaceError } from './space.ts';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createReadStream } from 'node:fs';
 import { readFile, realpath, stat } from 'node:fs/promises';
@@ -20,7 +21,7 @@ import type { GuideProgramme, ImportItem, ProviderCategory, ProviderConfig, Sour
 
 const webRoot = join(dirname(fileURLToPath(import.meta.url)), '..', 'web');
 const allowedAssets: Record<string, string> = {
-  '/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/tv-navigation.js': 'tv-navigation.js', '/playback-variants.js': 'playback-variants.js', '/hls-playback.js': 'hls-playback.js', '/playback-diagnostics.js': 'playback-diagnostics.js', '/local-media.js': 'local-media.js', '/vendor/hls.light.min.js': 'vendor/hls.light.min.js',
+  '/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/tv-navigation.js': 'tv-navigation.js', '/playback-variants.js': 'playback-variants.js', '/hls-playback.js': 'hls-playback.js', '/playback-diagnostics.js': 'playback-diagnostics.js', '/local-media.js': 'local-media.js', '/space.js': 'space.js', '/vendor/hls.light.min.js': 'vendor/hls.light.min.js',
   '/styles.css': 'styles.css', '/manifest.webmanifest': 'manifest.webmanifest',
   '/game.html':'game.html', '/game.js':'game.js',
   '/sw.js': 'sw.js', '/icon.svg': 'icon.svg',
@@ -380,7 +381,7 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const path = url.pathname;
   const method = req.method || 'GET';
-  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.21.0', pid: process.pid });
+  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.22.0', pid: process.pid });
   if (path === '/api/session' && method === 'GET') {
     const current = session(req);
     return send(res, 200, { needsSetup: !hasUsers(), user: current?.user || null, csrf: current?.csrf || null });
@@ -423,10 +424,14 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   }
 
   const current = requireUser(req);
+  if(path.startsWith('/api/space/') || path.startsWith('/api/community/')) {
+    if(method!=='GET') requireWrite(req);
+    return spaceApi(req,res,url,current.user,body,send);
+  }
   if (path === '/api/system/status' && method === 'GET') {
     if (current.user.role !== 'admin') throw new HttpError(403, 'Administrator access required.');
     const databaseInfo = await stat(join(dataDir, 'hearthwave.sqlite'));
-    return send(res, 200, { version: '0.21.0', schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, databaseBytes: databaseInfo.size, rssBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(process.uptime()), backupBusy: backupBusy() });
+    return send(res, 200, { version: '0.22.0', schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, databaseBytes: databaseInfo.size, rssBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(process.uptime()), backupBusy: backupBusy() });
   }
   if(path==='/api/system/update/check' && method==='GET') {
     if(current.user.role!=='admin') throw new HttpError(403,'Administrator access required.');
@@ -943,7 +948,7 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': contentTypes[extname(name)] || 'application/octet-stream', 'Cache-Control': name === 'sw.js' ? 'no-cache' : 'no-store' });
     res.end(contents);
   } catch (error) {
-    const status = error instanceof HttpError || error instanceof ProviderError || error instanceof BackupError || error instanceof UpdateError ? error.status : (error as NodeJS.ErrnoException).code === 'ENOENT' ? 404 : 500;
+    const status = error instanceof SpaceError || error instanceof HttpError || error instanceof ProviderError || error instanceof BackupError || error instanceof UpdateError ? error.status : (error as NodeJS.ErrnoException).code === 'ENOENT' ? 404 : 500;
     if (status === 500) console.error('Request failed:', error);
     const message = status === 500 ? 'The request could not be completed.' : error instanceof Error ? error.message : 'Request failed.';
     if (!res.headersSent) send(res, status, { error: message });

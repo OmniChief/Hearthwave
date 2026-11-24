@@ -1,3 +1,4 @@
+import { spacePages } from './space.js';
 import { installTvNavigation } from './tv-navigation.js';
 import { orderPlaybackVariants, playbackVariantLabel } from './playback-variants.js';
 import { prepareMedia } from './hls-playback.js';
@@ -65,6 +66,7 @@ function showAuth(needsSetup) {
 }
 
 function showShell() {
+  space.reset();
   $('#auth').hidden = true;
   $('#shell').hidden = false;
   $('#current-user').textContent = state.session.user.username;
@@ -379,8 +381,6 @@ async function renderGuideGrid() {
 
 const upcoming = {
   create:{ title:'Make something wonderful', description:'Creative projects will be managed here while optional PC workers do the heavy lifting.',icon:'✳',features:[['Image studio','Queue text-to-image jobs and organise generated assets.'],['Video workspace','Optional video generation and project history.'],['Worker pairing','Attach a capable PC for conversion and GPU work.']] },
-  community:{ title:'Good things are better shared',description:'Profiles, friends and togetherness without giving up ownership.',icon:'♧',features:[['Friends and profiles','Private social identities, lists and reviews.'],['Watch together','Synchronized viewing and chat rooms.'],['Teams and achievements','Game rankings and shared milestones.']] },
-  'my-space':{ title:'Your corner of the world',description:'Everyday tools, plans and files in your own space.',icon:'☷',features:[['Personal calendar','Reminders, releases and shared planning.'],['File exchange','Permission-controlled sharing and resumable uploads.'],['Your dashboard','Photos, notifications, ambient displays and webcams.']] },
 };
 
 function renderUpcoming(section) {
@@ -573,6 +573,7 @@ async function renderGames() {
     : emptyState('No games indexed', 'Scan your ROM folder under Settings > Sources.', '◈'));
 }
 
+const space = spacePages({page,state,api,esc,notify});
 async function renderPage() {
   switch (state.page) {
     case 'home': return renderHome();
@@ -580,6 +581,7 @@ async function renderPage() {
     case 'live': return renderLive();
     case 'play': return renderGames();
     case 'settings': return renderSettings();
+    case 'community': case 'my-space': return space.render(state.page);
     default: return renderUpcoming(state.page);
   }
 }
@@ -976,6 +978,7 @@ page.addEventListener('error', event => { if (event.target?.matches?.('.media-ar
 
 page.addEventListener('submit', async event => {
   const form = event.target;
+  if(form.dataset.spaceForm) return space.submit(event);
   if(form.id==='smart-collection-create-form' || form.dataset.smartRulesForm) {
     event.preventDefault();
     const creating=form.id==='smart-collection-create-form';
@@ -1059,6 +1062,7 @@ page.addEventListener('submit', async event => {
 page.addEventListener('click', async event => {
   const target = event.target.closest('button');
   if (!target) return;
+  if(target.dataset.spaceAction) return space.click(event);
   if(target.dataset.game) {
     const title=target.closest('article').querySelector('h3').textContent;
     page.innerHTML=heading(title,'','<button class="button button-quiet" data-close-game>Back to games</button>')+'<iframe class="game-frame" title="EmulatorJS" allow="autoplay; fullscreen; gamepad" allowfullscreen src="/game.html?id='+Number(target.dataset.game)+'"></iframe>';
