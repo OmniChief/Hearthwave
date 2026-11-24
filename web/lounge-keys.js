@@ -76,6 +76,19 @@
       xhr.send('op=position&id=' + encodeURIComponent(player.getAttribute('data-item')) + '&csrf=' + encodeURIComponent(player.getAttribute('data-token')) + '&seconds=' + encodeURIComponent(position));
     } catch (err) {}
   }
+  function returnToPrevious() {
+    var stage = document.getElementById('stage'), links = stage ? stage.getElementsByTagName('a') : [], i;
+    for (i = 0; i < links.length; i++) {
+      if (/(^|\s)return-target(\s|$)/.test(String(links[i].className || ''))) { window.location.href = links[i].href; return; }
+    }
+    if (window.location.search || window.location.pathname !== '/tv') { window.location.href = '/tv'; }
+  }
+  function resumeMedia() {
+    if (hasResumed || !player) { return; }
+    var offset = Number(player.getAttribute('data-offset'));
+    if (offset > 0) { try { player.currentTime = offset; } catch (err) {} }
+    hasResumed = true;
+  }
   function keydown(event) {
     var ev = event || window.event, code = ev.keyCode || ev.which, node = focusNode, tag = node ? String(node.tagName).toLowerCase() : '', typing = tag === 'input' && (node.type === 'text' || node.type === 'password'), choosing = tag === 'select';
     if (code === 27 || code === 461 || code === 10009 || (code === 8 && !typing && !choosing)) {
@@ -86,7 +99,7 @@
         else { var all = visibleControls(); choose(all[0]); }
       } else {
         storePosition(true);
-        if (window.location.search || window.location.pathname !== '/tv') { window.location.href = '/tv'; }
+        returnToPrevious();
       }
       return stop(ev);
     }
@@ -105,19 +118,15 @@
     return true;
   }
   function init() {
-    var items = visibleControls(), i, initial = document.getElementById('account'), rail = document.getElementById('rail'), links;
+    var items = visibleControls(), i, initial = document.getElementById('account'), stage = document.getElementById('stage'), rail = document.getElementById('rail'), links;
     for (i = 0; i < items.length; i++) {
       bind(items[i], 'focus', function (event) { var ev = event || window.event; mark(ev.target || ev.srcElement); });
     }
     bind(document, 'keydown', keydown);
     player = document.getElementById('media');
     if (player && player.play) {
-      bind(player, 'loadedmetadata', function () {
-        if (hasResumed) { return; }
-        var offset = Number(player.getAttribute('data-offset'));
-        if (offset > 0) { try { player.currentTime = offset; } catch (err) {} }
-        hasResumed = true;
-      });
+      bind(player, 'loadedmetadata', resumeMedia);
+      if (player.readyState > 0) { resumeMedia(); }
       bind(player, 'timeupdate', function () { storePosition(false); });
       bind(player, 'pause', function () { storePosition(true); });
       bind(player, 'ended', function () { storePosition(true); });
@@ -125,6 +134,10 @@
         var message = document.getElementById('media-message');
         if (message) { message.innerHTML = 'This television cannot play this source. Use another version or open the stream directly.'; }
       });
+    }
+    if (!initial && stage) {
+      links = stage.getElementsByTagName('a');
+      if (links.length) { initial = links[0]; }
     }
     if (!initial && rail) {
       links = rail.getElementsByTagName('a');
