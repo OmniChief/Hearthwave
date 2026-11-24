@@ -14,5 +14,27 @@ jobs:
           node-version: '24'
       - name: Check TypeScript and JavaScript syntax
         run: |
+          node --disable-warning=ExperimentalWarning --experimental-vm-modules --input-type=module <<'JS'
+          import { readdirSync, readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          import { stripTypeScriptTypes } from 'node:module';
+          import { SourceTextModule } from 'node:vm';
+          function check(directory) {
+            for (const entry of readdirSync(directory, { withFileTypes: true })) {
+              const path = join(directory, entry.name);
+              if (entry.isDirectory()) check(path);
+              else if (entry.isFile() && path.endsWith('.ts')) {
+                try {
+                  const source = stripTypeScriptTypes(readFileSync(path, 'utf8'), { mode: 'strip' });
+                  new SourceTextModule(source, { identifier: path });
+                } catch (error) {
+                  console.error(path, error);
+                  process.exitCode = 1;
+                }
+              }
+            }
+          }
+          check('src');
+          JS
           find src -type f -name '*.ts' -print0 | xargs -0 -n1 node --disable-warning=ExperimentalWarning --experimental-strip-types --check
           find web -type f -name '*.js' ! -path 'web/vendor/*' -print0 | xargs -0 -n1 node --check

@@ -426,7 +426,7 @@ export function liveSourceCounts():Record<number,{streams:number;channels:number
   }
   return counts;
 }
-const upsertTitle = db.prepare(
+const upsertTitle = db.prepare(`
   INSERT INTO titles (canonical_key,kind,title,year,season,episode,group_name,artwork,channel_key,channel_country,description,genres,rating,duration_seconds,match_key,imdb_id,tmdb_id,live_genre)
   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   ON CONFLICT(canonical_key) DO UPDATE SET

@@ -1,4 +1,5 @@
 import { createWriteStream } from 'node:fs';
+import { stripTypeScriptTypes } from 'node:module';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -194,7 +195,14 @@ async function prepareUpdate(latest:RemoteCommit,onRestart:()=>void):Promise<voi
     const manifest=JSON.parse(await readFile(join(source,'package.json'),'utf8')) as {version?:string};
     if(manifest.version!==latest.version) throw new UpdateError(502,'The archive version changed during download.');
     for(const file of expected.filter(item=>item.path.startsWith('src/') && item.path.endsWith('.ts'))) {
-      await execute(process.execPath,['--disable-warning=ExperimentalWarning','--experimental-strip-types','--check',join(source,file.path)],{timeout:10000});
+      try {
+        // Explicitly parse and strip every TypeScript module; --check alone
+        // has previously allowed a malformed module to reach startup.
+        stripTypeScriptTypes(await readFile(join(source,file.path),'utf8'),{mode:'strip'});
+        await execute(process.execPath,['--disable-warning=ExperimentalWarning','--experimental-strip-types','--check',join(source,file.path)],{timeout:10000});
+      } catch {
+        throw new UpdateError(502,'Update rejected before restart: invalid TypeScript in '+file.path+'. The current installation was retained.');
+      }
     }
     const config={root,dataDir:resolve(dataDir),stage,sha:latest.sha,version:latest.version,oldPid:process.pid,
       port:Number(process.env.PORT||9999),host:process.env.HOST||'0.0.0.0'};
