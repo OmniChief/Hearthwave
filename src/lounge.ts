@@ -6,7 +6,7 @@ import { resolveProviderStream } from './adapters/providers.ts';
 import { libraryGenres } from './library-genres.ts';
 import { liveGenres } from './catalogue.ts';
 import { qualityPreferences, type QualityPreference } from './quality.ts';
-import { renderLoungeFeature, submitLoungeFeature, type LoungeCall } from './lounge-features.ts';
+import type { LoungeCall } from './lounge-features.ts';
 
 type Identity={user:User;csrf:string;tokenHash:string};
 type Services={
@@ -143,9 +143,7 @@ function frame(res:ServerResponse,user:User|null,section:string,heading:string,c
 export function loungeError(res:ServerResponse,status:number,user:User|null,message:string,navigation?:Navigation){
   frame(res,user,'','Something went wrong','<div class="notice">'+esc(message)+'</div><p>'+href('/tv','Return home')+'</p>',status,navigation);
 }
-export function needsLounge(agent:string):boolean{
-  return /smart[- ]?tv|hbbtv|netcast|viera|bravia|maple|tizen|web0s|webos\.tv|opera tv|ce-html|d tv|dtv|samsungbrowser\/[1-4]\./i.test(agent);
-}
+
 function redirect(res:ServerResponse,path:string){res.writeHead(303,{'Location':path,'Cache-Control':'no-store'});res.end();}
 async function formData(req:IncomingMessage):Promise<URLSearchParams>{
   if(!/^application\/x-www-form-urlencoded(?:;|$)/i.test(req.headers['content-type']||''))throw new Error('Unsupported form encoding.');
@@ -223,7 +221,7 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
     const op=f.get('op'),id=idOf(f.get('id')),back=internalReturn(f.get('back')),item=id?getTitleDetail(id,user.id) as Entry|undefined:undefined;
     if(op==='feature.backup'){if(user.role!=='admin')return error('Administrator access required.',403);try{return await s.backup();}catch(e){return error((e as Error).message,409);}}
     if(op?.startsWith('feature.')){
-      try{const result=await submitLoungeFeature(op,f,user,s.call);if(result.body)return render(result.section,result.title,result.body);return stay(result.route||query({screen:result.section}));}catch(e){return error((e as Error).message,400);}
+      try{const {submitLoungeFeature}=await import('./lounge-features.ts');const result=await submitLoungeFeature(op,f,user,s.call);if(result.body)return render(result.section,result.title,result.body);return stay(result.route||query({screen:result.section}));}catch(e){return error((e as Error).message,400);}
     }
     if(op==='logout'){s.logout(req,res,auth.tokenHash);return redirect(res,'/tv');}
     if(op==='preferences'){
@@ -303,7 +301,9 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
     return redirect(res,'/tv');
   }
   const params=url.searchParams,screen=params.get('screen')||'home';
-  try{const feature=await renderLoungeFeature(screen,params,user,csrf,s.call);if(feature)return render(feature.section,feature.title,feature.body);}catch(e){return error((e as Error).message,400);}
+  if(!['home','browse','guide','saved','settings','item'].includes(screen)){
+    try{const {renderLoungeFeature}=await import('./lounge-features.ts');const feature=await renderLoungeFeature(screen,params,user,csrf,s.call);if(feature)return render(feature.section,feature.title,feature.body);}catch(e){console.error('TV feature request failed:',e);return error('The requested TV feature could not be loaded or completed.',400);}
+  }
   if(screen==='home'){
     const stats=dashboardStats(),added=catalogue('library',user.id,'all',6,'added'),focus=catalogue('library',user.id,'continue',6,'activity'),saved=catalogue('library',user.id,'watchlist',6),favourites=catalogue('channel',user.id,'favourites',4),live=catalogue('channel',user.id,'all',4);
     const browse=(kind:Kind,view:View='all')=>query({screen:'browse',kind,view});

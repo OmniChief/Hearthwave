@@ -4,6 +4,7 @@ import { join, isAbsolute, relative } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { backup, DatabaseSync } from 'node:sqlite';
 import { readUpdateStatus, writeInstalledUpdate, writeUpdateStatus } from './update-state.ts';
+import { describeStartupFailure } from './update-diagnostics.ts';
 
 interface Config {
   root:string;dataDir:string;stage:string;sha:string;version:string;oldPid:number;port:number;host:string;
@@ -129,7 +130,9 @@ async function run(config:Config):Promise<void> {
     launched=await launch(config);
     if(!await healthy(config,launched)) {
       const detail=launched.exitCode!==null?' (exit code '+launched.exitCode+')':launched.signalCode?' (signal '+launched.signalCode+')':'';
-      throw new Error('The updated server did not become healthy'+detail+'. Startup details are retained in hearthwave-update-failed.log in the data directory.');
+      const log=await readFile(join(config.dataDir,'hearthwave-server.log'),'utf8').catch(()=>'');
+      const cause=describeStartupFailure(log.slice(-32000));
+      throw new Error('The updated server did not become healthy'+detail+'. '+(cause?cause+' ':'')+'Startup details are retained in hearthwave-update-failed.log in the data directory.');
     }
     await writeInstalledUpdate(config.dataDir,config.sha,config.version);
     await writeUpdateStatus(config.dataDir,'complete',`Hearthwave ${config.version} is installed and running.`,config.sha,config.version);

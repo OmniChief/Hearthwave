@@ -1,5 +1,4 @@
 import { spaceApi, SpaceError } from './space.ts';
-import { loungeRequest, loungeError, needsLounge } from './lounge.ts';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createReadStream, readFileSync } from 'node:fs';
 import { readFile, realpath, stat } from 'node:fs/promises';
@@ -21,6 +20,9 @@ import { localSubtitles, subtitleVtt } from './subtitles.ts';
 import { checkMediaResponse, fetchM3u, ProviderError, validateProviderUrl } from './adapters/network.ts';
 import type { GuideProgramme, ImportItem, ProviderCategory, ProviderConfig, SourceType, User } from './model.ts';
 
+function needsLounge(agent:string):boolean{
+  return /smart[- ]?tv|hbbtv|netcast|viera|bravia|maple|tizen|web0s|webos\.tv|opera tv|ce-html|d tv|dtv|samsungbrowser\/[1-4]\./i.test(agent);
+}
 const webRoot = join(dirname(fileURLToPath(import.meta.url)), '..', 'web');
 const applicationVersion=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8')).version as string;
 const allowedAssets: Record<string, string> = {
@@ -415,8 +417,12 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
   stream.pipe(res);
 }
 
-async function api(req: IncomingMessage, res: ServerResponse, url: URL, readBody:typeof body=body, writeJson:typeof send=send): Promise<void> {
-  const body=readBody,send=writeJson;
+type BodyReader=typeof body;
+type JsonWriter=typeof send;
+async function api(req:IncomingMessage,res:ServerResponse,url:URL):Promise<void>{
+  return dispatchApi(req,res,url,body,send);
+}
+async function dispatchApi(req:IncomingMessage,res:ServerResponse,url:URL,body:BodyReader,send:JsonWriter):Promise<void>{
   const path = url.pathname;
   const method = req.method || 'GET';
   if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: applicationVersion, pid: process.pid });
@@ -1014,8 +1020,10 @@ const server = createServer(async (req, res) => {
       res.writeHead(302,{'Location':'/tv','Cache-Control':'no-store'});res.end();return;
     }
     if(url.pathname==='/tv'||url.pathname.startsWith('/tv/')){
+      let television:typeof import('./lounge.ts')|undefined;
       try {
-        return await loungeRequest(req,res,url,{
+        television=await import('./lounge.ts');
+        return await television.loungeRequest(req,res,url,{
           session,login:authenticate,issueSession,logout:(request,response,token)=>{removeSession(token);setCookie(request,response,'',0);},
           refreshEpisodes:startEpisodeDiscovery,episodeStatus:id=>episodeJobs.get(id),
           activity,version:applicationVersion,
@@ -1029,15 +1037,17 @@ const server = createServer(async (req, res) => {
             const adapted=Object.create(req) as IncomingMessage;
             Object.defineProperties(adapted,{method:{value:method},headers:{value:{...req.headers,'x-csrf-token':identity.csrf}}});
             let result:unknown;
-            try{await api(adapted,res,target,async()=>values,(_res,status,data)=>{if(status>=400)throw new HttpError(status,'The operation could not be completed.');result=data;});}catch(error){if(error instanceof HttpError||error instanceof SpaceError||error instanceof UpdateError||error instanceof ProviderError||error instanceof BackupError)throw error;console.error('TV API operation failed:',error);throw new HttpError(500,'The operation could not be completed.');}
+            try{await dispatchApi(adapted,res,target,async()=>values,(_res,status,data)=>{if(status>=400)throw new HttpError(status,'The operation could not be completed.');result=data;});}catch(error){if(error instanceof HttpError||error instanceof SpaceError||error instanceof UpdateError||error instanceof ProviderError||error instanceof BackupError)throw error;console.error('TV API operation failed:',error);throw new HttpError(500,'The operation could not be completed.');}
             return result;
           }
         });
       }catch(error){
         const status=error instanceof HttpError||error instanceof ProviderError?error.status:500;
         if(status===500)console.error('TV request failed:',error);
-        if(!res.headersSent)loungeError(res,status,session(req)?.user||null,status===500?'The operation could not be completed.':(error as Error).message);
-        else res.destroy();
+        if(!res.headersSent){
+          if(television)television.loungeError(res,status,session(req)?.user||null,status===500?'The operation could not be completed.':(error as Error).message);
+          else {res.writeHead(503,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});res.end('<!DOCTYPE html><html><head><title>Hearthwave TV</title></head><body><h1>TV interface could not load</h1><p>The server is running. Retry TV mode or open the full interface on a supported browser.</p><p><a href="/tv">Retry TV mode</a> | <a href="/?modern=1">Full interface</a></p></body></html>');}
+        } else res.destroy();
         return;
       }
     }

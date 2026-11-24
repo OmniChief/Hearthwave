@@ -11,6 +11,7 @@ import { backupBusy } from './backup.ts';
 import { dataDir } from './db.ts';
 import { extractVerifiedArchive, managedFile, type ExpectedFile } from './update-archive.ts';
 import { readInstalledUpdate, readUpdateStatus, writeUpdateStatus } from './update-state.ts';
+import { describeStartupFailure } from './update-diagnostics.ts';
 
 const root=join(dirname(fileURLToPath(import.meta.url)),'..');
 const apiRoot='https://api.github.com/repos/OmniChief/Hearthwave';
@@ -113,6 +114,11 @@ export async function checkForUpdate(force=false):Promise<{currentVersion:string
 
 export async function updateStatus():Promise<{phase:string;message:string;sha?:string;version?:string;updatedAt:string;busy:boolean}> {
   const status=await readUpdateStatus(dataDir);
+  if(status.phase==='failed'&&status.message.includes('did not become healthy')){
+    const log=await readFile(join(dataDir,'hearthwave-update-failed.log'),'utf8').catch(()=>'');
+    const cause=describeStartupFailure(log.slice(-32000));
+    if(cause&&!status.message.includes(cause))status.message+=' '+cause;
+  }
   return {...status,busy:installing || (running.has(status.phase) && Date.now()-Date.parse(status.updatedAt)<30*60*1000)};
 }
 
