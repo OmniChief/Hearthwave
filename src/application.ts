@@ -1,5 +1,5 @@
 import { spaceApi, SpaceError } from './space.ts';
-import { television, televisionPage, isLegacyTelevision } from './television.ts';
+import { loungeRequest, loungeError, needsLounge } from './lounge.ts';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createReadStream, readFileSync } from 'node:fs';
 import { readFile, realpath, stat } from 'node:fs/promises';
@@ -25,7 +25,7 @@ const webRoot = join(dirname(fileURLToPath(import.meta.url)), '..', 'web');
 const applicationVersion=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8')).version as string;
 const allowedAssets: Record<string, string> = {
   '/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/tv-navigation.js': 'tv-navigation.js', '/playback-variants.js': 'playback-variants.js', '/hls-playback.js': 'hls-playback.js', '/playback-diagnostics.js': 'playback-diagnostics.js', '/local-media.js': 'local-media.js', '/space.js': 'space.js', '/workers.js': 'workers.js', '/rooms.js': 'rooms.js', '/requests.js': 'requests.js', '/vendor/hls.light.min.js': 'vendor/hls.light.min.js',
-  '/tv.css':'tv.css','/tv.js':'tv.js','/legacy.js':'legacy.js',
+  '/lounge.css':'lounge.css','/lounge-keys.js':'lounge-keys.js','/browser-entry.js':'browser-entry.js',
   '/styles.css': 'styles.css', '/manifest.webmanifest': 'manifest.webmanifest',
   '/game.html':'game.html', '/game.js':'game.js',
   '/sw.js': 'sw.js', '/icon.svg': 'icon.svg',
@@ -1009,12 +1009,12 @@ const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url || '/', 'http://localhost');
     if (url.pathname.startsWith('/api/')) return await api(req, res, url);
-    if ((url.pathname==='/'||url.pathname==='/index.html')&&req.method==='GET'&&url.searchParams.get('modern')!=='1'&&isLegacyTelevision(req.headers['user-agent']||'')) {
+    if ((url.pathname==='/'||url.pathname==='/index.html')&&req.method==='GET'&&url.searchParams.get('modern')!=='1'&&needsLounge(req.headers['user-agent']||'')) {
       res.writeHead(302,{'Location':'/tv','Cache-Control':'no-store'});res.end();return;
     }
     if(url.pathname==='/tv'||url.pathname.startsWith('/tv/')){
       try {
-        return await television(req,res,url,{
+        return await loungeRequest(req,res,url,{
           session,login:authenticate,issueSession,logout:(request,response,token)=>{removeSession(token);setCookie(request,response,'',0);},
           refreshEpisodes:startEpisodeDiscovery,episodeStatus:id=>episodeJobs.get(id),
           activity,version:applicationVersion
@@ -1022,7 +1022,7 @@ const server = createServer(async (req, res) => {
       }catch(error){
         const status=error instanceof HttpError||error instanceof ProviderError?error.status:500;
         if(status===500)console.error('TV request failed:',error);
-        if(!res.headersSent)televisionPage(res,status,'Unable to complete request',session(req)?.user||null,'<p>'+ (status===500?'The operation failed. Return to the TV home page.':String((error as Error).message).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'))+'</p><p><a class="button" href="/tv">TV home</a></p>');
+        if(!res.headersSent)loungeError(res,status,session(req)?.user||null,status===500?'The operation could not be completed.':(error as Error).message);
         else res.destroy();
         return;
       }
