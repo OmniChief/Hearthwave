@@ -80,7 +80,7 @@ export async function renderLoungeFeature(screen:string,p:URLSearchParams,user:U
   }
   if(screen==='room'){
     const rid=num(p.get('id')),data=await call('GET','/api/community/rooms/'+rid),r=data.room;
-    return {section:'community',title:r.title,body:panel('Watch room',note('Members: '+data.members.map((m:any)=>m.username).join(', '))+note('Host position: '+Math.floor(r.position/60)+' min. Live synchronisation requires the full interface.')+link(url('item',{id:r.titleId}),'Open title')+link(url('room',{id:rid}),'Refresh room')+button(csrf,'room-delete',{id:rid},r.own?'Close room':'Leave room'))+panel('Chat',rows(data.messages,m=>'<strong>'+h(m.username)+'</strong>'+note(m.message))+form(csrf,'room-chat',{id:rid},area('message','Message'),'Send'))};
+    return {section:'community',title:r.title,body:panel('Watch room',note('Members: '+data.members.map((m:any)=>m.username).join(', '))+note('Host position: '+Math.floor(r.position/60)+' min. The host controls shared playback.')+'<form class="smallform" action="/tv/submit" method="post">'+field('csrf',csrf)+field('op','watch')+field('id',r.titleId)+field('room',rid)+'<input class="commit" type="submit" value="Join playback"></form>'+link(url('room',{id:rid}),'Refresh room')+button(csrf,'room-delete',{id:rid},r.own?'Close room':'Leave room')+(r.own?form(csrf,'room-invite',{id:rid},select('friend','Invite an accepted friend',(await call('GET','/api/community/friends')).items.filter((f:any)=>f.accepted).map((f:any)=>[String(f.id),f.username])),'Invite') :''))+panel('Chat',rows(data.messages,m=>'<strong>'+h(m.username)+'</strong>'+note(m.message))+form(csrf,'room-chat',{id:rid},area('message','Message'),'Send'))};
   }
   if(screen==='my-space'){
     const tab=p.get('tab')||'calendar',navigation=tabs('my-space',[['calendar','Calendar'],['files','Files']]);
@@ -158,6 +158,7 @@ export async function submitLoungeFeature(op:string,f:URLSearchParams,user:User,
     case 'feature.review':await call('POST','/api/community/reviews',{titleId:id(f),rating:Number(v('rating')),review:v('review')});break;
     case 'feature.review-delete':await call('DELETE','/api/community/reviews/'+id(f));break;
     case 'feature.room-create':await call('POST','/api/community/rooms',{titleId:id(f),friendId:id(f,'friend')});break;
+    case 'feature.room-invite':await call('POST','/api/community/rooms/'+id(f)+'/invite',{friendId:id(f,'friend')});break;
     case 'feature.room-chat':await call('POST','/api/community/rooms/'+id(f)+'/chat',{message:v('message')});break;
     case 'feature.room-delete':await call('DELETE','/api/community/rooms/'+id(f));result.body=link(url('community',{tab:'rooms'}),'Return to rooms');break;
     case 'feature.event':{

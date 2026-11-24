@@ -564,7 +564,7 @@ function browseFilter(kind:BrowseKind,query:string,view:CatalogueView,country:st
   else if(country){terms.push('t.channel_country=?');params.push(country);}
   if(genre){terms.push('t.live_genre=?');params.push(genre);}
   if(libraryGenre){terms.push('EXISTS(SELECT 1 FROM library_genres lg WHERE lg.title_id=t.id AND lg.genre=?)');params.push(libraryGenre);}
-  const rootOnly=kind!=='episode'&&!collection;
+  const rootOnly=kind!=='episode'&&!collection&&!(kind==='library'&&view==='continue');
   const variantFilter=rootOnly?' AND v.series_parent_id IS NULL':'';
   terms.push('EXISTS(SELECT 1 FROM variants v WHERE v.title_id=t.id'+variantFilter+')');
   const filter=collectionClause(collection,userId);

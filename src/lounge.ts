@@ -136,7 +136,7 @@ function frame(res:ServerResponse,user:User|null,section:string,heading:string,c
   const back=navigation?backDestination(navigation):'';
   const search=user?'<form class="global-search" action="/tv" method="get">'+hidden('screen','browse')+hidden('kind','all')+'<input type="text" name="q" maxlength="120" aria-label="Search your entertainment"><input class="commit" type="submit" value="Search"></form>':'';
   const backButton=back?'<a id="lounge-back" class="chip backbutton" href="'+esc(back)+'">&#8592; Back</a>':'';
-  let html='<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"><html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>'+esc(heading)+' | Hearthwave</title><link rel="stylesheet" type="text/css" href="/lounge.css?v=0342"><script type="text/javascript" src="/lounge-keys.js?v=0342" defer="defer"></script></head><body><div id="screen"><div id="mast"><a class="wordmark" href="/tv"><span class="emblem">&#9672;</span> hearthwave<span class="accent">.</span></a>'+search+'<span class="edition">YOUR ENTERTAINMENT &nbsp; / &nbsp; TV</span></div><table class="shell" cellpadding="0" cellspacing="0"><tr>'+rail+'<td id="stage" valign="top"><div class="heading"><h1>'+esc(heading)+'</h1><!--LOUNGE_BACK--></div>'+content+'</td></tr></table><div class="footer">Move with arrows &nbsp; &middot; &nbsp; OK to select &nbsp; &middot; &nbsp; Back to return <span>'+href('/?modern=1','Desktop interface','plain')+'</span></div></div></body></html>';
+  let html='<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"><html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>'+esc(heading)+' | Hearthwave</title><link rel="stylesheet" type="text/css" href="/lounge.css?v=0342"><script type="text/javascript" src="/lounge-keys.js?v=0343" defer="defer"></script></head><body><div id="screen"><div id="mast"><a class="wordmark" href="/tv"><span class="emblem">&#9672;</span> hearthwave<span class="accent">.</span></a>'+search+'<span class="edition">YOUR ENTERTAINMENT &nbsp; / &nbsp; TV</span></div><table class="shell" cellpadding="0" cellspacing="0"><tr>'+rail+'<td id="stage" valign="top"><div class="heading"><h1>'+esc(heading)+'</h1><!--LOUNGE_BACK--></div>'+content+'</td></tr></table><div class="footer">Move with arrows &nbsp; &middot; &nbsp; OK to select &nbsp; &middot; &nbsp; Back to return <span>'+href('/?modern=1','Desktop interface','plain')+'</span></div></div></body></html>';
   if(navigation)html=decorateNavigation(html,navigation);
   respond(res,status,html.replace('<!--LOUNGE_BACK-->',backButton));
 }
@@ -186,9 +186,8 @@ function section(title:string,items:Entry[],back:string,more:string,csrf:string,
 function catalogue(kind:Kind,uid:number,view:View='all',limit=4,sort:'added'|'title'|'activity'='title'){return listTitles(kind,uid,'',view,sort,limit) as Entry[];}
 const sectionFor=(kind:Kind)=>kind==='channel'?'live':kind==='game'?'play':'library';
 function programmeTime(raw:string){const d=new Date(raw);return Number.isFinite(d.getTime())?d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}):'';}
-function programmeList(id:number){
-  const schedule=storedGuide(id,8);
-  return schedule.programmes.length?'<table class="listing" cellspacing="0" cellpadding="0">'+schedule.programmes.map(p=>'<tr><td class="time">'+esc(programmeTime(p.start))+'</td><td><strong>'+esc(p.title)+'</strong><div class="caption">'+esc(p.description.slice(0,180))+'</div></td></tr>').join('')+'</table>':'<p class="caption">No imported programme information for this channel.</p>';
+function programmeList(schedule:{programmes:Array<{start:string;title:string;description:string}>}){
+  return schedule.programmes.length?'<table class="listing" cellspacing="0" cellpadding="0">'+schedule.programmes.slice(0,8).map(p=>'<tr><td class="time">'+esc(programmeTime(p.start))+'</td><td><strong>'+esc(p.title)+'</strong><div class="caption">'+esc(p.description.slice(0,180))+'</div></td></tr>').join('')+'</table>':'<p class="caption">No stored programme information for this channel.</p>';
 }
 function playable(item:Entry,uid:number){
   const pref=getUserPreferences(uid).qualityPreference,rank=pref==='sd'?3:pref==='hd'?2:pref==='fhd'?1:0;
@@ -209,6 +208,9 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
   const auth=s.session(req);
   if(!auth)return loginScreen(req,res);
   const {user,csrf}=auth;
+  if(path==='/tv/room-state'&&method==='GET'){
+    try{const rid=idOf(url.searchParams.get('id'));if(!rid)throw Error();const {room}=await s.call('GET','/api/community/rooms/'+rid);res.writeHead(200,{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store'});res.end([Number(room.position)||0,room.playing?1:0,room.hostOnline?1:0].join('|'));}catch{res.writeHead(404,{'Cache-Control':'no-store'});res.end();}return;
+  }
   let navigation:Navigation={route:cleanRoute(url.pathname+url.search)||'/tv',trail:decodeTrail(url.searchParams.get('nav')),fallback:internalReturn(url.searchParams.get('back'))};
   const render=(where:string,title:string,body:string,status=200)=>frame(res,user,where,title,body,status,navigation);
   const error=(message:string,status=400)=>loungeError(res,status,user,message,navigation);
@@ -247,30 +249,37 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
       if(user.role!=='admin')return error('Only an administrator can refresh episodes.',403);
       try{s.refreshEpisodes(id);}catch(e){return error((e as Error).message,409);}return stay(detail);
     }
+    if(op==='room-sync'){
+      const rid=idOf(f.get('room')),position=Number(f.get('seconds'));
+      if(!rid||!f.has('seconds')||!Number.isFinite(position)||position<0||position>604800||!['0','1'].includes(f.get('playing')||'')){res.writeHead(400);res.end();return;}
+      try{await s.call('POST','/api/community/rooms/'+rid+'/sync',{position,playing:f.get('playing')==='1'});res.writeHead(204);}catch{res.writeHead(403);}res.end();return;
+    }
     if(op==='position'){
       const seconds=Number(f.get('seconds'));
       if(!['film','episode','music'].includes(item.kind)||!f.has('seconds')||!Number.isFinite(seconds)||seconds<0||seconds>10000000){res.writeHead(400);res.end();return;}
       saveProgress(user.id,id,seconds);res.writeHead(204);res.end();return;
     }
     if(op==='watch'){
+      const roomId=idOf(f.get('room'));let room:{titleId:number;own:boolean;position:number;playing:boolean}|undefined;
+      if(roomId){try{room=(await s.call('GET','/api/community/rooms/'+roomId)).room;if(!room||room.titleId!==id)return error('This title is not in the watch room.',403);}catch{return error('Watch room unavailable.',404);}}
       const choice=f.has('variant')?getVariant(idOf(f.get('variant'))):playable(item,user.id)[0];
       if(!choice||choice.title_id!==id||['series','game'].includes(item.kind)||/^(xtream|stalker)-series:/.test(choice.url))return error('This version is not playable.',404);
       let address=choice.source_type==='folder'?'/api/media/'+choice.id+'/file':choice.url;
       const tried=String(f.get('tried')||'').split(',').map(idOf).filter(Boolean).slice(0,20);if(!tried.includes(choice.id))tried.push(choice.id);
       const alternative=tried.length<20?playable(item,user.id).find(v=>!tried.includes(v.id)):undefined;
-      const fallback=alternative?post(csrf,'watch',{id,back,variant:alternative.id,tried:tried.join(','),resume:f.get('resume')==='yes'?'yes':'no'},'Try next source','fallbackform'):'';
+      const fallback=alternative?post(csrf,'watch',{id,back,...(roomId?{room:roomId}:{}),variant:alternative.id,tried:tried.join(','),resume:f.get('resume')==='yes'?'yes':'no'},'Try next source','fallbackform'):'';
       if(choice.source_type==='stalker'&&address.startsWith('stalker:')){
         const source=getSource(choice.source_id);if(!source)return error('This connection is no longer available.',404);
         try{address=await resolveProviderStream(source,choice.url);}catch{return render(sectionFor(item.kind),item.title,'<p class="notice">This connection could not start playback.</p>'+fallback+href(detail,'Other versions'),502);}
       }
       if(choice.source_type!=='folder'&&!imageUrl(address))return error('The source does not offer a supported HTTP media address.');
       if(!originalRoute&&!originalTrail.length)navigation.trail=pushRoute(pushRoute(originalTrail,back),detail);
-      const offset=f.get('resume')==='yes'?Math.max(0,Number(item.position_seconds)||0):0;
-      const attrs=' id="media" src="'+esc(address)+'" controls="controls" autoplay="autoplay" preload="metadata" data-item="'+id+'" data-kind="'+esc(item.kind)+'" data-offset="'+offset+'" data-token="'+esc(csrf)+'"';
+      const offset=room?Math.max(0,Number(room.position)||0):f.get('resume')==='yes'?Math.max(0,Number(item.position_seconds)||0):0;
+      const attrs=' id="media" src="'+esc(address)+ '" controls="controls"'+(!room||room.own||room.playing?' autoplay="autoplay"':'')+' preload="metadata" data-item="'+id+'" data-kind="'+esc(item.kind)+'" data-offset="'+offset+'" data-token="'+esc(csrf)+'"'+(room?' data-room="'+roomId+'" data-host="'+(room.own?'yes':'no')+'"':'');
       const tag=item.kind==='music'?'audio':'video';
       const media=item.kind==='photo'?'<img class="viewphoto" src="'+esc(address)+'" alt="'+esc(item.title)+'">':'<'+tag+attrs+'>Native media playback is not available in this browser.</'+tag+'>';
       let adjacent='',autoNext='';
-      if(item.kind==='episode'){
+      if(item.kind==='episode'&&!room){
         const parent=db.prepare('SELECT series_parent_id AS id FROM variants WHERE title_id=? AND series_parent_id IS NOT NULL LIMIT 1').get(id) as {id:number}|undefined;
         if(parent){const list=listSeriesEpisodes(parent.id,user.id) as Entry[],at=list.findIndex(x=>x.id===id);if(at>0){adjacent=post(csrf,'watch',{id:list[at-1].id,back},'Next episode','nextform');if(getUserPreferences(user.id).autoplayNext)autoNext='yes';}if(at>=0&&at+1<list.length)adjacent+=post(csrf,'watch',{id:list[at+1].id,back},'Previous episode');}
       }
@@ -281,7 +290,7 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
         if(at>0)adjacent+=post(csrf,'watch',{id:channels[at-1].id,back},'Previous channel','prevchannel');
         if(at>=0&&at+1<channels.length)adjacent+=post(csrf,'watch',{id:channels[at+1].id,back},'Next channel','nextchannel');
       }
-      return render(sectionFor(item.kind),item.title,'<div class="toolbar">'+href(detail,'Back','chip return-target')+adjacent+'</div><div class="screenmedia">'+media+'</div><div class="toolbar player-toolbar"><input class="commit" type="button" id="media-toggle" value="Play / pause"><input class="commit" type="button" id="media-full" value="Full screen">'+fallback+'</div><div id="media-message" class="caption" data-autonext="'+autoNext+'">'+esc(choice.source_name)+' / '+esc(choice.quality_tier)+' &middot; Native television playback</div><div class="toolbar">'+href(address,'Open stream directly')+href(detail,'Other versions')+'</div>');
+      return render(sectionFor(item.kind),item.title,'<div class="toolbar">'+href(detail,'Back','chip return-target')+(room?href(query({screen:'room',id:roomId}),'Watch room'):'')+adjacent+'</div><div class="screenmedia">'+media+'</div><div class="toolbar player-toolbar"><input class="commit" type="button" id="media-toggle" value="Play / pause"><input class="commit" type="button" id="media-full" value="Full screen">'+fallback+'</div><div id="media-message" class="caption" data-autonext="'+autoNext+'">'+esc(choice.source_name)+' / '+esc(choice.quality_tier)+' &middot; Native television playback</div><div class="toolbar">'+href(address,'Open stream directly')+href(detail,'Other versions')+'</div>');
     }
     return error('Unknown action.');
   }
@@ -296,8 +305,7 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
   const params=url.searchParams,screen=params.get('screen')||'home';
   try{const feature=await renderLoungeFeature(screen,params,user,csrf,s.call);if(feature)return render(feature.section,feature.title,feature.body);}catch(e){return error((e as Error).message,400);}
   if(screen==='home'){
-    const stats=dashboardStats(),added=catalogue('library',user.id,'all',6,'added'),recent=catalogue('episode',user.id,'continue',6,'activity'),films=catalogue('film',user.id,'continue',6,'activity'),saved=catalogue('library',user.id,'watchlist',6),favourites=catalogue('channel',user.id,'favourites',4),live=catalogue('channel',user.id,'all',4);
-    const focus=[...films,...recent].slice(0,6);
+    const stats=dashboardStats(),added=catalogue('library',user.id,'all',6,'added'),focus=catalogue('library',user.id,'continue',6,'activity'),saved=catalogue('library',user.id,'watchlist',6),favourites=catalogue('channel',user.id,'favourites',4),live=catalogue('channel',user.id,'all',4);
     const browse=(kind:Kind,view:View='all')=>query({screen:'browse',kind,view});
     return render('home','Home','<div class="spotlight"><div class="hero-disc"></div><div class="kicker">WELCOME TO HEARTHWAVE</div><h2>All your entertainment.<br>One happy place.</h2><p>Movies, music and live television belong together. Your own server, your sources and your choices.</p><div class="toolbar">'+href(browse('library'),'Explore your library','primary')+'</div></div><table class="stat-grid" cellspacing="8" cellpadding="0"><tr><td><span class="caption">Library titles</span><strong>'+stats.items+'</strong></td><td><span class="caption">Live channels</span><strong>'+stats.channels+'</strong></td><td><span class="caption">Configured sources</span><strong>'+stats.sources+'</strong></td></tr></table>'+
       section('Continue watching',focus,'/tv',browse('library','continue'),csrf,'Resume where you left off.')+section('Your watchlist',saved,'/tv',browse('library','watchlist'),csrf,'Saved for later.')+section('Favourite channels',favourites,'/tv',browse('channel','favourites'),csrf,'Jump straight to your favourites.')+section('Your library',added,'/tv',browse('library'),csrf,'Pick up something good.')+section('Live television',live,'/tv',browse('channel'),csrf,'Your shared lineup.')+
@@ -364,7 +372,7 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
       if(sources.length){const selected=sources[0];
         content+='<div class="toolbar">'+post(csrf,'watch',{...fields,variant:selected.id},item.kind==='photo'?'View':'Play now','heroform')+((item.position_seconds||0)>10?post(csrf,'watch',{...fields,variant:selected.id,resume:'yes'},'Resume at '+Math.floor((item.position_seconds||0)/60)+' min','heroform'):'')+'</div><h2>Available versions</h2><table class="listing" cellspacing="0" cellpadding="0">'+sources.map(v=>'<tr><td>'+esc(v.source_name)+'</td><td class="caption">'+esc(v.quality_tier)+'</td><td>'+post(csrf,'watch',{...fields,variant:v.id},'Play')+'</td></tr>').join('')+'</table>';
       }else content+='<p class="blank">No playable versions are available.</p>';
-      if(item.kind==='channel')content+='<h2>Programme schedule</h2>'+programmeList(id)+(user.role==='admin'?post(csrf,'feature.guide-refresh',{id},'Refresh provider guide')+href(query({screen:'guide-mapping',id}),'Map guide channel'):'');
+      if(item.kind==='channel')content+='<h2>Programme schedule</h2>' +programmeList(await s.call('GET','/api/titles/'+id+'/guide'))+(user.role==='admin'?post(csrf,'feature.guide-refresh',{id},'Refresh provider guide')+href(query({screen:'guide-mapping',id}),'Map guide channel'):'');
     }
     if(user.role==='admin'&&['film','series'].includes(item.kind))content+=post(csrf,'feature.title-metadata',{id},'Fetch metadata');
     if(!['channel','game'].includes(item.kind)){

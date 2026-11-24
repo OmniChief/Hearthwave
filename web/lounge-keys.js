@@ -5,6 +5,7 @@
   var savedAt = 0;
   var hasResumed = false;
   var autoNextStarted = false;
+  var roomTimer = null, roomBusy = false, roomStopped = false;
   var backInFlight = false;
   var backDown = false;
   var oldSamsung = /maple|orsay|samsung.*smart-tv/i.test(navigator.userAgent || '') && !/tizen/i.test(navigator.userAgent || '');
@@ -96,6 +97,7 @@
     if (!destination || !destination.href) { return; }
     backInFlight = true;
     storePosition(true);
+    stopRoom();
     window.location.replace(destination.href);
   }
   function currentControl() {
@@ -137,6 +139,45 @@
     if (offset > 0) { try { player.currentTime = offset; } catch (err) {} }
     hasResumed = true;
   }
+  function stopRoom() {
+    roomStopped = true;
+    if (roomTimer !== null) { window.clearInterval(roomTimer); roomTimer = null; }
+  }
+  function roomTick() {
+    if (roomStopped || roomBusy || !player || !window.XMLHttpRequest || !hasResumed) { return; }
+    var room = player.getAttribute('data-room'), host = player.getAttribute('data-host') === 'yes', xhr, position;
+    if (!room) { return; }
+    position = player.currentTime;
+    if (host && (typeof position !== 'number' || !isFinite(position) || position < 0)) { return; }
+    roomBusy = true;
+    try {
+      xhr = new XMLHttpRequest();
+      xhr.open(host ? 'POST' : 'GET', host ? '/tv/submit' : '/tv/room-state?id=' + encodeURIComponent(room), true);
+      xhr.onreadystatechange = function () {
+        if (xhr.readyState !== 4) { return; }
+        roomBusy = false;
+        if (roomStopped) { return; }
+        if (xhr.status === 403 || xhr.status === 404) {
+          stopRoom();
+          var message = document.getElementById('media-message');
+          if (message) { message.innerHTML = 'Watch room unavailable. Return to the room page.'; }
+          return;
+        }
+        if (host || xhr.status !== 200) { return; }
+        var state = String(xhr.responseText || '').split('|'), target = Number(state[0]), playing = state[1] === '1' && state[2] === '1';
+        if (state.length !== 3 || !isFinite(target) || target < 0) { return; }
+        try {
+          if (Math.abs(player.currentTime - target) > 3) { player.currentTime = target; }
+          if (playing && player.paused) { player.play(); }
+          if (!playing && !player.paused) { player.pause(); }
+        } catch (err) {}
+      };
+      if (host) {
+        xhr.setRequestHeader('Content-Type','application/x-www-form-urlencoded');
+        xhr.send('op=room-sync&csrf='+encodeURIComponent(player.getAttribute('data-token'))+'&room='+encodeURIComponent(room)+'&seconds='+encodeURIComponent(position)+'&playing='+(player.paused?'0':'1'));
+      } else { xhr.send(null); }
+    } catch (err) { roomBusy = false; }
+  }
   function submitClass(name) {
     var forms = document.getElementsByTagName('form'), i;
     for (i = 0; i < forms.length; i++) {
@@ -148,7 +189,7 @@
     return false;
   }
   function toggleMedia() {
-    if (!player || !player.play) { return; }
+    if (!player || !player.play || (player.getAttribute('data-room') && player.getAttribute('data-host') !== 'yes')) { return; }
     try { if (player.paused) { player.play(); } else { player.pause(); } } catch (err) {}
   }
   function fullMedia() {
@@ -175,10 +216,12 @@
       if (submitClass(code === 427 || code === 33 ? 'nextchannel' : 'prevchannel')) { return stop(ev); }
     }
     if (player && player.play && (code === 415 || code === 19 || code === 10252)) {
+      if (player.getAttribute('data-room') && player.getAttribute('data-host') !== 'yes') { return stop(ev); }
       try { if (code === 19 || (code === 10252 && !player.paused)) { player.pause(); } else { player.play(); } } catch (err2) {}
       return stop(ev);
     }
     if (player && (code === 412 || code === 417)) {
+      if (player.getAttribute('data-room') && player.getAttribute('data-host') !== 'yes') { return stop(ev); }
       try { player.currentTime = Math.max(0, player.currentTime + (code === 412 ? -10 : 10)); } catch (err3) {}
       return stop(ev);
     }
@@ -193,6 +236,11 @@
     if (player && player.play) {
       bind(player, 'loadedmetadata', resumeMedia);
       if (player.readyState > 0) { resumeMedia(); }
+      if (player.getAttribute('data-room') && window.XMLHttpRequest) {
+        roomTimer = window.setInterval(roomTick, 3000);
+        bind(window, 'unload', stopRoom);
+        if (player.getAttribute('data-host') === 'yes') { bind(player, 'play', roomTick); bind(player, 'pause', roomTick); bind(player, 'seeked', roomTick); }
+      }
       bind(player, 'timeupdate', function () { storePosition(false); });
       bind(player, 'pause', function () { storePosition(true); });
       bind(player, 'ended', function () {
@@ -201,7 +249,7 @@
         if (!autoNextStarted && note && note.getAttribute('data-autonext') === 'yes') { autoNextStarted = true; submitClass('nextform'); }
       });
       var toggle = document.getElementById('media-toggle'), full = document.getElementById('media-full');
-      if (toggle) { bind(toggle, 'click', toggleMedia); }
+      if (toggle) { if (player.getAttribute('data-room') && player.getAttribute('data-host') !== 'yes') { toggle.style.display = 'none'; } else { bind(toggle, 'click', toggleMedia); } }
       if (full) { if (player.requestFullscreen || player.webkitRequestFullscreen || player.webkitEnterFullscreen || player.mozRequestFullScreen || player.msRequestFullscreen) { bind(full, 'click', fullMedia); } else { full.style.display = 'none'; } }
       bind(player, 'error', function () {
         var message = document.getElementById('media-message');
