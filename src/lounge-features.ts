@@ -86,7 +86,14 @@ export async function renderLoungeFeature(screen:string,p:URLSearchParams,user:U
     const tab=p.get('tab')||'calendar',navigation=tabs('my-space',[['calendar','Calendar'],['files','Files']]);
     if(tab==='files'){
       const data=await call('GET','/api/space/files');
-      return {section:'my-space',title:'My Space',body:navigation+panel('Your files',rows(data.items,f=>'<strong>'+h(f.name)+'</strong>'+note(f.owner+' / '+Math.round(f.size/1024)+' KB')+(f.received===f.size?link('/api/space/files/'+f.id+'/download','Download'):'')+(f.own?button(csrf,'file-delete',{id:f.id},'Delete')+(f.received===f.size?form(csrf,'file-share',{id:f.id},text('username','Share with friend',50),'Share'):'')+(data.shares||[]).filter((s:any)=>s.file_id===f.id).map((s:any)=>button(csrf,'file-revoke',{id:f.id,friend:s.id},'Stop sharing with '+s.username)).join(''):'') ))+note('File upload requires a browser with the File API.'))};
+      const files=rows(data.items,f=>{
+        const complete=f.received===f.size;
+        const download=complete?link('/api/space/files/'+f.id+'/download','Download'):'';
+        const revoke=(data.shares||[]).filter((s:any)=>s.file_id===f.id).map((s:any)=>button(csrf,'file-revoke',{id:f.id,friend:s.id},'Stop sharing with '+s.username)).join('');
+        const manage=f.own?button(csrf,'file-delete',{id:f.id},'Delete')+(complete?form(csrf,'file-share',{id:f.id},text('username','Share with friend',50),'Share'):'')+revoke:'';
+        return '<strong>'+h(f.name)+'</strong>'+note(f.owner+' / '+Math.round(f.size/1024)+' KB')+download+manage;
+      });
+      return {section:'my-space',title:'My Space',body:navigation+panel('Your files',files+note('File upload requires a browser with the File API.'))};
     }
     const data=await call('GET','/api/space/events');
     return {section:'my-space',title:'My Space',body:navigation+panel('New calendar event',form(csrf,'event',{},text('title','Event title')+text('starts','Date and time (YYYY-MM-DD HH:mm, server local time)',16)+area('notes','Notes',2000),'Save event'))+panel('Calendar',rows(data.items,r=>'<strong>'+h(r.title)+'</strong>'+note(date(r.starts))+note(r.notes)+button(csrf,'event-delete',{id:r.id},'Delete event')))};

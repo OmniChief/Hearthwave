@@ -143,7 +143,7 @@ export async function jobsApi(req:IncomingMessage,res:ServerResponse,url:URL,use
   if(path==='/api/jobs/workers'){
     if(method==='GET'){
       expireJobs();
-      const rows=db.prepare('SELECT id,name,capabilities,last_seen FROM paired_workers WHERE name NOT LIKE '% (revoked)' ORDER BY name').all() as unknown as Worker[];
+      const rows=db.prepare("SELECT id,name,capabilities,last_seen FROM paired_workers WHERE name NOT LIKE '% (revoked)' ORDER BY name").all() as unknown as Worker[];
       return reply({items:rows.map(w=>({id:w.id,name:w.name,capabilities:JSON.parse(w.capabilities),online:Date.now()-(onlineWorkers.get(w.id)??0)<120000}))});
     }
     if(method==='POST'){
