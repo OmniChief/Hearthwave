@@ -4,7 +4,7 @@ import {channelKey,channelCountry,channelGenre,displayChannelTitle} from './cata
 export type LineupProgress={phase:'running'|'completed'|'error';stage:string;processed:number;total:number;stations:number;matched:number;unmatched:number;ambiguous:number;error:string};
 type Station={id:number;country:string;name:string;guideId:string;feed:number};
 type GuideRow={feed_id:number;channel_id:string;name:string;icon:string;country:string};
-type Stream={alias:string|null;id:number;title_id:number;original_title_id:number|null;name:string;country:string;artwork:string;epg_id:string;group_name:string;canonical_key:string;original_key:string|null;title_name:string;title_country:string;live_genre:string;manual_feed:number|null;manual_channel:string|null};
+type Stream={source_type:string;alias:string|null;id:number;title_id:number;original_title_id:number|null;name:string;country:string;artwork:string;epg_id:string;group_name:string;canonical_key:string;original_key:string|null;title_name:string;title_country:string;live_genre:string;manual_feed:number|null;manual_channel:string|null};
 const pause=()=>new Promise<void>(resolve=>setImmediate(resolve));
 function region(id:string,name:string,country:string):string {
   return country||channelCountry(name)||({uk:'GB',gb:'GB',us:'US',usa:'US',ca:'CA'} as Record<string,string>)[id.toLowerCase().match(/[._-](uk|gb|us|usa|ca)$/)?.[1]||'']||'';
@@ -81,10 +81,10 @@ export async function rebuildLiveLineup(job:LineupProgress,sourceId?:number):Pro
   }
   // Drop only obsolete guide associations; source streams, titles and user data are retained.
   db.prepare('DELETE FROM live_epg_links WHERE NOT EXISTS(SELECT 1 FROM guide_feeds f JOIN guide_channels c ON c.feed_id=f.id AND c.generation=f.generation WHERE f.id=live_epg_links.feed_id AND c.channel_id=live_epg_links.channel_id)').run();
-  const read=db.prepare(`SELECT v.id,v.title_id,v.epg_id,v.group_name,t.canonical_key,t.title AS title_name,t.channel_country AS title_country,t.live_genre,
+  const read=db.prepare(`SELECT v.id,v.title_id,v.epg_id,v.group_name,s.type AS source_type,t.canonical_key,t.title AS title_name,t.channel_country AS title_country,t.live_genre,
     r.original_title_id,r.name,r.country,va.alias,COALESCE(r.artwork,t.artwork,'') AS artwork,ot.canonical_key AS original_key,
     COALESCE(m.feed_id,om.feed_id) AS manual_feed,COALESCE(m.channel_id,om.channel_id) AS manual_channel
-    FROM variants v JOIN titles t ON t.id=v.title_id
+    FROM variants v JOIN titles t ON t.id=v.title_id JOIN sources s ON s.id=v.source_id
     LEFT JOIN live_variant_identity r ON r.variant_id=v.id LEFT JOIN live_variant_aliases va ON va.variant_id=v.id LEFT JOIN titles ot ON ot.id=r.original_title_id
     LEFT JOIN guide_mappings m ON m.title_id=t.id LEFT JOIN guide_mappings om ON om.title_id=r.original_title_id
     WHERE t.kind='channel' AND v.id>? AND (? IS NULL OR v.source_id=?) ORDER BY v.id LIMIT 128`);
@@ -100,7 +100,13 @@ export async function rebuildLiveLineup(job:LineupProgress,sourceId?:number):Pro
     const streams=read.all(cursor,sourceId??null,sourceId??null) as Stream[];if(!streams.length)break;
     transaction(()=>{
       for(const row of streams){
-        const name=row.name||row.title_name,country=row.country||channelCountry(name,row.group_name)||(!row.name?row.title_country:'')||'';
+        const name=row.name||row.title_name;
+        let country=row.country||channelCountry(name,row.group_name)||(!row.name?row.title_country:'')||'';
+        if(row.source_type==='m3u'&&row.epg_id){
+          const idCountry=region(row.epg_id,'','');
+          const labelled=channelCountry(name.replace(/^\s*(?:\[(?:EN|ENGLISH)\]|(?:EN|ENGLISH)\s*[-:|])\s*/i,''),row.group_name.replace(/^\s*(?:EN|ENGLISH)\b/i,''));
+          if(idCountry&&!labelled&&(!country||country==='GB'))country=idCountry;
+        }
         const original=row.original_title_id||row.title_id;
         remember.run(row.id,original,name,country,row.artwork);
         const manual=row.manual_feed&&row.manual_channel?byFeed.get(row.manual_feed+'\0'+row.manual_channel):undefined;

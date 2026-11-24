@@ -423,10 +423,11 @@ function scheduleSourcePoll() {
 }
 
 async function refreshSourceStatus() {
-  const result=await api('/api/sources');
+  const result=await api('/api/sources?progress=1');
   if(state.page!=='settings' || state.settingsTab!=='sources') return;
   state.sources=result.sources;
   state.sourceJobs=result.jobs||{};
+  if(result.liveCounts)state.liveCounts=result.liveCounts;
   const container=$('#source-status-list');
   if(container) container.innerHTML=renderSourceRows();
   scheduleSourcePoll();

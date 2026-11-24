@@ -633,7 +633,8 @@ async function dispatchApi(req:IncomingMessage,res:ServerResponse,url:URL,body:B
   }
   if (path === '/api/sources' && method === 'GET') {
     if (current.user.role !== 'admin') throw new HttpError(403, 'Administrator access required.');
-    return send(res, 200, { sources: listSources().map(safelyPublicSource),liveCounts:liveSourceCounts(),jobs:Object.fromEntries(sourceJobs) });
+    const progressOnly=url.searchParams.get('progress')==='1'&&[...sourceJobs.values()].some(job=>['running','cancelling'].includes(job.phase));
+    return send(res, 200, { sources: listSources().map(safelyPublicSource),...(!progressOnly?{liveCounts:liveSourceCounts()}:{}),jobs:Object.fromEntries(sourceJobs) });
   }
   if (path === '/api/sources' && method === 'POST') {
     requireWrite(req, true);
