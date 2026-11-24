@@ -182,11 +182,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .empty .empty-icon { font-size:45px; color:var(--peach); }
 .empty h3 { font-size:19px; color:#f5f6f7; margin:12px 0; }
 .empty p { font-size:13px; max-width:440px; line-height:1.8; margin:0 auto 20px; }
-.live-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:12px; }
-.channel-row { text-align:left; width:100%; display:flex; gap:13px; align-items:center; border:1px solid var(--stroke); border-radius:13px; background:#17202d; padding:14px; color:inherit; }
+.live-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,250px),1fr)); gap:12px; }
+.channel-row { text-align:left; width:100%; min-width:0; display:flex; flex-direction:column; gap:12px; align-items:stretch; border:1px solid var(--stroke); border-radius:13px; background:#17202d; padding:14px; color:inherit; }
 .channel-row:hover { border-color:#8e6165; }
-.channel-play { display:flex; gap:13px; text-align:left; align-items:center; flex:1; min-width:0; background:transparent; border:0; color:inherit; padding:0; }
-.channel-play > span:last-child { min-width:0; overflow-wrap:anywhere; }
+.channel-play { display:flex; gap:12px; text-align:left; align-items:center; flex:1 0 auto; width:100%; min-width:0; min-height:48px; background:transparent; border:0; color:inherit; padding:0; }
+.channel-play > span:last-child { flex:1; min-width:0; overflow-wrap:break-word; }
+.channel-controls { display:flex; flex-wrap:wrap; align-items:center; gap:8px; min-width:0; }
+.channel-controls .button { flex:0 0 auto; white-space:nowrap; }
+.channel-controls .star-button { display:flex; align-items:center; justify-content:center; margin-left:auto; min-height:34px; flex:0 0 36px; padding:0; }
 .channel-icon { width:48px; height:48px; display:grid; place-items:center; border-radius:12px; background:#2f3649; color:var(--peach); font-size:23px; flex:0 0 48px; }
 .channel-icon img { width:100%; height:100%; object-fit:contain; border-radius:9px; }
 .channel-row strong { display:block; font-size:13px; }
