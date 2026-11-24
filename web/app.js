@@ -136,6 +136,11 @@ function heading(title, subtitle = '', action = '') {
 function watchlistButton(item) {
   return ['film','series','episode'].includes(item.kind)?`<button class="button button-quiet button-small" data-watchlist="${item.id}" data-next="${item.watchlisted?'0':'1'}">${item.watchlisted?'Remove from watchlist':'＋ Watchlist'}</button>`:'';
 }
+function cardWatchlistButton(item) {
+  if (!['film','series','episode'].includes(item.kind)) return '';
+  const saved=Boolean(item.watchlisted),label=saved?'Remove from watchlist':'Add to watchlist';
+  return `<button class="button button-quiet button-small media-watchlist ${saved?'is-watchlisted':''}" data-watchlist="${item.id}" data-next="${saved?'0':'1'}" title="${label}" aria-label="${label}" aria-pressed="${saved}">${saved?'✓ Saved':'+ Watchlist'}</button>`;
+}
 function mediaCard(item) {
   const initial = Array.from(item.title || '?')[0].toUpperCase();
   const tone = Number(item.id) % 4;
@@ -143,7 +148,7 @@ function mediaCard(item) {
   const cover = typeof item.artwork === 'string' && /^https?:\/\//i.test(item.artwork) ? `<img src="${esc(item.artwork)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '';
   const resume=Number(item.position_seconds)>10 && !['channel','photo'].includes(item.kind);
   const action=item.kind==='photo'?'View':item.kind==='music'?(resume?'Resume':'Listen'):(resume?'Resume':'Play');
-  return `<article class="media-card"><button class="media-art media-art-button tone-${tone}" data-card-detail="${item.id}" aria-label="Details for ${esc(item.title)}"><span class="art-initial">${esc(initial)}</span>${cover}<span class="media-kind">${esc(item.kind)}</span>${resume?`<span class="resume-label">${Math.max(1,Math.floor(item.position_seconds/60))}m watched</span>`:''}</button><div class="media-info"><strong title="${esc(item.title)}">${esc(item.title)}</strong><small>${esc(detail)}</small><div class="media-actions"><button class="button button-quiet button-small" data-detail="${item.id}">Details</button>${item.kind === 'series' ? `<button class="button button-quiet button-small" data-series="${item.id}">Episodes</button>` : `<button class="button button-quiet button-small" data-play="${item.id}">${action}</button>`}<button class="star-button ${item.favourite ? 'is-favourite':''}" data-favourite="${item.id}" data-next="${item.favourite ? '0':'1'}" aria-label="${item.favourite ? 'Remove from' : 'Add to'} favourites">${item.favourite ? '★':'☆'}</button>${watchlistButton(item)}</div></div></article>`;
+  return `<article class="media-card"><button class="media-art media-art-button tone-${tone}${['film','series','episode'].includes(item.kind)?' media-poster':''}" data-card-detail="${item.id}" aria-label="Details for ${esc(item.title)}"><span class="art-initial">${esc(initial)}</span>${cover}<span class="media-kind">${esc(item.kind)}</span>${resume?`<span class="resume-label">${Math.max(1,Math.floor(item.position_seconds/60))}m watched</span>`:''}</button><div class="media-info"><strong title="${esc(item.title)}">${esc(item.title)}</strong><small>${esc(detail)}</small><div class="media-actions"><div class="media-primary-actions"><button class="button button-quiet button-small" data-detail="${item.id}">Details</button>${item.kind === 'series' ? `<button class="button button-quiet button-small" data-series="${item.id}">Episodes</button>` : `<button class="button button-quiet button-small" data-play="${item.id}">${action}</button>`}</div><div class="media-save-actions"><button class="star-button ${item.favourite ? 'is-favourite':''}" data-favourite="${item.id}" data-next="${item.favourite ? '0':'1'}" aria-label="${item.favourite ? 'Remove from' : 'Add to'} favourites">${item.favourite ? '★':'☆'}</button>${cardWatchlistButton(item)}</div></div></div></article>`;
 }
 
 function liveCard(item) {
