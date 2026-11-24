@@ -400,6 +400,22 @@ export function setSourceStatus(id: number, status: string, error: string | null
     .run(status, error, status, id);
 }
 
+
+// Additive tables; no catalogue rebuild is performed at startup.
+db.exec(`CREATE TABLE IF NOT EXISTS live_epg_links (
+  title_id INTEGER NOT NULL REFERENCES titles(id) ON DELETE CASCADE,
+  feed_id INTEGER NOT NULL REFERENCES guide_feeds(id) ON DELETE CASCADE,
+  channel_id TEXT NOT NULL,
+  PRIMARY KEY(title_id,feed_id,channel_id)
+);
+CREATE INDEX IF NOT EXISTS live_epg_feed ON live_epg_links(feed_id,channel_id);
+CREATE TABLE IF NOT EXISTS live_variant_identity (
+  variant_id INTEGER PRIMARY KEY REFERENCES variants(id) ON DELETE CASCADE,
+  original_title_id INTEGER NOT NULL, name TEXT NOT NULL, country TEXT NOT NULL,
+  artwork TEXT NOT NULL DEFAULT ''
+);`);
+const activeEpg = "EXISTS(SELECT 1 FROM live_epg_links el JOIN guide_feeds ef ON ef.id=el.feed_id JOIN guide_channels ec ON ec.feed_id=ef.id AND ec.generation=ef.generation AND ec.channel_id=el.channel_id WHERE el.title_id=t.id)";
+
 const upsertTitle = db.prepare(`
   INSERT INTO titles (canonical_key,kind,title,year,season,episode,group_name,artwork,channel_key,channel_country,description,genres,rating,duration_seconds,match_key,imdb_id,tmdb_id,live_genre)
   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -426,7 +442,7 @@ const upsertVariant = db.prepare(`
     title_id=excluded.title_id, url=excluded.url,quality=excluded.quality,
     group_name=excluded.group_name,generation=excluded.generation,epg_id=excluded.epg_id
 `);
-const channelCandidates = db.prepare("SELECT id,channel_country FROM titles WHERE kind='channel' AND channel_key=? LIMIT 25");
+const channelCandidates = db.prepare("SELECT id,channel_country FROM titles WHERE kind='channel' AND canonical_key NOT LIKE 'channel:epg-station:%' AND channel_key=? LIMIT 25");
 const existingKey = db.prepare('SELECT id FROM titles WHERE canonical_key=?');
 const updateMatchedChannel = db.prepare(`UPDATE titles SET
   title=CASE WHEN LENGTH(title)>LENGTH(?) THEN ? ELSE title END,
@@ -505,6 +521,12 @@ export function importBatch(sourceId: number, items: ImportItem[], generation: s
         }
       }
       upsertVariant.run(titleId, sourceId, item.sourceRef, secrets.seal(item.url, true), item.quality || '', item.group || '', generation,(item.externalId || '').trim().toLowerCase().slice(0,200));
+      if(item.kind==='channel'){
+        db.prepare(`INSERT INTO live_variant_identity(variant_id,original_title_id,name,country,artwork)
+          SELECT id,?,?,?,? FROM variants WHERE source_id=? AND source_ref=?
+          ON CONFLICT(variant_id) DO UPDATE SET original_title_id=CASE WHEN live_variant_identity.name=excluded.name AND live_variant_identity.country=excluded.country THEN live_variant_identity.original_title_id ELSE excluded.original_title_id END,name=excluded.name,country=excluded.country,artwork=excluded.artwork`)
+          .run(titleId,item.title.slice(0,300),country,item.artwork||'',sourceId,item.sourceRef);
+      }
       if (item.kind==='film' || item.kind==='series') syncLibraryGenres(titleId);
     }
   });
@@ -566,7 +588,7 @@ function browseFilter(kind:BrowseKind,query:string,view:CatalogueView,country:st
   if(libraryGenre){terms.push('EXISTS(SELECT 1 FROM library_genres lg WHERE lg.title_id=t.id AND lg.genre=?)');params.push(libraryGenre);}
   const rootOnly=kind!=='episode'&&!collection&&!(kind==='library'&&view==='continue');
   const variantFilter=rootOnly?' AND v.series_parent_id IS NULL':'';
-  terms.push('EXISTS(SELECT 1 FROM variants v WHERE v.title_id=t.id'+variantFilter+')');
+  terms.push('(EXISTS(SELECT 1 FROM variants v WHERE v.title_id=t.id'+variantFilter+')'+(['channel','all'].includes(kind)?' OR (t.kind=\'channel\' AND '+activeEpg+')':'')+')');
   const filter=collectionClause(collection,userId);
   return {where:terms.join(' AND ')+filter.sql,params:[...params,...filter.params],variantFilter};
 }
@@ -582,7 +604,7 @@ function browseJoins(view:CatalogueView,collection?:CollectionSettings,allFields
 export function listTitles(kind:BrowseKind,userId:number,query='',view:CatalogueView='all',sort:CatalogueSort='title',limit=250,offset=0,country='',genre='',libraryGenre='',collection?:CollectionSettings):unknown[]{
   const filter=browseFilter(kind,query,view,country,genre,libraryGenre,collection,userId);
   const joins=browseJoins(view,collection);
-  const order=kind==='channel'? "CASE t.channel_country WHEN 'GB' THEN 0 WHEN 'US' THEN 1 ELSE 2 END, CASE t.live_genre WHEN 'General' THEN 0 WHEN 'Entertainment' THEN 1 WHEN 'Sports' THEN 2 WHEN 'Movies' THEN 3 WHEN 'News' THEN 4 WHEN 'Kids' THEN 5 WHEN 'Documentary' THEN 6 WHEN 'Music' THEN 7 ELSE 8 END,t.title COLLATE NOCASE,t.id":
+  const order=kind==='channel'? "CASE t.channel_country WHEN 'GB' THEN 0 WHEN 'US' THEN 1 ELSE 2 END, CASE WHEN "+activeEpg+" THEN 0 ELSE 1 END, CASE t.live_genre WHEN 'General' THEN 0 WHEN 'Entertainment' THEN 1 WHEN 'Sports' THEN 2 WHEN 'Movies' THEN 3 WHEN 'News' THEN 4 WHEN 'Kids' THEN 5 WHEN 'Documentary' THEN 6 WHEN 'Music' THEN 7 ELSE 8 END,t.title COLLATE NOCASE,t.id":
     {title:'t.title COLLATE NOCASE,t.id',year:'(t.year IS NULL),t.year DESC,t.title COLLATE NOCASE,t.id',added:'t.id DESC',activity:'(activity_at IS NULL),activity_at DESC,t.id DESC'}[sort];
   // Select the requested page before counting versions or inspecting ROM paths.
   // No full-catalogue GROUP BY, and per-user filters can begin with a small indexed user table.
@@ -670,7 +692,7 @@ export function channelGenreCounts(country='',query='',userId=0,view:CatalogueVi
     WHERE t.kind='channel' AND t.title LIKE ? ESCAPE '\\'
       AND (?<>'favourites' OR EXISTS(SELECT 1 FROM favourites f WHERE f.user_id=? AND f.title_id=t.id))
       AND (?='' OR (?='other' AND t.channel_country NOT IN ('GB','US')) OR t.channel_country=?)
-      AND EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL)
+      AND (EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL) OR ${activeEpg})
     GROUP BY t.live_genre`).all(search,view,userId,country,country,country) as Array<{name:string;count:number}>;
 }
 
@@ -691,7 +713,7 @@ export function getTitleDetail(id:number,userId:number): unknown | undefined {
     FROM titles t LEFT JOIN favourites f ON f.title_id=t.id AND f.user_id=?
     LEFT JOIN progress p ON p.title_id=t.id AND p.user_id=?
     LEFT JOIN watchlist w ON w.title_id=t.id AND w.user_id=?
-    WHERE t.id=? AND EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id)`)
+    WHERE t.id=? AND (EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id) OR (t.kind='channel' AND ${activeEpg}))`)
     .get(userId,userId,userId,id);
 }
 
@@ -869,7 +891,9 @@ export function removeGuideMapping(titleId:number):void { db.prepare('DELETE FRO
 export function storedGuide(titleId:number,limit=12,windowStart?:number,windowEnd?:number): { programmes:Array<{title:string;description:string;start:string;end:string}>; source:string; icon:string } {
   const title=db.prepare("SELECT channel_key,channel_country,canonical_key FROM titles WHERE id=? AND kind='channel'").get(titleId) as {channel_key:string;channel_country:string;canonical_key:string}|undefined;
   if (!title) return {programmes:[],source:'',icon:''};
-  const mapping=getGuideMapping(titleId);
+  const explicit=getGuideMapping(titleId);
+  const automatic=db.prepare(`SELECT el.feed_id,el.channel_id FROM live_epg_links el JOIN guide_feeds f ON f.id=el.feed_id JOIN guide_channels c ON c.feed_id=f.id AND c.generation=f.generation AND c.channel_id=el.channel_id WHERE el.title_id=? ORDER BY el.feed_id,el.channel_id LIMIT 1`).get(titleId) as {feed_id:number;channel_id:string}|undefined;
+  const mapping=explicit?.name?explicit:automatic;
   const epgIds=new Set((db.prepare("SELECT epg_id FROM variants WHERE title_id=? AND epg_id<>''").all(titleId) as Array<{epg_id:string}>).map(row=>row.epg_id.toLowerCase()));
   const encoded=/^channel:[^:]*:epg:(.+)$/.exec(title.canonical_key)?.[1];
   if(encoded) epgIds.add(encoded.toLowerCase());
@@ -898,19 +922,13 @@ export function storedGuide(titleId:number,limit=12,windowStart?:number,windowEn
 }
 
 export function guideGrid(country:string,limit=40,query='',offset=0,windowStart?:number,windowEnd?:number):{items:unknown[];total:number} {
-  const search=`%${query.replace(/[\\%_]/g,'\\$&')}%`;
-  const total=Number((db.prepare(`SELECT COUNT(*) AS total FROM titles t WHERE t.kind='channel'
-    AND (?='' OR t.channel_country=?) AND t.title LIKE ? ESCAPE '\\'
-    AND EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL)`)
-    .get(country,country,search) as {total:number}).total);
-  const rows=db.prepare(`SELECT t.id,t.kind,t.title,t.artwork,t.channel_country,COUNT(v.id) AS source_count
-    FROM titles t JOIN variants v ON v.title_id=t.id AND v.series_parent_id IS NULL
-    WHERE t.kind='channel' AND (?='' OR t.channel_country=?) AND t.title LIKE ? ESCAPE '\\'
-    GROUP BY t.id ORDER BY t.title COLLATE NOCASE LIMIT ? OFFSET ?`).all(country,country,search,limit,offset) as Array<{id:number;title:string;artwork:string;channel_country:string;source_count:number}>;
-  return {items:rows.map(row=>{ const guide=storedGuide(row.id,48,windowStart,windowEnd);return {...row,artwork:row.artwork || guide.icon,guide}; }),total};
+  const search='%'+query.replace(/[\\%_]/g,'\\$&')+'%';
+  const filter="t.kind='channel' AND (?='' OR t.channel_country=?) AND t.title LIKE ? ESCAPE '\\' AND (EXISTS(SELECT 1 FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL) OR "+activeEpg+")";
+  const total=Number(db.prepare('SELECT COUNT(*) AS total FROM titles t WHERE '+filter).get(country,country,search)?.total||0);
+  const rows=db.prepare("SELECT t.id,t.kind,t.title,t.artwork,t.channel_country,(SELECT COUNT(*) FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL) AS source_count FROM titles t WHERE "+filter+" ORDER BY CASE t.channel_country WHEN 'GB' THEN 0 WHEN 'US' THEN 1 ELSE 2 END, CASE WHEN "+activeEpg+" THEN 0 ELSE 1 END,t.title COLLATE NOCASE,t.id LIMIT ? OFFSET ?").all(country,country,search,limit,offset) as Array<{id:number;title:string;artwork:string;channel_country:string;source_count:number}>;
+  return {items:rows.map(row=>{const guide=storedGuide(row.id,48,windowStart,windowEnd);return {...row,artwork:row.artwork||guide.icon,guide};}),total};
 }
-
 export function dashboardStats():{items:number;channels:number;sources:number}{
-  const counts=db.prepare("SELECT SUM(CASE WHEN kind NOT IN ('channel','game') THEN 1 ELSE 0 END) AS items,SUM(CASE WHEN kind='channel' THEN 1 ELSE 0 END) AS channels FROM titles t WHERE kind<>'game' AND EXISTS(SELECT 1 FROM variants v WHERE v.title_id=t.id)").get();
+  const counts=db.prepare("SELECT SUM(CASE WHEN kind NOT IN ('channel','game') THEN 1 ELSE 0 END) AS items,SUM(CASE WHEN kind='channel' THEN 1 ELSE 0 END) AS channels FROM titles t WHERE kind<>'game' AND (EXISTS(SELECT 1 FROM variants v WHERE v.title_id=t.id) OR (t.kind='channel' AND "+activeEpg+"))").get();
   return {items:Number(counts?.items||0),channels:Number(counts?.channels||0),sources:Number(db.prepare('SELECT COUNT(*) AS n FROM sources').get()?.n||0)};
 }

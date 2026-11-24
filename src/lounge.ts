@@ -172,7 +172,7 @@ function channelList(items:Entry[],back:string,csrf:string){
   if(!items.length)return '<div class="blank">No channels to display.</div>';
   return '<table class="listing channel-list" cellspacing="0" cellpadding="0">'+items.map(item=>{
     const art=imageUrl(item.artwork),fields={id:item.id,back};
-    return '<tr><td class="channel-logo">'+(art?'<img src="'+esc(art)+'" alt="">':'&#9658;')+'</td><td>'+href(itemUrl(item,back),item.title,'stationlink')+'<span class="caption">'+esc([item.live_genre,item.source_count+' sources'].filter(Boolean).join(' / '))+'</span></td><td class="channel-actions">'+post(csrf,'watch',fields,'Watch')+href(itemUrl(item,back),'Guide')+post(csrf,'star',fields,item.favourite?'★':'☆')+'</td></tr>';
+    return '<tr><td class="channel-logo">'+(art?'<img src="'+esc(art)+'" alt="">':'&#9658;')+'</td><td>'+href(itemUrl(item,back),item.title,'stationlink')+'<span class="caption">'+esc([item.live_genre,item.source_count+' sources'].filter(Boolean).join(' / '))+'</span></td><td class="channel-actions">'+(item.source_count?post(csrf,'watch',fields,'Watch'):'<span class="caption">EPG only</span>')+href(itemUrl(item,back),'Guide')+post(csrf,'star',fields,item.favourite?'★':'☆')+'</td></tr>';
   }).join('')+'</table>';
 }
 function shelf(items:Entry[],back:string,csrf:string){
@@ -336,7 +336,7 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
     const now=Math.floor(Date.now()/10800000)*10800+slot*10800;
     const listing=rows.slice(0,limit).map(row=>{
       const schedule=storedGuide(row.id,12,now,now+3*3600).programmes;
-      return '<tr><td class="station">'+(imageUrl(row.artwork)?'<img class="guide-logo" src="'+esc(imageUrl(row.artwork))+'" alt="">':'')+href(itemUrl(row,here),row.title,'stationlink')+post(csrf,'watch',{id:row.id,back:here},'Watch')+'</td><td>'+(schedule.length?schedule.map(p=>'<div class="programme"><span class="time">'+esc(programmeTime(p.start))+'</span> '+esc(p.title)+'</div>').join(''):'<span class="caption">Guide not available</span>')+'</td></tr>';
+      return '<tr><td class="station">'+(imageUrl(row.artwork)?'<img class="guide-logo" src="'+esc(imageUrl(row.artwork))+'" alt="">':'')+href(itemUrl(row,here),row.title,'stationlink')+(row.source_count?post(csrf,'watch',{id:row.id,back:here},'Watch'):'<span class="caption">No connection</span>')+'</td><td>'+(schedule.length?schedule.map(p=>'<div class="programme"><span class="time">'+esc(programmeTime(p.start))+'</span> '+esc(p.title)+'</div>').join(''):'<span class="caption">Guide not available</span>')+'</td></tr>';
     }).join('');
     return render('live','On now','<div class="toolbar">'+href(query({screen:'browse',kind:'channel'}),'All channels')+[['','All'],['GB','UK'],['US','US'],['other','Other']].map(([key,label])=>href(query({screen:'guide',region:key,slot}),label,key===region?'primary':'chip')).join('')+'</div><div class="toolbar">'+(slot>-4?href(query({screen:'guide',region,slot:slot-1,page:number}),'Earlier'):'')+'<span class="caption">'+esc(new Date(now*1000).toLocaleString('en-GB'))+' – '+esc(programmeTime(new Date((now+10800)*1000).toISOString()))+'</span>'+href(query({screen:'guide',region,slot:0}),'Now')+(slot<40?href(query({screen:'guide',region,slot:slot+1,page:number}),'Later'):'')+'</div><table class="listing" cellspacing="0" cellpadding="0">'+listing+'</table><div class="toolbar">'+(number?href(query({screen:'guide',region,page:number-1,slot}),'Previous'):'')+(rows.length>limit?href(query({screen:'guide',region,page:number+1,slot}),'Next'):'')+'</div>');
   }

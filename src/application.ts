@@ -6,6 +6,7 @@ import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'nod
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
 import { lookupLocalFilm } from './local-films.ts';
+import type { LineupProgress } from './live-lineup.ts';
 import { startMetadata, metadataStatus, metadataBusy, cancelMetadata } from './maintenance.ts';
 import { liveGenres, parseM3u, scanFolder } from './catalogue.ts';
 import { gameInfo, gameSystem } from './games.ts';
@@ -70,11 +71,16 @@ let providerGuideRefresh:number|null=null;
 let systemOperation=false;
 const refreshingMetadata=new Set<number>();
 const metadataLastAttempt=new Map<number,number>();
+let lineupJob:LineupProgress|null=null;
+async function organiseLive():Promise<void>{
+  const job:LineupProgress={phase:'running',stage:'Preparing lineup',processed:0,total:0,stations:0,matched:0,unmatched:0,ambiguous:0,error:''};lineupJob=job;
+  try{const {rebuildLiveLineup}=await import('./live-lineup.ts');await rebuildLiveLineup(job);guideCache.clear();job.phase='completed';job.stage='Complete';}catch(e){job.phase='error';job.error='Channel organisation failed. Retry Rebuild Live lineup.';console.error('Live lineup rebuild failed:',e);}
+}
 function maintenanceActive():boolean {
-  return !!(inProgress.size||importingGuides.size||refreshingMetadata.size||providerGuideRefresh!==null||metadataBusy()||[...episodeJobs.values()].some(j=>j.status==='running')||backupBusy()||systemOperation);
+  return !!(lineupJob?.phase==='running'||inProgress.size||importingGuides.size||refreshingMetadata.size||providerGuideRefresh!==null||metadataBusy()||[...episodeJobs.values()].some(j=>j.status==='running')||backupBusy()||systemOperation);
 }
 function requireIdle():void {if(maintenanceActive())throw new HttpError(409,'Another administrator operation is running. Check Settings → Metadata & Guide or Sources for its progress.');}
-function activity(){return {busy:maintenanceActive(),sources:Object.fromEntries(sourceJobs),episodes:Object.fromEntries(episodeJobs),guides:Object.fromEntries(guideJobs),metadata:metadataStatus(),titleMetadata:[...refreshingMetadata],providerGuide:providerGuideRefresh,backup:backupBusy(),systemOperation};}
+function activity(){return {busy:maintenanceActive(),lineup:lineupJob,sources:Object.fromEntries(sourceJobs),episodes:Object.fromEntries(episodeJobs),guides:Object.fromEntries(guideJobs),metadata:metadataStatus(),titleMetadata:[...refreshingMetadata],providerGuide:providerGuideRefresh,backup:backupBusy(),systemOperation};}
 
 class HttpError extends Error {
   status: number;
@@ -240,8 +246,9 @@ function startImport(source: SourceRow, items: AsyncIterable<ImportItem>): void 
   void (async () => {
     try {
       let buffer: ImportItem[] = [];
-      let seen = 0;
+      let seen = 0,hasChannels=false;
       for await (const item of items) {
+        if(item.kind==='channel')hasChannels=true;
         if(job.cancelRequested) throw new ScanCancelled();
         if (++seen > 50_000) throw new Error('This scan exceeds the 50,000-item source limit. Select fewer categories and retry.');
         job.seen=seen;
@@ -256,6 +263,7 @@ function startImport(source: SourceRow, items: AsyncIterable<ImportItem>): void 
       if(job.cancelRequested) throw new ScanCancelled();
       if (buffer.length) {importBatch(source.id, buffer, generation);job.indexed+=buffer.length;}
       completeImport(source.id, generation);
+      if(hasChannels&&db.prepare("SELECT 1 FROM guide_feeds WHERE generation<>'' LIMIT 1").get()){job.folder='Organising Live lineup';await organiseLive();}
       job.phase='completed';
     } catch (error) {
       const cancelled=job.cancelRequested || error instanceof ScanCancelled;
@@ -342,7 +350,7 @@ function startGuideImport(feed:GuideFeed):void {
   void (async()=>{
     try {
       const result=await importXmltv(feed,generation,(channels,programmes)=>Object.assign(job,{channels,programmes}));
-      job.phase='completed';guideCache.clear();
+      await organiseLive();job.phase='completed';guideCache.clear();
       console.log(`Guide ${feed.id} imported: ${result.channels} channels, ${result.programmes} programmes`);
     } catch (error) {
       const message=error instanceof Error ? error.message : 'Guide import failed.';
@@ -480,6 +488,9 @@ async function dispatchApi(req:IncomingMessage,res:ServerResponse,url:URL,body:B
   if(path.startsWith('/api/space/') || path.startsWith('/api/community/')) {
     if(method!=='GET') requireWrite(req);
     return spaceApi(req,res,url,current.user,body,send);
+  }
+  if(path==='/api/system/live-lineup'&&method==='POST'){
+    requireWrite(req,true);requireIdle();void organiseLive();return send(res,202,{job:lineupJob});
   }
   if(path==='/api/system/activity'&&method==='GET'){
     if(current.user.role!=='admin')throw new HttpError(403,'Administrator access required.');
@@ -748,8 +759,8 @@ async function dispatchApi(req:IncomingMessage,res:ServerResponse,url:URL,body:B
     if (method==='DELETE' && !guideFeedMatch[2]) {
       requireWrite(req,true);
       if (importingGuides.has(id)) throw new HttpError(409,'Wait for this guide import to finish before removing it.');
-      deleteGuideFeed(id);
-      guideCache.clear();
+      requireIdle();deleteGuideFeed(id);
+      await organiseLive();guideCache.clear();
       return send(res,200,{ok:true});
     }
   }
@@ -867,15 +878,17 @@ async function dispatchApi(req:IncomingMessage,res:ServerResponse,url:URL,body:B
       const input=await body(req);
       const feedId=positiveId(String(input.feedId || ''));
       const channelId=textField(input.channelId,'XMLTV channel ID',300);
+      requireIdle();
       try { saveGuideMapping(titleId,feedId,channelId); }
       catch (error) { throw new HttpError(400,error instanceof Error ? error.message : 'Invalid guide mapping.'); }
       guideCache.delete(titleId);
+      void organiseLive();
       return send(res,200,{mapping:getGuideMapping(titleId)});
     }
     if (method==='DELETE') {
       requireWrite(req,true);
-      removeGuideMapping(titleId);
-      guideCache.delete(titleId);
+      requireIdle();removeGuideMapping(titleId);
+      guideCache.delete(titleId);void organiseLive();
       return send(res,200,{ok:true});
     }
   }
@@ -1035,7 +1048,7 @@ const server = createServer(async (req, res) => {
             const identity=requireUser(req);
             const target=new URL(path,'http://localhost');
             // Only the fixed JSON endpoints used by the server-rendered forms are eligible.
-            const allowed=/^\/api\/(?:requests(?:\/\d+(?:\/matches)?)?|space\/events(?:\/\d+)?|space\/files(?:\/\d+(?:\/share(?:\/\d+)?)?)?|community\/(?:friends(?:\/\d+)?|reviews(?:\/\d+)?|titles|rooms(?:\/\d+(?:\/(?:chat|invite|sync))?)?|rooms\/titles)|collections(?:\/\d+(?:\/rules)?)?|jobs(?:\/workers(?:\/\d+)?|\/\d+)?|sources(?:\/\d+(?:\/(?:scan|discover|categories|cancel))?)?|guide\/feeds(?:\/\d+(?:\/import)?)?|users|system\/(?:status|activity|metadata(?:\/cancel)?|update\/(?:check|status|install))|titles\/\d+\/(?:metadata\/refresh|guide(?:\/mapping)?)|guide\/channels)$/;
+            const allowed=/^\/api\/(?:requests(?:\/\d+(?:\/matches)?)?|space\/events(?:\/\d+)?|space\/files(?:\/\d+(?:\/share(?:\/\d+)?)?)?|community\/(?:friends(?:\/\d+)?|reviews(?:\/\d+)?|titles|rooms(?:\/\d+(?:\/(?:chat|invite|sync))?)?|rooms\/titles)|collections(?:\/\d+(?:\/rules)?)?|jobs(?:\/workers(?:\/\d+)?|\/\d+)?|sources(?:\/\d+(?:\/(?:scan|discover|categories|cancel))?)?|guide\/feeds(?:\/\d+(?:\/import)?)?|users|system\/(?:status|activity|live-lineup|metadata(?:\/cancel)?|update\/(?:check|status|install))|titles\/\d+\/(?:metadata\/refresh|guide(?:\/mapping)?)|guide\/channels)$/;
             if(target.origin!=='http://localhost'||!allowed.test(target.pathname)||!['GET','POST','PATCH','DELETE'].includes(method))throw new HttpError(400,'Unsupported television operation.');
             const adapted=Object.create(req) as IncomingMessage;
             Object.defineProperties(adapted,{method:{value:method},headers:{value:{...req.headers,'x-csrf-token':identity.csrf}}});

@@ -144,7 +144,7 @@ function cardWatchlistButton(item) {
 function mediaCard(item) {
   const initial = Array.from(item.title || '?')[0].toUpperCase();
   const tone = Number(item.id) % 4;
-  const detail = [item.year, item.kind === 'episode' ? `S${item.season || '?'}E${item.episode || '?'}` : null, `${item.source_count} source${item.source_count === 1 ? '' : 's'}`].filter(Boolean).join(' · ');
+  const detail = [item.year, item.kind === 'episode' ? `S${item.season || '?'}E${item.episode || '?'}` : null, `${item.source_count?`${item.source_count} source${item.source_count === 1 ? '' : 's'}`:'EPG only · no connection'}`].filter(Boolean).join(' · ');
   const cover = typeof item.artwork === 'string' && /^https?:\/\//i.test(item.artwork) ? `<img src="${esc(item.artwork)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '';
   const resume=Number(item.position_seconds)>10 && !['channel','photo'].includes(item.kind);
   const action=item.kind==='photo'?'View':item.kind==='music'?(resume?'Resume':'Listen'):(resume?'Resume':'Play');
@@ -153,7 +153,7 @@ function mediaCard(item) {
 
 function liveCard(item) {
   const artwork=typeof item.artwork==='string' && /^https?:\/\//i.test(item.artwork) ? `<img src="${esc(item.artwork)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '▻';
-  return `<div class="channel-row"><button class="channel-play" data-play="${item.id}"><span class="channel-icon">${artwork}</span><span><strong>${esc(item.title)}</strong><small>${esc(liveGenre(item))} · ${item.source_count} source${item.source_count === 1 ? '' : 's'}</small></span></button><button class="button button-quiet button-small" data-guide="${item.id}" aria-label="Programme guide for ${esc(item.title)}">Guide</button><button class="star-button ${item.favourite?'is-favourite':''}" data-favourite="${item.id}" data-next="${item.favourite?'0':'1'}" aria-label="${item.favourite?'Remove from':'Add to'} favourites">${item.favourite?'★':'☆'}</button></div>`;
+  return `<div class="channel-row"><button class="channel-play" ${item.source_count?`data-play="${item.id}"`:`data-guide="${item.id}"`}><span class="channel-icon">${artwork}</span><span><strong>${esc(item.title)}</strong><small>${esc(liveGenre(item))} · ${item.source_count} source${item.source_count === 1 ? '' : 's'}</small></span></button><button class="button button-quiet button-small" data-guide="${item.id}" aria-label="Programme guide for ${esc(item.title)}">Guide</button><button class="star-button ${item.favourite?'is-favourite':''}" data-favourite="${item.id}" data-next="${item.favourite?'0':'1'}" aria-label="${item.favourite?'Remove from':'Add to'} favourites">${item.favourite?'★':'☆'}</button></div>`;
 }
 
 function sourceOptions(variants,titleId,kind='film') {
@@ -180,7 +180,7 @@ async function renderHome() {
   state.stats = stats;
   state.items = [...continueWatching.items,...library.items, ...live.items,...watchlist.items,...favouriteChannels.items];
   state.browseItems=state.items;
-  state.channelQueue = live.items.slice(0,6).map(item=>item.id);
+  state.channelQueue = live.items.filter(item=>item.source_count>0).slice(0,6).map(item=>item.id);
   const recent = library.items.filter(item => item.kind !== 'channel').slice(0, 6);
   page.innerHTML = `<section class="hero"><div><span class="eyebrow">WELCOME TO HEARTHWAVE</span><h2>All your entertainment.<br>One happy place.</h2><p>Movies, music and live television belong together. Your own server, your sources and your choices.</p><button class="button button-primary" data-page="library">Explore your library <span>↗</span></button></div><div class="hero-art"><div class="hero-disc"></div></div></section>
     <div class="stat-grid"><div class="stat"><small>Library titles</small><strong>${stats.items}</strong><span>Grouped across sources</span></div><div class="stat"><small>Live channels</small><strong>${stats.channels}</strong><span>One shared lineup</span></div><div class="stat"><small>Configured sources</small><strong>${stats.sources}</strong><span>Managed in Settings</span></div></div>
@@ -347,8 +347,8 @@ async function renderLive() {
   const genres=liveGenres.filter(genre=>(genreCounts[genre]||0)>0 || genre===state.liveGroup);
   const selected=result.items;
   state.items=result.items;
-  state.channelQueue=selected.map(item=>item.id);
-  page.innerHTML = `<div class="preview-banner">All sources share this lineup, grouped by region and familiar genres. Import XMLTV in Settings → Metadata & Guide for a combined programme guide. Administrators can manually match channels from the Guide panel.</div>
+  state.channelQueue=selected.filter(item=>item.source_count>0).map(item=>item.id);
+  page.innerHTML = `<div class="preview-banner">Imported EPG stations define the lineup. IPTV and Stalker connections attach to matching stations. Stations without streams show as EPG only; unmatched provider channels remain available.</div>
     <div class="toolbar"><button class="pill ${state.liveView==='all'?'active':''}" data-live-view="all">All channels</button><button class="pill ${state.liveView==='favourites'?'active':''}" data-live-view="favourites">★ Favourites</button></div>
     <div class="toolbar">${countries.map(([key,label])=>`<button class="pill ${state.liveCountry===key?'active':''}" data-country="${key}">${label}</button>`).join('')}</div>
     <div class="toolbar"><button class="pill ${state.liveGroup==='all'?'active':''}" data-group="all">All genres</button>${genres.map(genre=>`<button class="pill ${state.liveGroup===genre?'active':''}" data-group="${genre}">${genre} (${genreCounts[genre]||0})</button>`).join('')}</div>
@@ -378,7 +378,7 @@ async function renderGuideGrid() {
   const result=await api(`/api/guide/grid?country=${encodeURIComponent(state.guideCountry)}&limit=30&offset=${state.guideOffset}&q=${encodeURIComponent(state.query)}&start=${start}&end=${end}`);
   if (state.page !== 'live' || !state.guideView || request!==state.guideRequest) return;
   state.items=result.items;
-  state.channelQueue=result.items.map(item=>item.id);
+  state.channelQueue=result.items.filter(item=>item.source_count>0).map(item=>item.id);
   const windowBeginning=start*1000;
   const renderProgramme=(programme,index,row)=>{
     const from=Date.parse(programme.start),until=Date.parse(programme.end);
@@ -396,7 +396,7 @@ async function renderGuideGrid() {
     <div class="guide-ruler"><span>Channel</span><div>${[0,1,2].map(index=>`<span>${esc(clock(windowBeginning+index*windowMs/3))}</span>`).join('')}<span>${esc(clock(ending))}</span></div></div>
     ${result.items.length?`<div class="guide-grid">${result.items.map(row=>{
       const image=typeof row.artwork==='string' && /^https?:\/\//i.test(row.artwork)?`<img src="${esc(row.artwork)}" alt="" loading="lazy" referrerpolicy="no-referrer">`:'';
-      return `<div class="guide-row"><div class="guide-channel"><div class="guide-logo"><span>▻</span>${image}</div><div class="guide-channel-text"><strong>${esc(row.title)}</strong><small>${esc(row.channel_country || 'Unspecified region')}</small></div><button class="button button-quiet button-small" data-play="${row.id}">Watch</button></div><div class="guide-timeline">${row.guide.programmes.length?row.guide.programmes.map((programme,index)=>renderProgramme(programme,index,row)).join(''):'<span class="guide-empty-slot">No matched programme data in this window</span>'}</div></div>`;
+      return `<div class="guide-row"><div class="guide-channel"><div class="guide-logo"><span>▻</span>${image}</div><div class="guide-channel-text"><strong>${esc(row.title)}</strong><small>${esc(row.channel_country || 'Unspecified region')}</small></div>${row.source_count?`<button class="button button-quiet button-small" data-play="${row.id}">Watch</button>`:`<span class="field-note">No connection</span>`}</div><div class="guide-timeline">${row.guide.programmes.length?row.guide.programmes.map((programme,index)=>renderProgramme(programme,index,row)).join(''):'<span class="guide-empty-slot">No matched programme data in this window</span>'}</div></div>`;
     }).join('')}</div>`:emptyState('No live channels yet','Import channels in Settings → Sources to populate the lineup.','▻')}
     <div class="guide-pagination"><span>${result.total?`${result.offset+1}–${result.offset+result.items.length} of ${result.total} channels`:'No matching channels'}</span><div><button class="button button-quiet button-small" data-guide-page="-1" ${result.offset===0?'disabled':''}>← Previous channels</button><button class="button button-quiet button-small" data-guide-page="1" ${result.offset+result.items.length>=result.total?'disabled':''}>More channels →</button></div></div>`;
 }
@@ -475,7 +475,7 @@ function scheduleUpdatePolling(busy=updateStartedHere) {
 }
 
 function maintenancePanel(activity,controls=true){
-  const j=activity.metadata;
+  const j=activity.metadata, lineup=activity.lineup;
   const active=[];
   for(const [id,job] of Object.entries(activity.sources||{}))if(['running','cancelling'].includes(job.phase))active.push('Source '+id+' · '+job.kind+' · '+job.indexed+' indexed / '+job.seen+' received');
   for(const [id,job] of Object.entries(activity.episodes||{}))if(job.status==='running')active.push('Series '+id+' · '+job.processed+'/'+job.total+' connections · '+job.episodes+' episodes');
@@ -487,6 +487,8 @@ function maintenancePanel(activity,controls=true){
   if(j&&['running','cancelling'].includes(j.phase))active.push('Manual '+j.kind+' metadata lookup');
   return '<section id="maintenance-panel" class="surface"><h2>Administrator activity</h2><p class="field-note">'+(activity.busy?'Administrator operation in progress. Only one heavy NAS job can run at once.':'Idle — no catalogue, metadata or guide maintenance is running.')+'</p>'+
     active.map(item=>'<p>'+esc(item)+'</p>').join('')+
+    (lineup?'<div class="list-row"><div><strong>Live lineup · '+esc(lineup.phase)+'</strong><small>'+esc(lineup.stage)+' · '+lineup.processed+'/'+lineup.total+' · '+lineup.stations+' EPG stations · '+lineup.matched+' matched streams · '+lineup.unmatched+' unmatched ('+lineup.ambiguous+' ambiguous)</small><small>'+esc(lineup.error||'')+'</small><progress max="'+Math.max(1,lineup.total)+'" value="'+lineup.processed+'"></progress></div></div>':'')+
+    (controls?'<p>Use imported EPG stations as the Live lineup and attach existing provider streams. No provider re-download is needed.</p><button class="button button-primary" data-lineup-rebuild '+(activity.busy?'disabled':'')+'>Rebuild Live lineup</button>':'')+
     (j?'<div class="list-row"><div><strong>'+esc(j.kind==='game'?'Game artwork':'Local film metadata')+' · '+esc(j.phase)+'</strong><small>'+j.processed+'/'+j.total+' checked · '+j.matched+' updated · '+j.missed+' no match · '+j.failed+' failed</small><small>'+esc(j.current||j.error||'')+'</small><progress max="'+Math.max(1,j.total)+'" value="'+j.processed+'"></progress></div>'+(['running','cancelling'].includes(j.phase)?'<button class="button button-danger button-small" data-maintenance-cancel '+(j.cancelRequested?'disabled':'')+'>Cancel</button>':'')+'</div>':'')+
     (controls?'<p>Metadata retrieval never starts automatically. Each run checks up to 500 missing local films or game covers. Recent unsuccessful matches are skipped for 24 hours unless you explicitly retry them.</p><label class="checkbox-row"><input type="checkbox" id="maintenance-retry"> Include recent unmatched titles</label><div class="row-actions"><button class="button button-primary" data-maintenance-start="film" '+(activity.busy?'disabled':'')+'>Fetch film metadata</button><button class="button button-primary" data-maintenance-start="game" '+(activity.busy?'disabled':'')+'>Fetch game artwork</button></div>':'')+
     '<button class="button button-quiet button-small" data-maintenance-refresh>Refresh activity</button></section>';
@@ -1125,6 +1127,7 @@ page.addEventListener('submit', async event => {
 page.addEventListener('click', async event => {
   const target = event.target.closest('button');
   if (!target) return;
+  if(target.hasAttribute('data-lineup-rebuild')){try{target.disabled=true;await api('/api/system/live-lineup',{method:'POST'});await refreshActivity();}catch(error){notify(error.message,true);target.disabled=false;}return;}
   if(target.dataset.maintenanceStart){try{target.disabled=true;await api('/api/system/metadata',{method:'POST',body:{kind:target.dataset.maintenanceStart,retry:$('#maintenance-retry')?.checked===true}});await refreshActivity();}catch(error){notify(error.message,true);target.disabled=false;}return;}
   if(target.hasAttribute('data-maintenance-cancel')){try{await api('/api/system/metadata/cancel',{method:'POST'});await refreshActivity();}catch(error){notify(error.message,true);}return;}
   if(target.hasAttribute('data-maintenance-refresh'))return refreshActivity();
