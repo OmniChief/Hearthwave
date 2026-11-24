@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import type { MediaKind, User } from './model.ts';
 import { hasUsers, listTitles, getTitleDetail, listVariants, getVariant, getSource, listSeriesEpisodes, storedGuide, listCollections, ownedCollection, createCollection, setCollectionMembership, setFavourite, setWatchlisted, saveProgress, getUserPreferences, setUserPreferences, dashboardStats, db } from './db.ts';
-import { resolveProviderStream } from './adapters/providers.ts';
+import { resolveProviderStream, debugStalkerStream } from './adapters/providers.ts';
 import { libraryGenres } from './library-genres.ts';
 import { liveGenres } from './catalogue.ts';
 import { qualityPreferences, type QualityPreference } from './quality.ts';
@@ -136,7 +136,7 @@ function frame(res:ServerResponse,user:User|null,section:string,heading:string,c
   const back=navigation?backDestination(navigation):'';
   const search=user?'<form class="global-search" action="/tv" method="get">'+hidden('screen','browse')+hidden('kind','all')+'<input type="text" name="q" maxlength="120" aria-label="Search your entertainment"><input class="commit" type="submit" value="Search"></form>':'';
   const backButton=back?'<a id="lounge-back" class="chip backbutton" href="'+esc(back)+'">&#8592; Back</a>':'';
-  let html='<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"><html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>'+esc(heading)+' | Hearthwave</title><link rel="stylesheet" type="text/css" href="/lounge.css?v=0342"><script type="text/javascript" src="/lounge-keys.js?v=0343" defer="defer"></script></head><body><div id="screen"><div id="mast"><a class="wordmark" href="/tv"><span class="emblem">&#9672;</span> hearthwave<span class="accent">.</span></a>'+search+'<span class="edition">YOUR ENTERTAINMENT &nbsp; / &nbsp; TV</span></div><table class="shell" cellpadding="0" cellspacing="0"><tr>'+rail+'<td id="stage" valign="top"><div class="heading"><h1>'+esc(heading)+'</h1><!--LOUNGE_BACK--></div>'+content+'</td></tr></table><div class="footer">Move with arrows &nbsp; &middot; &nbsp; OK to select &nbsp; &middot; &nbsp; Back to return <span>'+href('/?modern=1','Desktop interface','plain')+'</span></div></div></body></html>';
+  let html='<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"><html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>'+esc(heading)+' | Hearthwave</title><link rel="stylesheet" type="text/css" href="/lounge.css?v=0342"><script type="text/javascript" src="/lounge-keys.js?v=0360" defer="defer"></script></head><body><div id="screen"><div id="mast"><a class="wordmark" href="/tv"><span class="emblem">&#9672;</span> hearthwave<span class="accent">.</span></a>'+search+'<span class="edition">YOUR ENTERTAINMENT &nbsp; / &nbsp; TV</span></div><table class="shell" cellpadding="0" cellspacing="0"><tr>'+rail+'<td id="stage" valign="top"><div class="heading"><h1>'+esc(heading)+'</h1><!--LOUNGE_BACK--></div>'+content+'</td></tr></table><div class="footer">Move with arrows &nbsp; &middot; &nbsp; OK to select &nbsp; &middot; &nbsp; Back to return <span>'+href('/?modern=1','Desktop interface','plain')+'</span></div></div></body></html>';
   if(navigation)html=decorateNavigation(html,navigation);
   respond(res,status,html.replace('<!--LOUNGE_BACK-->',backButton));
 }
@@ -262,13 +262,21 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
       if(roomId){try{room=(await s.call('GET','/api/community/rooms/'+roomId)).room;if(!room||room.titleId!==id)return error('This title is not in the watch room.',403);}catch{return error('Watch room unavailable.',404);}}
       const choice=f.has('variant')?getVariant(idOf(f.get('variant'))):playable(item,user.id)[0];
       if(!choice||choice.title_id!==id||['series','game'].includes(item.kind)||/^(xtream|stalker)-series:/.test(choice.url))return error('This version is not playable.',404);
+      const debug=f.get('debug')==='yes';
+      if(debug&&(user.role!=='admin'||item.kind!=='channel'||choice.source_type!=='stalker'))return error('Administrator Stalker channel access required.',403);
+      let debugPanel='';
       let address=choice.source_type==='folder'?'/api/media/'+choice.id+'/file':choice.url;
       const tried=String(f.get('tried')||'').split(',').map(idOf).filter(Boolean).slice(0,20);if(!tried.includes(choice.id))tried.push(choice.id);
       const alternative=tried.length<20?playable(item,user.id).find(v=>!tried.includes(v.id)):undefined;
       const fallback=alternative?post(csrf,'watch',{id,back,...(roomId?{room:roomId}:{}),variant:alternative.id,tried:tried.join(','),resume:f.get('resume')==='yes'?'yes':'no'},'Try next source','fallbackform'):'';
       if(choice.source_type==='stalker'&&address.startsWith('stalker:')){
         const source=getSource(choice.source_id);if(!source)return error('This connection is no longer available.',404);
-        try{address=await resolveProviderStream(source,choice.url);}catch{return render(sectionFor(item.kind),item.title,'<p class="notice">This connection could not start playback.</p>'+fallback+href(detail,'Other versions'),502);}
+        if(debug){
+          const result=await debugStalkerStream(source,choice.url);
+          debugPanel='<h2>Stalker direct playback debug</h2><p class="caption">Variant '+choice.id+' / Source '+choice.source_id+'; no NAS media forwarding.</p><textarea rows="12" cols="55" readonly="readonly" id="stalker-debug-report">'+esc(result.trace.join('\n'))+'</textarea>';
+          if(!result.url)return render(sectionFor(item.kind),item.title,'<p class="notice">Provider link resolution failed.</p>'+debugPanel+href(detail,'Other versions'),502);
+          address=result.url;
+        }else try{address=await resolveProviderStream(source,choice.url);}catch{return render(sectionFor(item.kind),item.title,'<p class="notice">This connection could not start playback.</p>'+fallback+href(detail,'Other versions'),502);}
       }
       if(choice.source_type!=='folder'&&!imageUrl(address))return error('The source does not offer a supported HTTP media address.');
       if(!originalRoute&&!originalTrail.length)navigation.trail=pushRoute(pushRoute(originalTrail,back),detail);
@@ -288,7 +296,7 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
         if(at>0)adjacent+=post(csrf,'watch',{id:channels[at-1].id,back},'Previous channel','prevchannel');
         if(at>=0&&at+1<channels.length)adjacent+=post(csrf,'watch',{id:channels[at+1].id,back},'Next channel','nextchannel');
       }
-      return render(sectionFor(item.kind),item.title,'<div class="toolbar">'+href(detail,'Back','chip return-target')+(room?href(query({screen:'room',id:roomId}),'Watch room'):'')+adjacent+'</div><div class="screenmedia">'+media+'</div><div class="toolbar player-toolbar"><input class="commit" type="button" id="media-toggle" value="Play / pause"><input class="commit" type="button" id="media-full" value="Full screen">'+fallback+'</div><div id="media-message" class="caption" data-autonext="'+autoNext+'">'+esc(choice.source_name)+' / '+esc(choice.quality_tier)+' &middot; Native television playback</div><div class="toolbar">'+href(address,'Open stream directly')+href(detail,'Other versions')+'</div>');
+      return render(sectionFor(item.kind),item.title,'<div class="toolbar">'+href(detail,'Back','chip return-target')+(room?href(query({screen:'room',id:roomId}),'Watch room'):'')+adjacent+'</div><div class="screenmedia">'+media+'</div><div class="toolbar player-toolbar"><input class="commit" type="button" id="media-toggle" value="Play / pause"><input class="commit" type="button" id="media-full" value="Full screen">'+fallback+'</div><div id="media-message" class="caption" data-autonext="'+autoNext+'">'+esc(choice.source_name)+' / '+esc(choice.quality_tier)+' &middot; Native television playback</div><div class="toolbar">'+href(address,'Open stream directly')+href(detail,'Other versions')+'</div>'+debugPanel);
     }
     return error('Unknown action.');
   }
@@ -370,7 +378,7 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
     }else{
       const sources=playable(item,user.id);
       if(sources.length){const selected=sources[0];
-        content+='<div class="toolbar">'+post(csrf,'watch',{...fields,variant:selected.id},item.kind==='photo'?'View':'Play now','heroform')+((item.position_seconds||0)>10?post(csrf,'watch',{...fields,variant:selected.id,resume:'yes'},'Resume at '+Math.floor((item.position_seconds||0)/60)+' min','heroform'):'')+'</div><h2>Available versions</h2><table class="listing" cellspacing="0" cellpadding="0">'+sources.map(v=>'<tr><td>'+esc(v.source_name)+'</td><td class="caption">'+esc(v.quality_tier)+'</td><td>'+post(csrf,'watch',{...fields,variant:v.id},'Play')+'</td></tr>').join('')+'</table>';
+        content+='<div class="toolbar">'+post(csrf,'watch',{...fields,variant:selected.id},item.kind==='photo'?'View':'Play now','heroform')+((item.position_seconds||0)>10?post(csrf,'watch',{...fields,variant:selected.id,resume:'yes'},'Resume at '+Math.floor((item.position_seconds||0)/60)+' min','heroform'):'')+'</div><h2>Available versions</h2><table class="listing" cellspacing="0" cellpadding="0">'+sources.map(v=>'<tr><td>'+esc(v.source_name)+'</td><td class="caption">'+esc(v.quality_tier)+'</td><td>'+post(csrf,'watch',{...fields,variant:v.id},'Play')+(user.role==='admin'&&item.kind==='channel'&&v.source_type==='stalker'?post(csrf,'watch',{...fields,variant:v.id,debug:'yes'},'Debug'):'')+'</td></tr>').join('')+'</table>';
       }else content+='<p class="blank">No playable versions are available.</p>';
       if(item.kind==='channel')content+='<h2>Programme schedule</h2>' +programmeList(await s.call('GET','/api/titles/'+id+'/guide'))+(user.role==='admin'?post(csrf,'feature.guide-refresh',{id},'Refresh provider guide')+href(query({screen:'guide-mapping',id}),'Map guide channel'):'');
     }

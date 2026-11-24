@@ -153,7 +153,7 @@ function mediaCard(item) {
 
 function liveCard(item) {
   const artwork=typeof item.artwork==='string' && /^https?:\/\//i.test(item.artwork) ? `<img src="${esc(item.artwork)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '▻';
-  return `<div class="channel-row"><button class="channel-play" ${item.source_count?`data-play="${item.id}"`:`data-guide="${item.id}"`}><span class="channel-icon">${artwork}</span><span><strong>${esc(item.title)}</strong><small>${esc(liveGenre(item))} · ${item.source_count?`${item.source_count} source${item.source_count===1?'':'s'}${item.epg_backed?' · EPG matched':' · Provider only'}${item.source_types?' · '+esc(item.source_types.split(',').map(type=>({m3u:'IPTV (M3U)',xtream:'IPTV (Xtream)',stalker:'Stalker',direct:'Direct'})[type]||type).join(' + ')):''}`:'EPG only · no connection'}</small></span></button><button class="button button-quiet button-small" data-guide="${item.id}" aria-label="Programme guide for ${esc(item.title)}">Guide</button><button class="star-button ${item.favourite?'is-favourite':''}" data-favourite="${item.id}" data-next="${item.favourite?'0':'1'}" aria-label="${item.favourite?'Remove from':'Add to'} favourites">${item.favourite?'★':'☆'}</button></div>`;
+  return `<div class="channel-row"><button class="channel-play" ${item.source_count?`data-play="${item.id}"`:`data-guide="${item.id}"`}><span class="channel-icon">${artwork}</span><span><strong>${esc(item.title)}</strong><small>${esc(liveGenre(item))} · ${item.source_count?`${item.source_count} source${item.source_count===1?'':'s'}${item.epg_backed?' · EPG matched':' · Provider only'}${item.source_types?' · '+esc(item.source_types.split(',').map(type=>({m3u:'IPTV (M3U)',xtream:'IPTV (Xtream)',stalker:'Stalker',direct:'Direct'})[type]||type).join(' + ')):''}`:'EPG only · no connection'}</small></span></button><button class="button button-quiet button-small" data-guide="${item.id}" aria-label="Programme guide for ${esc(item.title)}">Guide</button>${state.session?.user?.role==='admin'&&item.source_types?.split(',').includes('stalker')?`<button class="button button-quiet button-small" data-stalker-debug="${item.id}">Debug</button>`:''}<button class="star-button ${item.favourite?'is-favourite':''}" data-favourite="${item.id}" data-next="${item.favourite?'0':'1'}" aria-label="${item.favourite?'Remove from':'Add to'} favourites">${item.favourite?'★':'☆'}</button></div>`;
 }
 
 function sourceOptions(variants,titleId,kind='film') {
@@ -685,14 +685,21 @@ function renderPlaybackDiagnostics() {
   $('#player-attempts').innerHTML=attempts.map(attempt=>`<li><strong>Connection ${attempt.index+1} · ${esc(attempt.quality)}</strong><span class="diagnostic-status" data-status="${esc(attempt.status)}">${esc(attempt.status)}</span><small>${esc(attempt.format)} · ${esc(attempt.engine)}${attempt.failure!=='none' ? ` · ${esc(attempt.failure)}`:''}</small>${attempt.status==='Failed'?`<small>${esc(connectionAdvice(attempt.failure,attempt.format,attempt.mixedContent))}</small>`:''}</li>`).join('');
   const current=currentPlaybackAttempt();
   $('#player-advice').textContent=current?.status==='Playing' ? 'This connection is playing. Browser capability checks are hints, not a guarantee for every video.' : current?.failure!=='none' && current ? connectionAdvice(current.failure,current.format,current.mixedContent) : current?.mixedContent ? connectionAdvice('unknown',current.format,true) : 'If a connection fails, its cause and suggested next step will appear here.';
+  const debugReport=$('#stalker-debug-report');
+  debugReport.hidden=!state.stalkerDebug;
+  if(state.stalkerDebug) debugReport.value=playbackReport(attempts,browserPlaybackCapabilities($('#player')))+'\n'+clientDebugSnapshot();
   const caps=browserPlaybackCapabilities($('#player'));
   $('#player-browser-support').innerHTML=caps.map(([label,value])=>`<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join('');
 }
 
+function clientDebugSnapshot() {
+  const media=$('#player');
+  return ['Device: '+navigator.userAgent,'Page protocol: '+location.protocol,'Native media error: '+(media.error?.code||0),'Ready state: '+media.readyState+'; network state: '+media.networkState,'Decoded size: '+media.videoWidth+' x '+media.videoHeight,'Playback seconds: '+Math.round(media.currentTime||0),'MPEG-TS support: '+(media.canPlayType('video/mp2t')||'not reported')].join('\n');
+}
 function beginPlaybackAttempt(generation,item) {
   const previous=currentPlaybackAttempt();
   if(previous && !['Failed','Switched'].includes(previous.status)) previous.status='Switched';
-  state.playbackAttempts.push({generation,index:state.variantIndex,quality:item.qualityTier || 'Unknown',format:'Unknown',engine:'Unresolved',status:'Connecting',failure:'none',mixedContent:false});
+  state.playbackAttempts.push({generation,variantId:item.id,sourceId:item.sourceId,index:state.variantIndex,quality:item.qualityTier || 'Unknown',format:'Unknown',engine:'Unresolved',status:'Connecting',failure:'none',mixedContent:false});
   if(state.playbackAttempts.length>12) state.playbackAttempts.shift();
   renderPlaybackDiagnostics();
 }
@@ -705,15 +712,16 @@ function resetMediaElement(media) {
   media.load();
 }
 
-async function startPlayback(titleId,preferredId=null,roomPosition=null) {
+async function startPlayback(titleId,preferredId=null,roomPosition=null,debug=false) {
   rooms.beforePlayback(titleId);
   const request=++state.playbackRequest;
   const result = await api(`/api/titles/${titleId}/variants`);
   if(request!==state.playbackRequest) return;
-  const playable = orderPlaybackVariants(result.variants.filter(variant => variant.playable && (variant.url || variant.resolve)),state.qualityPreference,preferredId);
+  const playable = orderPlaybackVariants(result.variants.filter(variant => variant.playable && (variant.url || variant.resolve) && (!debug || variant.type==='stalker')),state.qualityPreference,preferredId);
   if (!playable.length) throw new Error('There is no playable stream for this title yet.');
   const title = state.items.find(item => Number(item.id) === Number(titleId)) || (await api(`/api/titles/${titleId}`)).title;
   if(request!==state.playbackRequest) return;
+  state.stalkerDebug=debug && state.session?.user?.role==='admin' && title.kind==='channel';
   state.activeTitle = title;
   const kind=presentation(title.kind);
   state.variants = playable;
@@ -751,6 +759,7 @@ async function startPlayback(titleId,preferredId=null,roomPosition=null) {
   $('#next-channel').hidden=title.kind!=='channel' || state.channelQueue.length<2;
   $('#player-overlay').hidden = false;
   tvNavigation.enterPlayer();
+  if(state.stalkerDebug){$('#player-diagnostics').hidden=false;$('#player-diagnostics-toggle').setAttribute('aria-expanded','true');$('#player-diagnostics-copy').hidden=false;}
   void playVariant();
 }
 
@@ -828,22 +837,11 @@ function failSource(generation,message,code='unknown') {
   failedPlaybackGeneration=generation;
   setPlaybackStatus(generation,'Failed',code);
   clearPlaybackRecovery();
-  if(state.variantIndex+1<state.variants.length) {nextSource();return;}
+  if(!state.stalkerDebug && state.variantIndex+1<state.variants.length) {nextSource();return;}
   disposeMedia();
   if(presentation(state.activeTitle?.kind)!=='photo') currentMedia().pause();
   $('#player-message').textContent=message;
-  const variant=state.variants[state.variantIndex];
-  if(state.activeTitle?.kind==='channel' && variant?.resolve && ['unsupported','network'].includes(code)) {
-    void api(`/api/variants/${variant.id}/check-playback`,{method:'POST'}).then(result=>{
-      if(generation!==state.playbackGeneration || $('#player-overlay').hidden) return;
-      if(result.message) {
-        $('#player-message').textContent=result.message;
-        setPlaybackStatus(generation,'Failed','provider');
-      } else if(code==='network') {
-        $('#player-message').textContent='The server received data from a fresh provider link. The browser could not read this stream. Check the provider’s cross-origin media settings.';
-      }
-    }).catch(()=>{}); // Keep the browser error if the diagnostic request itself fails.
-  }
+
 }
 
 /** An authenticated <img> only decodes the one selected photo in the viewer. */
@@ -890,7 +888,11 @@ async function playVariant() {
   $('#photo-viewer').removeAttribute('src');
   let failureStage='provider';
   try {
-    const url = item.resolve ? (await api(`/api/variants/${item.id}/resolve`, { method:'POST' })).url : item.url;
+    const result = item.resolve ? await api(`/api/variants/${item.id}/${state.stalkerDebug?'debug-playback':'resolve'}`, { method:'POST' }) : {url:item.url};
+    if(!alive()) return;
+    const traceAttempt=currentPlaybackAttempt();
+    if(state.stalkerDebug && traceAttempt?.generation===generation) {traceAttempt.trace=result.trace||[];renderPlaybackDiagnostics();}
+    const url=result.url;
     if (!alive()) return;
     if (!url) throw new Error('No stream URL was returned.');
     state.resolvedUrl = url;
@@ -1150,6 +1152,7 @@ page.addEventListener('submit', async event => {
 page.addEventListener('click', async event => {
   const target = event.target.closest('button');
   if (!target) return;
+  if(target.dataset.stalkerDebug){try{await startPlayback(Number(target.dataset.stalkerDebug),null,null,true);}catch(error){notify(error.message,true);}return;}
   if(target.hasAttribute('data-lineup-rebuild')){try{target.disabled=true;await api('/api/system/live-lineup',{method:'POST'});await refreshActivity();}catch(error){notify(error.message,true);target.disabled=false;}return;}
   if(target.dataset.maintenanceStart){try{target.disabled=true;await api('/api/system/metadata',{method:'POST',body:{kind:target.dataset.maintenanceStart,retry:$('#maintenance-retry')?.checked===true}});await refreshActivity();}catch(error){notify(error.message,true);target.disabled=false;}return;}
   if(target.hasAttribute('data-maintenance-cancel')){try{await api('/api/system/metadata/cancel',{method:'POST'});await refreshActivity();}catch(error){notify(error.message,true);}return;}
@@ -1414,13 +1417,13 @@ $('#player-diagnostics-toggle').addEventListener('click',()=>{
   const panel=$('#player-diagnostics');
   panel.hidden=!panel.hidden;
   $('#player-diagnostics-toggle').setAttribute('aria-expanded',String(!panel.hidden));
-  $('#player-diagnostics-copy').hidden=!navigator.clipboard?.writeText;
+  $('#player-diagnostics-copy').hidden=!state.stalkerDebug&&!navigator.clipboard?.writeText;
   renderPlaybackDiagnostics();
 });
 $('#player-diagnostics-copy').addEventListener('click',()=>{
-  const report=playbackReport(state.playbackAttempts,browserPlaybackCapabilities($('#player')));
+  const report=playbackReport(state.playbackAttempts,browserPlaybackCapabilities($('#player')))+(state.stalkerDebug?'\n'+clientDebugSnapshot():'');
   const copy=navigator.clipboard?.writeText?.(report);
-  if(!copy) return notify('Clipboard access is not available on this device.',true);
+  if(!copy) {if(state.stalkerDebug){const field=$('#stalker-debug-report');field.value=report;field.focus();field.select();return notify('Select and copy the report manually.');}return notify('Clipboard access is not available on this device.',true);}
   Promise.resolve(copy).then(()=>notify('Safe playback report copied. Provider URLs and tokens were excluded.')).catch(()=>notify('Clipboard access is not available on this device.',true));
 });
 for(const media of [$('#player'),$('#music-player')]) {

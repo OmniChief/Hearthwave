@@ -66,6 +66,7 @@ export function playbackReport(attempts,capabilities) {
     const safeEngine=['HLS.js','mpegts.js','Native HLS','Native video','Native audio','Image viewer','Unresolved'].includes(attempt.engine) ? attempt.engine : 'Unresolved';
     const safeStatus=['Connecting','Preparing','Starting','Playing','Displaying','Buffering','Failed','Switched','Paused'].includes(attempt.status) ? attempt.status : 'Unknown';
     const safeFailure=['interrupted','network','hls-network','decode','unsupported','startup','stall','provider','autoplay','unknown','none'].includes(attempt.failure) ? attempt.failure : 'unknown';
+    if(Array.isArray(attempt.trace)){lines.push(`Variant ${attempt.variantId}; source ${attempt.sourceId}`,...attempt.trace);}
     lines.push(`${index+1}. Connection ${attempt.index+1} · ${safeQuality} · ${safeFormat} · ${safeEngine} · ${safeStatus}${safeStatus==='Failed' ? ` (${safeFailure})` : ''}`);
   });
   lines.push('Browser capabilities (hints):');

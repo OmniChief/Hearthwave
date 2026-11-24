@@ -15,7 +15,7 @@ import { qualityPreferences, type QualityPreference } from './quality.ts';
 import { BackupError, backupBusy, streamBackup } from './backup.ts';
 import { UpdateError, checkForUpdate, startUpdate, updateStatus } from './updater.ts';
 import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, completeImport, countTitles, createCollection, createSmartCollection, createUser, dashboardStats, dataDir, db, deleteCollection, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, libraryGenreCounts, listCategories, listCollections, listGuideFeeds, listSeriesEpisodes, liveSourceCounts, listSources, listTitles, listVariants, loadSession, ownedCollection, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, renameCollection, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setCollectionMembership, setFavourite, setWatchlisted, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, updateSmartCollectionRules, type GuideFeed, type SmartRules, type SourceRow } from './db.ts';
-import { discoverProvider, discoverSeriesEpisodes, fetchTitleMetadata, importProvider, providerGuide, resolveProviderStream, type ProviderScanProgress } from './adapters/providers.ts';
+import { discoverProvider, discoverSeriesEpisodes, fetchTitleMetadata, importProvider, providerGuide, resolveProviderStream, debugStalkerStream, type ProviderScanProgress } from './adapters/providers.ts';
 import { importXmltv } from './guide.ts';
 import { localSubtitles, subtitleVtt } from './subtitles.ts';
 import { checkMediaResponse, fetchM3u, ProviderError, validateProviderUrl } from './adapters/network.ts';
@@ -953,13 +953,17 @@ async function dispatchApi(req:IncomingMessage,res:ServerResponse,url:URL,body:B
       url:v.source_type === 'folder' ? `/api/media/${v.id}/file` : v.source_type === 'stalker' ? null : v.url.startsWith('xtream-series:') ? null : v.url,
     })) });
   }
-  const resolveMatch = /^\/api\/variants\/(\d+)\/(resolve|check-playback)$/.exec(path);
+  const resolveMatch = /^\/api\/variants\/(\d+)\/(resolve|check-playback|debug-playback)$/.exec(path);
   if (resolveMatch && method === 'POST') {
-    requireWrite(req);
+    requireWrite(req,resolveMatch[2] !== 'resolve');
     const variant = getVariant(positiveId(resolveMatch[1]));
     if (!variant) throw new HttpError(404,'Source version not found.');
     const source = getSource(variant.source_id);
     if (!source) throw new HttpError(404,'Source connection not found.');
+    if(resolveMatch[2]==='debug-playback') {
+      if(source.type!=='stalker'||variant.source_type!=='stalker'||getTitle(variant.title_id)?.kind!=='channel') throw new HttpError(404,'Stalker live channel not found.');
+      return send(res,200,await debugStalkerStream(source,variant.url));
+    }
     const stream = await resolveProviderStream(source,variant.url);
     if (resolveMatch[2] === 'check-playback') {
       const message = await checkMediaResponse(stream, Boolean(source.config.allowLan));

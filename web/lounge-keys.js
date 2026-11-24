@@ -233,6 +233,19 @@
       bind(items[i], 'focus', function (event) { var ev = event || window.event; mark(ev.target || ev.srcElement); });
     }
     player = document.getElementById('media');
+    var report = document.getElementById('stalker-debug-report');
+    if(report && player) {
+      var original = report.value, events = [], started = new Date().getTime();
+      var snapshot = function(name) {
+        if(events.length < 24 && name !== 'timeupdate') { events[events.length] = name + ' @ ' + (new Date().getTime()-started) + 'ms'; }
+        report.value = original + '\nDevice: ' + navigator.userAgent + '\nPage protocol: ' + window.location.protocol + '\nEvents: ' + events.join(', ') + '\nMedia error: ' + (player.error ? player.error.code : 0) + '\nReady/network: ' + player.readyState + '/' + player.networkState + '\nDecoded size: ' + (player.videoWidth||0) + 'x' + (player.videoHeight||0) + '\nPlayback seconds: ' + Math.round(player.currentTime||0);
+        if(player.canPlayType) {report.value += '\nNative HLS: ' + (player.canPlayType('application/vnd.apple.mpegurl')||'not reported') + '\nMPEG-TS: ' + (player.canPlayType('video/mp2t')||'not reported');}
+      };
+      var names=['loadedmetadata','canplay','playing','waiting','stalled','error','abort','timeupdate','pause'], j;
+      for(j=0;j<names.length;j++){(function(name){bind(player,name,function(){snapshot(name);});}(names[j]));}
+      snapshot('initial');
+      window.setTimeout(function(){snapshot('15-second check');},15000);
+    }
     if (player && player.play) {
       bind(player, 'loadedmetadata', resumeMedia);
       if (player.readyState > 0) { resumeMedia(); }

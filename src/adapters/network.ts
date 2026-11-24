@@ -70,7 +70,7 @@ function retryTime(headers: IncomingHttpHeaders): number {
 }
 
 /** HTTP response and decompressed JSON bodies are both size bounded. No redirects. */
-export async function providerJson(address: string, options: { headers?: Record<string,string>; allowLan?: boolean; maxBytes?: number } = {}): Promise<unknown> {
+export async function providerJson(address: string, options: { headers?: Record<string,string>; allowLan?: boolean; maxBytes?: number; onStatus?: (status:number)=>void } = {}): Promise<unknown> {
   return withSlot(async () => {
     const url = validateProviderUrl(address);
     const { address: ip, family } = await pinnedAddress(url, Boolean(options.allowLan));
@@ -87,6 +87,7 @@ export async function providerJson(address: string, options: { headers?: Record<
       req.end();
     });
     try {
+      options.onStatus?.(response.statusCode || 0);
       if (response.statusCode === 429) throw new ProviderError('Provider rate limit reached (HTTP 429).',429,retryTime(response.headers));
       if (response.statusCode === 401 || response.statusCode === 403) throw new ProviderError('Provider rejected the saved account or device.',502);
       if (response.statusCode !== 200) throw new ProviderError(`Provider returned HTTP ${response.statusCode || 'unknown'}.`);

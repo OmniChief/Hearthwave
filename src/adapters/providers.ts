@@ -151,11 +151,26 @@ function playbackAddress(command: unknown): string | null {
   return url.href;
 }
 
+function addressHint(command: unknown): string {
+  const value=field(command);
+  if (!value) return 'empty';
+  const match=/(?:^|\s)(https?:\/\/[^\s]+)/i.exec(value);
+  if(!match) return 'no HTTP(S) address';
+  try {
+    const u=new URL(match[1]);
+    const loop=/^(?:localhost$|127\.|0\.0\.0\.0$|\[::1\]$)/i.test(u.hostname);
+    const ext=/\.(m3u8|ts|m2ts|mp4|mkv|webm)$/i.exec(u.pathname)?.[1] || 'unknown';
+    const hint=['type','format','output','extension','ext'].map(k=>u.searchParams.get(k)||'').find(v=>/^(m3u8|ts|mpegts|m2ts|mp4)$/i.test(v));
+    return u.protocol+' '+(loop?'loopback':'non-loopback')+'; extension '+ext+'; format hint '+(hint||'none')+'; query '+(u.search?'present':'absent')+'; embedded credentials '+(u.username||u.password?'present':'absent');
+  } catch {return 'invalid URL';}
+}
 class StalkerClient {
   endpoint: string;
   token = '';
   private source: SourceRow;
-  constructor(source: SourceRow) {
+  private trace?: string[];
+  constructor(source: SourceRow, trace?: string[]) {
+    this.trace=trace;
     this.source = source;
     const url = validateProviderUrl(source.location);
     if (url.search) throw new ProviderError('Portal address must not contain a query string.',400);
@@ -166,11 +181,22 @@ class StalkerClient {
     const url = new URL(endpoint);
     url.search = new URLSearchParams({...Object.fromEntries(Object.entries(params).map(([key,value])=>[key,String(value)])),type,action,JsHttpRequest:'1-xml'}).toString();
     const mac = this.source.config.mac || '';
-    const response = await providerJson(url.toString(),{
-      allowLan:this.source.config.allowLan,maxBytes:8*1024*1024,
+    const label=type+'/'+action+' ('+(endpoint.endsWith('/portal.php')?'portal.php':'server/load.php')+')';
+    const started=Date.now();
+    let status=0;
+    let response:unknown;
+    try {
+      response = await providerJson(url.toString(),{
+      allowLan:this.source.config.allowLan,maxBytes:8*1024*1024,onStatus:code=>{status=code;},
       headers:{'User-Agent':magAgent,'X-User-Agent':'Model: MAG250; Link: Ethernet',Cookie:`mac=${encodeURIComponent(mac)}; stb_lang=en; timezone=GMT`,...(token?{Authorization:`Bearer ${token}`}:{})},
     });
+    } catch(error) {
+      this.trace?.push(label+': failed; HTTP '+(status||'no response')+'; '+(Date.now()-started)+' ms; '+(error instanceof ProviderError?'provider error '+error.status:'network/transport error'));
+      throw error;
+    }
     const value = (response as {js?:unknown})?.js;
+    this.trace?.push(label+': HTTP '+status+'; '+(Date.now()-started)+' ms; js '+(Array.isArray(value)?'array':typeof value)+(value && typeof value==='object'&&!Array.isArray(value)?'; token '+(field((value as Entry).token)?'present':'absent')+'; error '+(truthy((value as Entry).error)?'yes':'no')+(action==='create_link'?'; cmd '+addressHint((value as Entry).cmd)+'; url '+addressHint((value as Entry).url):''):''));
+
     if (action === 'do_auth' && typeof value === 'boolean') return {status:value};
     if (!value || typeof value !== 'object') throw new ProviderError('Portal returned an invalid Stalker response.');
     if (Array.isArray(value)) return {data:value};
@@ -197,6 +223,7 @@ class StalkerClient {
     }
     if (!this.token) throw last || new ProviderError('Portal handshake failed.');
     const cfg = this.source.config;
+    try {
     const profile = await this.request('stb','get_profile',{
       hd:1,stb_type:'MAG250',sn:cfg.serial||'',device_id:cfg.deviceId||'',device_id2:cfg.deviceId2||'',
       auth_second_step:1,image_version:218,hw_version:'1.7-BD-00',num_banks:2,client_type:'STB',video_out:'hdmi',
@@ -207,6 +234,8 @@ class StalkerClient {
       const auth = await this.request('stb','do_auth',{login:cfg.username,password:cfg.password||''},this.token);
       if (![true,1,'1'].includes(auth.status as string|number|boolean)) throw new ProviderError('Portal rejected the account login.');
     }
+    this.trace?.push('Session: authenticated');
+    } catch(error) {this.token='';this.trace?.push('Session: profile or login rejected');throw error;}
   }
   async call(type: string, action: string, params: Record<string,string | number> = {}): Promise<Entry> {
     await this.session();
@@ -215,12 +244,14 @@ class StalkerClient {
   async resolve(kind: Kind, cmd: string, series = ''): Promise<string> {
     const params = { cmd, series, forced_storage:kind === 'live' ? 'false' : '', disable_ad:'false', download:'false', force_ch_link_check:'false' };
     const type = kind === 'live' ? 'itv' : 'vod';
+    this.trace?.push('Stored command: '+addressHint(cmd));
+    await this.session(); // Do not fall back to a stored URL after failed device authentication.
     let failure: unknown;
     for (const attempt of kind === 'series' ? ['vod','series'] : [type]) {
       try {
         const result = await this.call(attempt,'create_link',params);
         const address = playbackAddress(result.cmd) || playbackAddress(result.url);
-        if (address) return address;
+        if (address) {this.trace?.push('Selected: create_link; '+addressHint(address));return address;}
       } catch (error) {
         if (error instanceof ProviderError && error.status === 429) throw error;
         failure = error;
@@ -228,7 +259,7 @@ class StalkerClient {
     }
     // Some portals list a usable direct stream instead of generating a new link.
     const direct = playbackAddress(cmd);
-    if (direct) return direct;
+    if (direct) {this.trace?.push('Selected: stored direct command; '+addressHint(direct));return direct;}
     if (failure) throw failure;
     throw new ProviderError('The portal did not return a playable stream address.');
   }
@@ -381,13 +412,13 @@ export async function* importProvider(source: SourceRow, categories: ProviderCat
   } else throw new ProviderError('This source cannot be scanned with a provider adapter.',400);
 }
 
-export async function resolveProviderStream(source: SourceRow, encoded: string): Promise<string> {
+export async function resolveProviderStream(source: SourceRow, encoded: string, trace?: string[]): Promise<string> {
   if (source.type !== 'stalker' || !encoded.startsWith('stalker:')) throw new ProviderError('This version is not a Stalker stream.',400);
   let data: {kind:Kind;cmd:string;series?:string};
   try { data = JSON.parse(encoded.slice('stalker:'.length)); }
   catch { throw new ProviderError('Stored provider stream metadata is invalid.'); }
   if (!['live','vod','series'].includes(data.kind) || !data.cmd || (data.series != null && !/^\d{1,4}$/.test(data.series))) throw new ProviderError('Provider stream command is missing or invalid.');
-  return new StalkerClient(source).resolve(data.kind,data.cmd,data.series || '');
+  return new StalkerClient(source,trace).resolve(data.kind,data.cmd,data.series || '');
 }
 
 function episodeNumber(value: unknown): number {
@@ -548,4 +579,11 @@ export async function providerGuide(source: SourceRow, sourceRef: string): Promi
     start:field(row.start_timestamp || row.start || row.time),
     end:field(row.stop_timestamp || row.end || row.time_to),
   }));
+}
+
+/** Admin diagnostics use the actual resolved URL once, without a media probe or relay. */
+export async function debugStalkerStream(source:SourceRow,encoded:string) {
+  const trace=['Delivery: client direct HTTP(S); no NAS media proxy or probe.'];
+  try {const url=await resolveProviderStream(source,encoded,trace);return {url,trace};}
+  catch(error) {trace.push('Resolution failed: '+(error instanceof ProviderError?'provider error '+error.status:'network/transport error'));return {url:null,trace};}
 }
