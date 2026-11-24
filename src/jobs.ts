@@ -46,8 +46,9 @@ function active(wid:number,id:number,lease:unknown):Job {
 }
 function expireJobs(){
   const cutoff=Date.now()-120000;
+  const expired=db.prepare("SELECT * FROM worker_jobs WHERE status='running' AND worker_id IN (SELECT id FROM paired_workers WHERE last_seen<?)").all(cutoff) as unknown as Job[];
+  if(!expired.length)return;
   tx(()=>{
-    const expired=db.prepare("SELECT * FROM worker_jobs WHERE status='running' AND worker_id IN (SELECT id FROM paired_workers WHERE last_seen<?)").all(cutoff) as unknown as Job[];
     for(const job of expired){cleanupFile(job);db.prepare("UPDATE worker_jobs SET status='failed',message='Worker disconnected before reporting completion.',lease='',updated=? WHERE id=?").run(Date.now(),job.id);}
   });
 }

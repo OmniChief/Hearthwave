@@ -550,48 +550,54 @@ function collectionClause(collection:CollectionSettings|undefined,userId:number)
   }
   return {sql:` AND ${terms.join(' AND ')}`,params};
 }
-export function listTitles(kind: MediaKind | 'all' | 'library', userId: number, query = '', view:CatalogueView='all', sort:CatalogueSort='title', limit=250,offset=0,country='',genre='',libraryGenre='',collection?:CollectionSettings): unknown[] {
-  const search = `%${query.replace(/[\\%_]/g, '\\$&')}%`;
+type BrowseKind=MediaKind|'all'|'library';
+function browseFilter(kind:BrowseKind,query:string,view:CatalogueView,country:string,genre:string,libraryGenre:string,collection:CollectionSettings|undefined,userId:number){
+  const terms:string[]=[];
+  const params:Array<string|number>=[];
+  if(kind==='library')terms.push("t.kind NOT IN ('channel','game')");
+  else if(kind!=='all'){terms.push('t.kind=?');params.push(kind);}
+  if(query){terms.push("t.title LIKE ? ESCAPE '\\'");params.push('%'+query.replace(/[\\%_]/g,'\\$&')+'%');}
+  if(view==='favourites')terms.push('f.title_id IS NOT NULL');
+  if(view==='continue')terms.push('p.position_seconds>0');
+  if(view==='watchlist')terms.push('w.title_id IS NOT NULL');
+  if(country==='other')terms.push("t.channel_country NOT IN ('GB','US')");
+  else if(country){terms.push('t.channel_country=?');params.push(country);}
+  if(genre){terms.push('t.live_genre=?');params.push(genre);}
+  if(libraryGenre){terms.push('EXISTS(SELECT 1 FROM library_genres lg WHERE lg.title_id=t.id AND lg.genre=?)');params.push(libraryGenre);}
+  const rootOnly=kind!=='episode'&&!collection;
+  const variantFilter=rootOnly?' AND v.series_parent_id IS NULL':'';
+  terms.push('EXISTS(SELECT 1 FROM variants v WHERE v.title_id=t.id'+variantFilter+')');
   const filter=collectionClause(collection,userId);
-  const order=kind==='channel' ? `CASE t.channel_country WHEN 'GB' THEN 0 WHEN 'US' THEN 1 ELSE 2 END,
-    CASE t.live_genre WHEN 'General' THEN 0 WHEN 'Entertainment' THEN 1 WHEN 'Sports' THEN 2
-      WHEN 'Movies' THEN 3 WHEN 'News' THEN 4 WHEN 'Kids' THEN 5 WHEN 'Documentary' THEN 6
-      WHEN 'Music' THEN 7 ELSE 8 END,t.title COLLATE NOCASE ASC,t.id ASC`
-    : {title:'t.title COLLATE NOCASE ASC,t.id ASC',year:'(t.year IS NULL),t.year DESC,t.title COLLATE NOCASE ASC,t.id ASC',added:'t.id DESC',activity:'(p.updated_at IS NULL),p.updated_at DESC,t.id DESC'}[sort];
-  return db.prepare(`
-    SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,t.artwork,t.channel_country,t.live_genre, MIN(v.id) AS variant_id, CASE WHEN t.kind='game' THEN v.source_ref END AS game_path,
-      COUNT(v.id) AS source_count,
-      CASE WHEN f.title_id IS NULL THEN 0 ELSE 1 END AS favourite,
-      CASE WHEN w.title_id IS NULL THEN 0 ELSE 1 END AS watchlisted,p.position_seconds
-    FROM titles t JOIN variants v ON v.title_id=t.id AND (v.series_parent_id IS NULL OR ?='episode' OR ?>0)
-    LEFT JOIN favourites f ON f.title_id=t.id AND f.user_id=?
-    LEFT JOIN progress p ON p.title_id=t.id AND p.user_id=?
-    LEFT JOIN watchlist w ON w.title_id=t.id AND w.user_id=?
-    WHERE (?='all' OR (?='library' AND t.kind NOT IN ('channel','game')) OR t.kind=?) AND t.title LIKE ? ESCAPE '\\'
-      AND (?='all' OR (?='favourites' AND f.title_id IS NOT NULL) OR (?='continue' AND p.position_seconds>0) OR (?='watchlist' AND w.title_id IS NOT NULL))
-      AND (?='' OR (?='other' AND t.channel_country NOT IN ('GB','US')) OR t.channel_country=?)
-      AND (?='' OR t.live_genre=?)
-      AND (?='' OR EXISTS (SELECT 1 FROM library_genres lg WHERE lg.title_id=t.id AND lg.genre=?))
-      ${filter.sql}
-    GROUP BY t.id ORDER BY ${order} LIMIT ? OFFSET ?
-  `).all(kind,collection?.id||0,userId,userId,userId,kind,kind,kind,search,view,view,view,view,country,country,country,genre,genre,libraryGenre,libraryGenre,...filter.params,Math.min(250,Math.max(1,limit)),Math.max(0,offset));
+  return {where:terms.join(' AND ')+filter.sql,params:[...params,...filter.params],variantFilter};
 }
-
-export function countTitles(kind: MediaKind | 'all' | 'library',userId:number,query='',view:CatalogueView='all',country='',genre='',libraryGenre='',collection?:CollectionSettings):number {
-  const search=`%${query.replace(/[\\%_]/g,'\\$&')}%`;
-  const filter=collectionClause(collection,userId);
-  return Number((db.prepare(`SELECT COUNT(*) AS total FROM titles t
-    LEFT JOIN favourites f ON f.title_id=t.id AND f.user_id=?
-    LEFT JOIN progress p ON p.title_id=t.id AND p.user_id=?
-    LEFT JOIN watchlist w ON w.title_id=t.id AND w.user_id=?
-    WHERE (?='all' OR (?='library' AND t.kind NOT IN ('channel','game')) OR t.kind=?) AND t.title LIKE ? ESCAPE '\\'
-      AND (?='all' OR (?='favourites' AND f.title_id IS NOT NULL) OR (?='continue' AND p.position_seconds>0) OR (?='watchlist' AND w.title_id IS NOT NULL))
-      AND (?='' OR (?='other' AND t.channel_country NOT IN ('GB','US')) OR t.channel_country=?)
-      AND (?='' OR t.live_genre=?)
-      AND (?='' OR EXISTS (SELECT 1 FROM library_genres lg WHERE lg.title_id=t.id AND lg.genre=?))
-      ${filter.sql}
-      AND EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id AND (v.series_parent_id IS NULL OR ?='episode' OR ?>0))`)
-      .get(userId,userId,userId,kind,kind,kind,search,view,view,view,view,country,country,country,genre,genre,libraryGenre,libraryGenre,...filter.params,kind,collection?.id||0) as {total:number}).total);
+function browseJoins(view:CatalogueView,collection?:CollectionSettings,allFields=true){
+  const join=(table:string,alias:string,required:boolean)=> (required?' JOIN ':' LEFT JOIN ')+table+' '+alias+' ON '+alias+'.title_id=t.id AND '+alias+'.user_id=?';
+  const favourite=allFields||view==='favourites'||collection?.rule_view==='favourites';
+  const progress=allFields||view==='continue'||['continue','unwatched'].includes(collection?.rule_view||'');
+  const watch=allFields||view==='watchlist';
+  return {sql:(favourite?join('favourites','f',view==='favourites'):'')+
+    (progress?join('progress','p',view==='continue'):'')+
+    (watch?join('watchlist','w',view==='watchlist'):''),count:Number(favourite)+Number(progress)+Number(watch)};
+}
+export function listTitles(kind:BrowseKind,userId:number,query='',view:CatalogueView='all',sort:CatalogueSort='title',limit=250,offset=0,country='',genre='',libraryGenre='',collection?:CollectionSettings):unknown[]{
+  const filter=browseFilter(kind,query,view,country,genre,libraryGenre,collection,userId);
+  const joins=browseJoins(view,collection);
+  const order=kind==='channel'? "CASE t.channel_country WHEN 'GB' THEN 0 WHEN 'US' THEN 1 ELSE 2 END, CASE t.live_genre WHEN 'General' THEN 0 WHEN 'Entertainment' THEN 1 WHEN 'Sports' THEN 2 WHEN 'Movies' THEN 3 WHEN 'News' THEN 4 WHEN 'Kids' THEN 5 WHEN 'Documentary' THEN 6 WHEN 'Music' THEN 7 ELSE 8 END,t.title COLLATE NOCASE,t.id":
+    {title:'t.title COLLATE NOCASE,t.id',year:'(t.year IS NULL),t.year DESC,t.title COLLATE NOCASE,t.id',added:'t.id DESC',activity:'(activity_at IS NULL),activity_at DESC,t.id DESC'}[sort];
+  // Select the requested page before counting versions or inspecting ROM paths.
+  // No full-catalogue GROUP BY, and per-user filters can begin with a small indexed user table.
+  return db.prepare("WITH selected AS MATERIALIZED (SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,t.artwork,t.channel_country,t.live_genre,CASE WHEN f.title_id IS NULL THEN 0 ELSE 1 END AS favourite,CASE WHEN w.title_id IS NULL THEN 0 ELSE 1 END AS watchlisted,p.position_seconds,p.updated_at AS activity_at FROM titles t"+
+    joins.sql+" WHERE "+filter.where+" ORDER BY "+order+" LIMIT ? OFFSET ?) "+
+    "SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,t.artwork,t.channel_country,t.live_genre,t.favourite,t.watchlisted,t.position_seconds,"+
+    "(SELECT MIN(v.id) FROM variants v WHERE v.title_id=t.id"+filter.variantFilter+") AS variant_id,"+
+    "(SELECT COUNT(*) FROM variants v WHERE v.title_id=t.id"+filter.variantFilter+") AS source_count,"+
+    "CASE WHEN t.kind='game' THEN (SELECT v.source_ref FROM variants v WHERE v.title_id=t.id"+filter.variantFilter+" ORDER BY v.id LIMIT 1) END AS game_path "+
+    "FROM selected t ORDER BY "+order).all(...Array(joins.count).fill(userId),...filter.params,Math.min(250,Math.max(1,limit)),Math.max(0,offset));
+}
+export function countTitles(kind:BrowseKind,userId:number,query='',view:CatalogueView='all',country='',genre='',libraryGenre='',collection?:CollectionSettings):number{
+  const filter=browseFilter(kind,query,view,country,genre,libraryGenre,collection,userId);
+  const joins=browseJoins(view,collection,false);
+  return Number(db.prepare('SELECT COUNT(*) AS total FROM titles t'+joins.sql+' WHERE '+filter.where).get(...Array(joins.count).fill(userId),...filter.params)?.total||0);
 }
 
 export interface CollectionRow extends CollectionSettings {created_at:string;item_count:number|null;included:number}
@@ -651,19 +657,13 @@ export function setCollectionMembership(userId:number,collectionId:number,titleI
   return true;
 }
 
-export function libraryGenreCounts(kind:'library'|'film'|'series',userId:number,query='',view:CatalogueView='all'):Array<{name:string;count:number}> {
-  const search=`%${query.replace(/[\\%_]/g,'\\$&')}%`;
-  return db.prepare(`SELECT lg.genre AS name,COUNT(*) AS count FROM library_genres lg
-    JOIN titles t ON t.id=lg.title_id
-    LEFT JOIN favourites f ON f.title_id=t.id AND f.user_id=?
-    LEFT JOIN progress p ON p.title_id=t.id AND p.user_id=?
-    LEFT JOIN watchlist w ON w.title_id=t.id AND w.user_id=?
-    WHERE t.kind IN ('film','series') AND (?='library' OR t.kind=?) AND t.title LIKE ? ESCAPE '\\'
-      AND (?='all' OR (?='favourites' AND f.title_id IS NOT NULL) OR (?='continue' AND p.position_seconds>0) OR (?='watchlist' AND w.title_id IS NOT NULL))
-      AND EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL)
-    GROUP BY lg.genre ORDER BY count DESC,lg.genre COLLATE NOCASE`).all(userId,userId,userId,kind,kind,search,view,view,view,view) as Array<{name:string;count:number}>;
+export function libraryGenreCounts(kind:'library'|'film'|'series',userId:number,query='',view:CatalogueView='all'):Array<{name:string;count:number}>{
+  const filter=browseFilter(kind,query,view,'','','',undefined,userId);
+  const joins=browseJoins(view,undefined,false);
+  return db.prepare("SELECT lg.genre AS name,COUNT(*) AS count FROM library_genres lg JOIN titles t ON t.id=lg.title_id"+joins.sql+
+    " WHERE t.kind IN ('film','series') AND "+filter.where+" GROUP BY lg.genre ORDER BY count DESC,lg.genre COLLATE NOCASE")
+    .all(...Array(joins.count).fill(userId),...filter.params) as Array<{name:string;count:number}>;
 }
-
 export function channelGenreCounts(country='',query='',userId=0,view:CatalogueView='all'):Array<{name:string;count:number}> {
   const search=`%${query.replace(/[\\%_]/g,'\\$&')}%`;
   return db.prepare(`SELECT t.live_genre AS name,COUNT(*) AS count FROM titles t
@@ -910,8 +910,7 @@ export function guideGrid(country:string,limit=40,query='',offset=0,windowStart?
   return {items:rows.map(row=>{ const guide=storedGuide(row.id,48,windowStart,windowEnd);return {...row,artwork:row.artwork || guide.icon,guide}; }),total};
 }
 
-export function dashboardStats(): { items: number; channels: number; sources: number } {
-  const items = Number((db.prepare("SELECT COUNT(*) AS total FROM titles WHERE kind NOT IN ('channel','game') AND EXISTS (SELECT 1 FROM variants WHERE title_id=titles.id)").get() as { total: number }).total);
-  const channels = Number((db.prepare("SELECT COUNT(*) AS total FROM titles WHERE kind='channel' AND EXISTS (SELECT 1 FROM variants WHERE title_id=titles.id)").get() as { total: number }).total);
-  return { items, channels, sources: listSources().length };
+export function dashboardStats():{items:number;channels:number;sources:number}{
+  const counts=db.prepare("SELECT SUM(CASE WHEN kind NOT IN ('channel','game') THEN 1 ELSE 0 END) AS items,SUM(CASE WHEN kind='channel' THEN 1 ELSE 0 END) AS channels FROM titles t WHERE kind<>'game' AND EXISTS(SELECT 1 FROM variants v WHERE v.title_id=t.id)").get();
+  return {items:Number(counts?.items||0),channels:Number(counts?.channels||0),sources:Number(db.prepare('SELECT COUNT(*) AS n FROM sources').get()?.n||0)};
 }

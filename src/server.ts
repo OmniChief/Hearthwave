@@ -400,7 +400,7 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const path = url.pathname;
   const method = req.method || 'GET';
-  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.28.0', pid: process.pid });
+  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.29.0', pid: process.pid });
   if (path === '/api/session' && method === 'GET') {
     const current = session(req);
     return send(res, 200, { needsSetup: !hasUsers(), user: current?.user || null, csrf: current?.csrf || null });
@@ -476,7 +476,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   if (path === '/api/system/status' && method === 'GET') {
     if (current.user.role !== 'admin') throw new HttpError(403, 'Administrator access required.');
     const databaseInfo = await stat(join(dataDir, 'hearthwave.sqlite'));
-    return send(res, 200, { version: '0.28.0', schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, databaseBytes: databaseInfo.size, rssBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(process.uptime()), backupBusy: backupBusy() });
+    return send(res, 200, { version: '0.29.0', schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, databaseBytes: databaseInfo.size, rssBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(process.uptime()), backupBusy: backupBusy() });
   }
   if(path==='/api/system/update/check' && method==='GET') {
     if(current.user.role!=='admin') throw new HttpError(403,'Administrator access required.');
@@ -491,7 +491,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     const input=await body(req);
     if(typeof input.sha!=='string' || !/^[a-f0-9]{40}$/.test(input.sha)) throw new HttpError(400,'Choose a verified GitHub commit first.');
     requireIdle();systemOperation=true;
-    try{await startUpdate(input.sha,shutdownForUpdate);}catch(error){systemOperation=false;throw error;}
+    try{await startUpdate(input.sha,shutdownForUpdate,()=>{systemOperation=false;});}catch(error){systemOperation=false;throw error;}
     return send(res,202,{accepted:true,message:'Preparing the verified update. Hearthwave will restart when ready.'});
   }
   if (path === '/api/system/backup' && method === 'POST') {
@@ -772,6 +772,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     const typedKind=kind as 'all'|'library'|ImportItem['kind'];
     const typedView=view as 'all'|'favourites'|'continue'|'watchlist',typedSort=sort as 'title'|'year'|'added'|'activity';
     const liveGenre=kind==='channel'?genre:'',libraryGenre=kind==='channel'?'':genre;
+    const preview=url.searchParams.get('preview')==='1';
     const rows=listTitles(typedKind,current.user.id,query,typedView,typedSort,limit,offset,country,liveGenre,libraryGenre,collection) as Array<Record<string,unknown> & {game_path?:string}>;
     const items=rows.map(({game_path,...row})=>{
       if(!game_path)return row;
@@ -780,9 +781,9 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     });
     return send(res,200,{
       items,
-      total:countTitles(typedKind,current.user.id,query,typedView,country,liveGenre,libraryGenre,collection),
+      total:preview?items.length:countTitles(typedKind,current.user.id,query,typedView,country,liveGenre,libraryGenre,collection),
       offset,limit,maxResults:limit,
-      genres:collectionId?[]:kind==='channel'?channelGenreCounts(country,query,current.user.id,typedView):['library','film','series'].includes(kind)?libraryGenreCounts(kind as 'library'|'film'|'series',current.user.id,query,typedView):[],
+      genres:preview||collectionId?[]:kind==='channel'?channelGenreCounts(country,query,current.user.id,typedView):['library','film','series'].includes(kind)?libraryGenreCounts(kind as 'library'|'film'|'series',current.user.id,query,typedView):[],
     });
   }
   const detailMatch=/^\/api\/titles\/(\d+)$/.exec(path);

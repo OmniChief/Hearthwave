@@ -170,7 +170,8 @@ function cataloguePager(result,scope) {
 }
 
 async function renderHome() {
-  const [stats, library, live, continueWatching,watchlist,favouriteChannels] = await Promise.all([api('/api/stats'), api('/api/catalogue?kind=library&limit=6&sort=added'), api('/api/catalogue?kind=channel&limit=6'), api('/api/catalogue?kind=library&view=continue&sort=activity&limit=6'),api('/api/catalogue?kind=library&view=watchlist&limit=6'),api('/api/catalogue?kind=channel&view=favourites&limit=6')]);
+  const [stats, library, live, continueWatching,watchlist,favouriteChannels] = await Promise.all([api('/api/stats'), api('/api/catalogue?kind=library&limit=6&sort=added&preview=1'), api('/api/catalogue?kind=channel&limit=6&preview=1'), api('/api/catalogue?kind=library&view=continue&sort=activity&limit=6&preview=1'),api('/api/catalogue?kind=library&view=watchlist&limit=6&preview=1'),api('/api/catalogue?kind=channel&view=favourites&limit=6&preview=1')]);
+  if(state.page!=='home'||!state.session)return;
   state.stats = stats;
   state.items = [...continueWatching.items,...library.items, ...live.items,...watchlist.items,...favouriteChannels.items];
   state.browseItems=state.items;
@@ -490,7 +491,7 @@ async function refreshActivity(){
   const wasBusy=activityState?.busy;
   activityState=result;
   const p=$('#maintenance-panel');if(p)p.outerHTML=maintenancePanel(result,tab==='metadata');
-  if(tab==='metadata'&&wasBusy&&!result.busy){await renderSettings();return;}
+  if(tab==='metadata'&&wasBusy&&!result.busy&&Object.values(result.guides||{}).some(j=>j.phase==='completed'||j.phase==='error')){await renderSettings();return;}
   if(tab==='metadata'){
     for(const [id,job] of Object.entries(result.guides||{})){
       const button=page.querySelector('[data-guide-import="'+Number(id)+'"]');

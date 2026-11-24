@@ -149,7 +149,7 @@ async function downloadArchive(sha:string,destination:string):Promise<void> {
   catch(error) {throw error instanceof UpdateError?error:new UpdateError(502,'The source archive download failed.');}
 }
 
-export async function startUpdate(sha:string,onRestart:()=>void):Promise<void> {
+export async function startUpdate(sha:string,onRestart:()=>void,onFailure:()=>void=()=>{}):Promise<void> {
   if(installing) throw new UpdateError(409,'An update is already being prepared.');
   if(process.execArgv.some(arg=>arg==='--watch' || arg.startsWith('--watch='))) throw new UpdateError(409,'Stop watch mode and start Hearthwave normally before updating.');
   if(backupBusy()) throw new UpdateError(409,'Wait for the current database export to finish.');
@@ -167,6 +167,7 @@ export async function startUpdate(sha:string,onRestart:()=>void):Promise<void> {
   void prepareUpdate(latest,onRestart).catch(async error=>{
     installing=false;
     await writeUpdateStatus(dataDir,'failed',error instanceof Error?error.message:'Update preparation failed.',latest.sha,latest.version).catch(()=>{});
+    onFailure();
     console.error('Hearthwave update preparation failed:',error);
   });
 }
