@@ -40,6 +40,80 @@ function internalReturn(value:unknown):string{
   if(typeof value!=='string'||value.length>700||!value.startsWith('/tv?'))return '/tv';
   try{const u=new URL(value,'http://hearthwave.invalid');return u.origin==='http://hearthwave.invalid'&&u.pathname==='/tv'?u.pathname+u.search:'/tv';}catch{return '/tv';}
 }
+// Compact, validated navigation history travels with links and forms. No client storage,
+// browser history API, server sessions or extra requests are needed for Back.
+type Navigation={route:string;trail:string[];fallback?:string};
+function cleanRoute(value:unknown):string{
+  if(typeof value!=='string'||value.length>1800||!/^\/tv(?:[?#]|$)/.test(value))return '';
+  try{
+    const u=new URL(value,'http://hearthwave.invalid');
+    if(u.origin!=='http://hearthwave.invalid'||u.pathname!=='/tv')return '';
+    u.searchParams.delete('nav');u.searchParams.delete('back');
+    if(!/^#lounge-(?:focus|item)-[\d-]+$/.test(u.hash))u.hash='';
+    return u.pathname+u.search+u.hash;
+  }catch{return '';}
+}
+function encodeTrail(entries:string[]):string{
+  const list=entries.map(cleanRoute).filter(Boolean).slice(-8);
+  while(list.length){
+    const value=Buffer.from(JSON.stringify(list),'utf8').toString('base64url');
+    if(value.length<=2200)return value;
+    list.shift();
+  }
+  return '';
+}
+function decodeTrail(value:string|null):string[]{
+  if(!value||value.length>2200||! /^[A-Za-z0-9_-]+$/.test(value))return [];
+  try{
+    const parsed:unknown=JSON.parse(Buffer.from(value,'base64url').toString('utf8'));
+    if(!Array.isArray(parsed)||parsed.length>8)return [];
+    return parsed.map(cleanRoute).filter(Boolean);
+  }catch{return [];}
+}
+function pushRoute(trail:string[],route:string):string[]{
+  const clean=cleanRoute(route);
+  if(!clean)return trail.slice();
+  const result=trail.slice();
+  if(result[result.length-1]?.split('#')[0]===clean.split('#')[0])result.pop();
+  result.push(clean);
+  return decodeTrail(encodeTrail(result));
+}
+function carry(route:string,trail:string[]):string{
+  const clean=cleanRoute(route)||'/tv',u=new URL(clean,'http://hearthwave.invalid'),token=encodeTrail(trail);
+  if(token)u.searchParams.set('nav',token);
+  return u.pathname+u.search+u.hash;
+}
+function backDestination(n:Navigation):string{
+  if(n.trail.length)return carry(n.trail[n.trail.length-1],n.trail.slice(0,-1));
+  if(n.fallback&&cleanRoute(n.fallback)&&cleanRoute(n.fallback)!==n.route)return cleanRoute(n.fallback);
+  return n.route&&n.route!=='/tv'&&n.route!=='/tv?screen=home'?'/tv':'';
+}
+function decorateNavigation(html:string,n:Navigation):string{
+  const previous=backDestination(n);
+  let sequence=0;const used=new Set<string>();
+  // Only trusted server-generated anchor tags are rewritten. Route validation
+  // excludes media addresses, external sites and the desktop interface.
+  html=html.replace(/<a\b[^>]*\bhref="([^"]*)"[^>]*>/gi,(tag:string,encoded:string)=>{
+    const target=cleanRoute(encoded.replace(/&amp;/g,'&'));
+    if(!target)return tag;
+    if(/\breturn-target\b/.test(tag)){
+      return tag.replace('href="'+encoded+'"','href="'+esc(previous||'/tv')+'"');
+    }
+    const url=new URL(target,'http://hearthwave.invalid'),id=url.searchParams.get('screen')==='item'?idOf(url.searchParams.get('id')):0;
+    let focus=id?'lounge-item-'+id:'lounge-focus-'+(++sequence);
+    if(used.has(focus))focus+='-'+(++sequence);
+    used.add(focus);
+    const origin=n.route?n.route.split('#')[0]+'#'+focus:'';
+    const history=target.split('#')[0]===n.route.split('#')[0]?n.trail:pushRoute(n.trail,origin);
+    return tag.replace('href="'+encoded+'"','id="'+focus+'" href="'+esc(carry(target,history))+'"');
+  });
+  // A search/filter submission is also a navigation step. POST mutations carry
+  // the originating GET route separately so Back never replays a submission.
+  html=html.replace(/<form\b[^>]*\baction="\/tv"[^>]*>/gi,tag=>tag+hidden('nav',encodeTrail(pushRoute(n.trail,n.route))));
+  html=html.replace(/<form\b[^>]*\baction="\/tv\/submit"[^>]*>/gi,tag=>tag+hidden('nav',encodeTrail(n.trail))+hidden('route',n.route));
+  return html;
+}
+
 function imageUrl(value:unknown):string{
   if(typeof value!=='string'||value.length>4096)return '';
   try{const u=new URL(value);return ['http:','https:'].includes(u.protocol)&&!u.username&&!u.password?u.href:'';}catch{return '';}
@@ -49,12 +123,16 @@ function respond(res:ServerResponse,code:number,html:string){
   res.end(html);
 }
 const navItems=[['home','Home','/tv'],['library','Watch',query({screen:'browse',kind:'library'})],['live','Live',query({screen:'browse',kind:'channel'})],['listen','Listen',query({screen:'browse',kind:'music'})],['photos','Photos',query({screen:'browse',kind:'photo'})],['play','Play',query({screen:'browse',kind:'game'})],['saved','My collection',query({screen:'saved'})],['settings','Settings',query({screen:'settings'})]];
-function frame(res:ServerResponse,user:User|null,section:string,heading:string,content:string,status=200){
+function frame(res:ServerResponse,user:User|null,section:string,heading:string,content:string,status=200,navigation?:Navigation){
   const rail=user?'<td id="rail" valign="top"><div class="railcaption">EXPLORE</div>'+navItems.map(([key,label,path])=>href(path,label,'railitem'+(section===key?' active':''))).join('')+'<div class="railfooter">'+esc(user.username)+'</div></td>':'';
-  respond(res,status,'<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"><html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>'+esc(heading)+' | Hearthwave</title><link rel="stylesheet" type="text/css" href="/lounge.css"><script type="text/javascript" src="/lounge-keys.js" defer="defer"></script></head><body><div id="screen"><div id="mast"><a class="wordmark" href="/tv"><span class="emblem">&#9672;</span> hearthwave<span class="accent">.</span></a><span class="edition">YOUR ENTERTAINMENT &nbsp; / &nbsp; TV</span></div><table class="shell" cellpadding="0" cellspacing="0"><tr>'+rail+'<td id="stage" valign="top"><div class="heading"><h1>'+esc(heading)+'</h1></div>'+content+'</td></tr></table><div class="footer">Move with arrows &nbsp; &middot; &nbsp; OK to select &nbsp; &middot; &nbsp; Back to return <span>'+href('/?modern=1','Desktop interface','plain')+'</span></div></div></body></html>');
+  const back=navigation?backDestination(navigation):'';
+  const backButton=back?'<a id="lounge-back" class="chip backbutton" href="'+esc(back)+'">&#8592; Back</a>':'';
+  let html='<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"><html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>'+esc(heading)+' | Hearthwave</title><link rel="stylesheet" type="text/css" href="/lounge.css"><script type="text/javascript" src="/lounge-keys.js?v=0330" defer="defer"></script></head><body><div id="screen"><div id="mast"><a class="wordmark" href="/tv"><span class="emblem">&#9672;</span> hearthwave<span class="accent">.</span></a><span class="edition">YOUR ENTERTAINMENT &nbsp; / &nbsp; TV</span></div><table class="shell" cellpadding="0" cellspacing="0"><tr>'+rail+'<td id="stage" valign="top"><div class="heading"><h1>'+esc(heading)+'</h1><!--LOUNGE_BACK--></div>'+content+'</td></tr></table><div class="footer">Move with arrows &nbsp; &middot; &nbsp; OK to select &nbsp; &middot; &nbsp; Back to return <span>'+href('/?modern=1','Desktop interface','plain')+'</span></div></div></body></html>';
+  if(navigation)html=decorateNavigation(html,navigation);
+  respond(res,status,html.replace('<!--LOUNGE_BACK-->',backButton));
 }
-export function loungeError(res:ServerResponse,status:number,user:User|null,message:string){
-  frame(res,user,'','Something went wrong','<div class="notice">'+esc(message)+'</div><p>'+href('/tv','Return home')+'</p>',status);
+export function loungeError(res:ServerResponse,status:number,user:User|null,message:string,navigation?:Navigation){
+  frame(res,user,'','Something went wrong','<div class="notice">'+esc(message)+'</div><p>'+href('/tv','Return home')+'</p>',status,navigation);
 }
 export function needsLounge(agent:string):boolean{
   return /smart[- ]?tv|hbbtv|netcast|viera|bravia|maple|tizen|web0s|webos\.tv|opera tv|ce-html|d tv|dtv|samsungbrowser\/[1-4]\./i.test(agent);
@@ -117,35 +195,39 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
   const auth=s.session(req);
   if(!auth)return loginScreen(req,res);
   const {user,csrf}=auth;
-  const render=(where:string,title:string,body:string,status=200)=>frame(res,user,where,title,body,status);
-  const error=(message:string,status=400)=>loungeError(res,status,user,message);
+  let navigation:Navigation={route:cleanRoute(url.pathname+url.search)||'/tv',trail:decodeTrail(url.searchParams.get('nav')),fallback:internalReturn(url.searchParams.get('back'))};
+  const render=(where:string,title:string,body:string,status=200)=>frame(res,user,where,title,body,status,navigation);
+  const error=(message:string,status=400)=>loungeError(res,status,user,message,navigation);
   if(method==='POST'&&path==='/tv/submit'){
     const f=await formData(req);
+    const originalTrail=decodeTrail(f.get('nav')),originalRoute=cleanRoute(f.get('route'));
+    navigation={route:'',trail:pushRoute(originalTrail,originalRoute),fallback:originalRoute||internalReturn(f.get('back'))};
+    const stay=(fallback:string)=>redirect(res,carry(originalRoute||fallback,originalTrail));
     if(f.get('csrf')!==csrf)return error('Your session has expired. Open the page again.',403);
     const op=f.get('op'),id=idOf(f.get('id')),back=internalReturn(f.get('back')),item=id?getTitleDetail(id,user.id) as Entry|undefined:undefined;
     if(op==='logout'){s.logout(req,res,auth.tokenHash);return redirect(res,'/tv');}
     if(op==='preferences'){
       const quality=f.get('quality') as QualityPreference;
       if(!qualityPreferences.includes(quality))return error('Select a playback quality.');
-      setUserPreferences(user.id,f.get('autoplay')==='yes',quality);return redirect(res,query({screen:'settings'}));
+      setUserPreferences(user.id,f.get('autoplay')==='yes',quality);return stay(query({screen:'settings'}));
     }
     if(op==='newcollection'){
       const name=(f.get('name')||'').trim();
       if(!name||name.length>70||/[\p{Cc}\p{Cf}]/u.test(name))return error('Enter a collection name of up to 70 characters.');
-      createCollection(user.id,name);return redirect(res,query({screen:'saved'}));
+      createCollection(user.id,name);return stay(query({screen:'saved'}));
     }
     if(!item)return error('This title is no longer in your library.',404);
     const detail=itemUrl(item,back);
-    if(op==='star'){setFavourite(user.id,id,!item.favourite);return redirect(res,detail);}
-    if(op==='queue'&&['film','series','episode'].includes(item.kind)){setWatchlisted(user.id,id,!item.watchlisted);return redirect(res,detail);}
+    if(op==='star'){setFavourite(user.id,id,!item.favourite);return stay(detail);}
+    if(op==='queue'&&['film','series','episode'].includes(item.kind)){setWatchlisted(user.id,id,!item.watchlisted);return stay(detail);}
     if(op==='collection'){
       const collection=ownedCollection(user.id,idOf(f.get('collection')));
       if(!collection||collection.mode!=='manual')return error('Choose one of your manual collections.',404);
-      setCollectionMembership(user.id,collection.id,id,f.get('include')==='yes');return redirect(res,detail);
+      setCollectionMembership(user.id,collection.id,id,f.get('include')==='yes');return stay(detail);
     }
     if(op==='refresh'&&item.kind==='series'){
       if(user.role!=='admin')return error('Only an administrator can refresh episodes.',403);
-      s.refreshEpisodes(id);return redirect(res,detail);
+      try{s.refreshEpisodes(id);}catch(e){return error((e as Error).message,409);}return stay(detail);
     }
     if(op==='position'){
       const seconds=Number(f.get('seconds'));
@@ -158,9 +240,10 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
       let address=choice.source_type==='folder'?'/api/media/'+choice.id+'/file':choice.url;
       if(choice.source_type==='stalker'&&address.startsWith('stalker:')){
         const source=getSource(choice.source_id);if(!source)return error('This connection is no longer available.',404);
-        address=await resolveProviderStream(source,choice.url);
+        try{address=await resolveProviderStream(source,choice.url);}catch{return error('This connection could not start playback. Choose another version.',502);}
       }
       if(choice.source_type!=='folder'&&!imageUrl(address))return error('The source does not offer a supported HTTP media address.');
+      if(!originalRoute)navigation.trail=pushRoute(pushRoute(originalTrail,back),detail);
       const offset=f.get('resume')==='yes'?Math.max(0,Number(item.position_seconds)||0):0;
       const attrs=' id="media" src="'+esc(address)+'" controls="controls" autoplay="autoplay" preload="metadata" data-item="'+id+'" data-kind="'+esc(item.kind)+'" data-offset="'+offset+'" data-token="'+esc(csrf)+'"';
       const tag=item.kind==='music'?'audio':'video';
@@ -170,7 +253,7 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
         const parent=db.prepare('SELECT series_parent_id AS id FROM variants WHERE title_id=? AND series_parent_id IS NOT NULL LIMIT 1').get(id) as {id:number}|undefined;
         if(parent){const list=listSeriesEpisodes(parent.id,user.id) as Entry[],at=list.findIndex(x=>x.id===id);if(at>0)adjacent=href(itemUrl(list[at-1],back),'Next episode');if(at>=0&&at+1<list.length)adjacent+=href(itemUrl(list[at+1],back),'Previous episode');}
       }
-      return render(sectionFor(item.kind),item.title,'<div class="toolbar">'+href(detail,'Back to title','chip return-target')+href(back,'Return to browsing')+adjacent+'</div><div class="screenmedia">'+media+'</div><div id="media-message" class="caption">Playback uses your television player. If it cannot play this format, select another version.</div><div class="toolbar">'+href(address,'Open stream directly')+href(detail,'Other versions')+'</div>');
+      return render(sectionFor(item.kind),item.title,'<div class="toolbar">'+href(detail,'Back to title','chip return-target')+adjacent+'</div><div class="screenmedia">'+media+'</div><div id="media-message" class="caption">Playback uses your television player. If it cannot play this format, select another version.</div><div class="toolbar">'+href(address,'Open stream directly')+href(detail,'Other versions','chip return-target')+'</div>');
     }
     return error('Unknown action.');
   }
@@ -233,7 +316,8 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
     const id=idOf(params.get('id')),item=id?getTitleDetail(id,user.id) as Entry|undefined:undefined,back=internalReturn(params.get('back'));
     if(!item)return error('This title is no longer in your library.',404);
     const here=itemUrl(item,back),art=imageUrl(item.artwork),fields={id,back};
-    let content='<div class="toolbar">'+href(back,'Return to browsing','chip return-target')+'</div><table class="feature" cellspacing="0" cellpadding="0"><tr>'+(art?'<td class="covercell" valign="top"><img src="'+esc(art)+'" alt=""></td>':'')+'<td valign="top"><div class="kicker">'+esc(kindNames[item.kind])+'</div><p class="caption">'+esc([item.year,item.episode?'Episode '+item.episode:'',item.source_count+' sources'].filter(Boolean).join(' / '))+'</p><p>'+esc(item.description||item.episode_name||'')+'</p><div class="toolbar">'+post(csrf,'star',fields,item.favourite?'Remove favourite':'Favourite')+(['film','series','episode'].includes(item.kind)?post(csrf,'queue',fields,item.watchlisted?'Remove from watchlist':'Watch later'):'')+'</div></td></tr></table>';
+    if(!navigation.trail.length&&back!=='/tv')navigation.fallback=back;
+    let content='<div class="toolbar">'+href(back,'Return to previous screen','chip return-target')+'</div><table class="feature" cellspacing="0" cellpadding="0"><tr>'+(art?'<td class="covercell" valign="top"><img src="'+esc(art)+'" alt=""></td>':'')+'<td valign="top"><div class="kicker">'+esc(kindNames[item.kind])+'</div><p class="caption">'+esc([item.year,item.episode?'Episode '+item.episode:'',item.source_count+' sources'].filter(Boolean).join(' / '))+'</p><p>'+esc(item.description||item.episode_name||'')+'</p><div class="toolbar">'+post(csrf,'star',fields,item.favourite?'Remove favourite':'Favourite')+(['film','series','episode'].includes(item.kind)?post(csrf,'queue',fields,item.watchlisted?'Remove from watchlist':'Watch later'):'')+'</div></td></tr></table>';
     if(item.kind==='series'){
       const all=listSeriesEpisodes(id,user.id) as Entry[],seasons=[...new Set(all.map(e=>e.season||0))],season=Number(params.get('season')||seasons[0]||0),number=pageNo(params.get('page'));
       const rows=all.filter(e=>(e.season||0)===season),job=s.episodeStatus(id);

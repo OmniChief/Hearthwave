@@ -4,8 +4,11 @@
   var player = null;
   var savedAt = 0;
   var hasResumed = false;
-  function bind(node, name, callback) {
-    if (node.addEventListener) { node.addEventListener(name, callback, false); }
+  var backInFlight = false;
+  var backDown = false;
+  var oldSamsung = /maple|orsay|samsung.*smart-tv/i.test(navigator.userAgent || '') && !/tizen/i.test(navigator.userAgent || '');
+  function bind(node, name, callback, capture) {
+    if (node.addEventListener) { node.addEventListener(name, callback, !!capture); }
     else if (node.attachEvent) { node.attachEvent('on' + name, callback); }
     else { node['on' + name] = callback; }
   }
@@ -61,6 +64,9 @@
   function stop(event) {
     if (event.preventDefault) { event.preventDefault(); }
     event.returnValue = false;
+    event.cancelBubble = true;
+    if (event.stopPropagation) { event.stopPropagation(); }
+    if (event.stopImmediatePropagation) { event.stopImmediatePropagation(); }
     return false;
   }
   function storePosition(force) {
@@ -77,11 +83,52 @@
     } catch (err) {}
   }
   function returnToPrevious() {
-    var stage = document.getElementById('stage'), links = stage ? stage.getElementsByTagName('a') : [], i;
-    for (i = 0; i < links.length; i++) {
-      if (/(^|\s)return-target(\s|$)/.test(String(links[i].className || ''))) { window.location.href = links[i].href; return; }
+    if (backInFlight) { return; }
+    var destination = document.getElementById('lounge-back'), links, i;
+    if (!destination) {
+      links = document.getElementsByTagName('a');
+      for (i = 0; i < links.length; i++) {
+        if (/(^|\s)return-target(\s|$)/.test(String(links[i].className || ''))) { destination = links[i]; break; }
+      }
     }
-    if (window.location.search || window.location.pathname !== '/tv') { window.location.href = '/tv'; }
+    // At the root, consume Return rather than asking browser history to exit.
+    if (!destination || !destination.href) { return; }
+    backInFlight = true;
+    storePosition(true);
+    window.location.replace(destination.href);
+  }
+  function currentControl() {
+    var node = document.activeElement;
+    if (node && node !== document.body && node !== document.documentElement) { return node; }
+    return focusNode;
+  }
+  function editControl(node) {
+    var tag = node ? String(node.tagName).toLowerCase() : '';
+    return tag === 'select' || (tag === 'input' && (node.type === 'text' || node.type === 'password')) || tag === 'textarea';
+  }
+  function isBack(ev) {
+    var code = ev.keyCode || ev.which, name = String(ev.key || ev.keyIdentifier || '').toLowerCase(), editing = editControl(currentControl());
+    return code === 10009 || code === 461 || code === 166 || (oldSamsung && code === 88 && !editing) || code === 27 || (code === 8 && !editing) || name === 'browserback' || name === 'goback' || name === 'xf86back' || name === 'back' || name === 'escape';
+  }
+  function handleBack(ev) {
+    if (!isBack(ev)) { return true; }
+    stop(ev);
+    if (backDown || backInFlight) { return false; }
+    backDown = true;
+    var node = currentControl();
+    if (editControl(node)) {
+      try { node.blur(); } catch (err) {}
+      var button = document.getElementById('lounge-back'), rail = document.getElementById('rail');
+      if (button) { choose(button); }
+      else if (rail) { choose(rail.getElementsByTagName('a')[0]); }
+      else { focusNode = null; clearSelection(); }
+    } else { returnToPrevious(); }
+    return false;
+  }
+  function releaseBack(event) {
+    var ev = event || window.event;
+    if (isBack(ev)) { backDown = false; return stop(ev); }
+    return true;
   }
   function resumeMedia() {
     if (hasResumed || !player) { return; }
@@ -90,18 +137,14 @@
     hasResumed = true;
   }
   function keydown(event) {
-    var ev = event || window.event, code = ev.keyCode || ev.which, node = focusNode, tag = node ? String(node.tagName).toLowerCase() : '', typing = tag === 'input' && (node.type === 'text' || node.type === 'password'), choosing = tag === 'select';
-    if (code === 27 || code === 461 || code === 10009 || (code === 8 && !typing && !choosing)) {
-      if (typing || choosing) {
-        try { node.blur(); } catch (err) {}
-        var rail = document.getElementById('rail');
-        if (rail) { choose(rail.getElementsByTagName('a')[0]); }
-        else { var all = visibleControls(); choose(all[0]); }
-      } else {
-        storePosition(true);
-        returnToPrevious();
-      }
-      return stop(ev);
+    var ev = event || window.event, code = ev.keyCode || ev.which, node = currentControl(), tag = node ? String(node.tagName).toLowerCase() : '', typing = tag === 'input' && (node.type === 'text' || node.type === 'password'), choosing = tag === 'select';
+    if (isBack(ev)) { return handleBack(ev); }
+    if (oldSamsung) {
+      if (code === 29460) { code = 38; }
+      else if (code === 29461) { code = 40; }
+      else if (code === 4) { code = 37; }
+      else if (code === 5) { code = 39; }
+      else if (code === 29443) { code = 13; }
     }
     if (typing || choosing) { return true; }
     if (code >= 37 && code <= 40) { direction(code); return stop(ev); }
@@ -122,7 +165,6 @@
     for (i = 0; i < items.length; i++) {
       bind(items[i], 'focus', function (event) { var ev = event || window.event; mark(ev.target || ev.srcElement); });
     }
-    bind(document, 'keydown', keydown);
     player = document.getElementById('media');
     if (player && player.play) {
       bind(player, 'loadedmetadata', resumeMedia);
@@ -135,6 +177,11 @@
         if (message) { message.innerHTML = 'This television cannot play this source. Use another version or open the stream directly.'; }
       });
     }
+    var anchor = String(window.location.hash || '').slice(1);
+    if (/^lounge-(focus|item)-[0-9-]+$/.test(anchor)) {
+      var previous = document.getElementById(anchor);
+      if (previous) { initial = previous; }
+    }
     if (!initial && stage) {
       links = stage.getElementsByTagName('a');
       if (links.length) { initial = links[0]; }
@@ -145,5 +192,11 @@
     }
     choose(initial || items[0]);
   }
+  // Capture Return before the browser's own Back/Exit handler where supported.
+  var keyTarget = window.addEventListener ? window : document;
+  bind(keyTarget, 'keydown', keydown, true);
+  bind(keyTarget, 'keypress', function (event) { var ev = event || window.event; if (isBack(ev)) { return handleBack(ev); } return true; }, true);
+  bind(keyTarget, 'keyup', releaseBack, true);
+  bind(window, 'blur', function () { backDown = false; });
   bind(window, 'load', init);
 }());
