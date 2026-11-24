@@ -807,6 +807,18 @@ function failSource(generation,message,code='unknown') {
   disposeMedia();
   if(presentation(state.activeTitle?.kind)!=='photo') currentMedia().pause();
   $('#player-message').textContent=message;
+  const variant=state.variants[state.variantIndex];
+  if(state.activeTitle?.kind==='channel' && variant?.resolve && ['unsupported','network'].includes(code)) {
+    void api(`/api/variants/${variant.id}/check-playback`,{method:'POST'}).then(result=>{
+      if(generation!==state.playbackGeneration || $('#player-overlay').hidden) return;
+      if(result.message) {
+        $('#player-message').textContent=result.message;
+        setPlaybackStatus(generation,'Failed','provider');
+      } else if(code==='network') {
+        $('#player-message').textContent='The server received data from a fresh provider link. The browser could not read this stream. Check the provider’s cross-origin media settings.';
+      }
+    }).catch(()=>{}); // Keep the browser error if the diagnostic request itself fails.
+  }
 }
 
 /** An authenticated <img> only decodes the one selected photo in the viewer. */

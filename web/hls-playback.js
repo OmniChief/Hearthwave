@@ -1,38 +1,72 @@
-/** HLS support lives entirely in the viewer browser; this module is loaded on demand. */
-let libraryPromise = null;
+/** Load browser playback engines only for streams that use them. */
+const libraries = new Map();
 
-export function isHlsUrl(address) {
+export function liveStreamFormat(address) {
   try {
     const url=new URL(address,'http://hearthwave.invalid');
-    if (/\.m3u8$/i.test(url.pathname)) return true;
+    if (/\.m3u8$/i.test(url.pathname)) return 'HLS';
+    if (/\.(?:ts|m2ts)$/i.test(url.pathname)) return 'MPEG-TS';
     for(const name of ['type','format','output','extension','ext']) {
-      if (/^m3u8$/i.test(url.searchParams.get(name) || '')) return true;
+      const hint=url.searchParams.get(name) || '';
+      if (/^m3u8$/i.test(hint)) return 'HLS';
+      if (/^(?:ts|mpegts|m2ts)$/i.test(hint)) return 'MPEG-TS';
     }
   } catch { /* An invalid URL is handled by the normal playback path. */ }
-  return false;
+  return null;
 }
 
-async function hlsConstructor() {
-  if (globalThis.Hls) return globalThis.Hls;
-  if (!libraryPromise) {
-    libraryPromise=new Promise((resolve,reject)=>{
+export function isHlsUrl(address) { return liveStreamFormat(address)==='HLS'; }
+
+function loadLibrary(name,path) {
+  if (globalThis[name]) return Promise.resolve(globalThis[name]);
+  if (!libraries.has(name)) {
+    const pending=new Promise((resolve,reject)=>{
       const script=document.createElement('script');
-      script.src='/vendor/hls.light.min.js';
+      script.src=path;
       script.async=true;
-      script.onload=()=>globalThis.Hls ? resolve(globalThis.Hls) : reject(new Error('The HLS player did not initialise.'));
-      script.onerror=()=>reject(new Error('The built-in HLS player could not be loaded.'));
+      script.onload=()=>globalThis[name] ? resolve(globalThis[name]) : reject(new Error('The playback engine did not initialise.'));
+      script.onerror=()=>reject(new Error('The built-in playback engine could not be loaded.'));
       document.head.appendChild(script);
-    }).catch(error=>{libraryPromise=null;throw error;});
+    }).catch(error=>{libraries.delete(name);throw error;});
+    libraries.set(name,pending);
   }
-  return libraryPromise;
+  return libraries.get(name);
 }
 
 /** Returns a cleanup function. The caller owns playback-generation checks and source fallback. */
 export async function prepareMedia(video,address,{ready,fatal,alive,live=false,onEngine=()=>{}}) {
-  const hls = isHlsUrl(address);
+  const format = liveStreamFormat(address);
+  const hls = format === 'HLS';
+  if (live && format === 'MPEG-TS') {
+    let library;
+    try { library=await loadLibrary('mpegts','/vendor/mpegts.js'); }
+    catch(error) { if (!video.canPlayType('video/mp2t')) throw error; }
+    if (!alive()) return () => {};
+    if (library?.getFeatureList().mseLivePlayback) {
+      // Provider playback URLs can contain credentials.
+      library.LoggingControl.enableAll=false;
+      onEngine('mpegts.js');
+      const player=library.createPlayer({type:'mpegts',isLive:true,url:address});
+      player.on(library.Events.ERROR,(type,detail)=>{
+        if (!alive()) return;
+        if (type===library.ErrorTypes.NETWORK_ERROR) {
+          fatal('The browser could not read the live transport stream. Check the provider response and cross-origin media access.','network');
+        } else {
+          fatal(detail===library.ErrorDetails.MEDIA_FORMAT_UNSUPPORTED ? 'The provider response was not a supported transport stream.' : 'The browser could not decode the live transport stream.','decode');
+        }
+      });
+      try {
+        player.attachMediaElement(video);
+        player.load();
+        ready();
+      } catch(error) { player.destroy();throw error; }
+      return () => player.destroy();
+    }
+    // Give devices with built-in transport stream playback their normal media path.
+  }
   const native = Boolean(video.canPlayType('application/vnd.apple.mpegurl'));
   const path = new URL(address, location.href).pathname;
-  const probeHls = live && !hls && !native && !/\.(?:mp4|m4v|webm|mp3|aac|ts)$/i.test(path);
+  const probeHls = live && !format && !native && !/\.(?:mp4|m4v|webm|mp3|aac)$/i.test(path);
   if (!hls && !probeHls) {
     onEngine(video.tagName==='AUDIO'?'Native audio':'Native video');
     video.src=address;
@@ -43,7 +77,7 @@ export async function prepareMedia(video,address,{ready,fatal,alive,live=false,o
 
 
   let Hls;
-  try { Hls=await hlsConstructor(); }
+  try { Hls=await loadLibrary('Hls','/vendor/hls.light.min.js'); }
   catch(error) {if(!native && !probeHls) throw error;}
   if (!alive()) return () => {};
   if (Hls?.isSupported()) {

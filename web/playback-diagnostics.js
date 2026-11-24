@@ -1,14 +1,14 @@
-import { isHlsUrl } from './hls-playback.js';
+import { liveStreamFormat } from './hls-playback.js';
 
 /** Format hints based on a URL, never returning its path, host, query or credentials. */
 export function streamFormat(address) {
-  if (isHlsUrl(address)) return 'HLS';
+  const liveFormat=liveStreamFormat(address);
+  if (liveFormat) return liveFormat;
   let extension='';
   try {extension=new URL(address,'http://hearthwave.invalid').pathname.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] || '';} catch { /* Unknown stream. */ }
   if (extension==='mp4' || extension==='m4v' || extension==='m4a') return 'MP4';
   if (extension==='mkv') return 'Matroska';
   if (extension==='webm') return 'WebM';
-  if (extension==='ts') return 'MPEG-TS';
   if (extension==='mp3') return 'MP3';
   if (extension==='flac') return 'FLAC';
   return 'Unknown';
@@ -63,7 +63,7 @@ export function playbackReport(attempts,capabilities) {
   attempts.forEach((attempt,index)=>{
     const safeQuality=['4K','FHD','HD','SD','Unknown'].includes(attempt.quality) ? attempt.quality : 'Unknown';
     const safeFormat=['HLS','MP4','Matroska','WebM','MPEG-TS','MP3','FLAC','Unknown'].includes(attempt.format) ? attempt.format : 'Unknown';
-    const safeEngine=['HLS.js','Native HLS','Native video','Native audio','Image viewer','Unresolved'].includes(attempt.engine) ? attempt.engine : 'Unresolved';
+    const safeEngine=['HLS.js','mpegts.js','Native HLS','Native video','Native audio','Image viewer','Unresolved'].includes(attempt.engine) ? attempt.engine : 'Unresolved';
     const safeStatus=['Connecting','Preparing','Starting','Playing','Displaying','Buffering','Failed','Switched','Paused'].includes(attempt.status) ? attempt.status : 'Unknown';
     const safeFailure=['interrupted','network','hls-network','decode','unsupported','startup','stall','provider','autoplay','unknown','none'].includes(attempt.failure) ? attempt.failure : 'unknown';
     lines.push(`${index+1}. Connection ${attempt.index+1} · ${safeQuality} · ${safeFormat} · ${safeEngine} · ${safeStatus}${safeStatus==='Failed' ? ` (${safeFailure})` : ''}`);
