@@ -1,3 +1,4 @@
+import { Readable } from 'node:stream';
 import { lookup } from 'node:dns/promises';
 import { isIP, BlockList } from 'node:net';
 import http from 'node:http';
@@ -119,14 +120,16 @@ export async function fetchM3u(address:string):Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-async function streamCatalogue(address:string, onChunk:(chunk:Buffer)=>void|Promise<void>, options:{allowLan?:boolean}, playlist:boolean):Promise<void> {
-  return withSlot(async () => {
-    const url=validateProviderUrl(address);
-    const {address:ip,family}=await pinnedAddress(url,Boolean(options.allowLan));
+async function openCatalogue(address:string, allowLan:boolean, playlist:boolean) {
+  let url=validateProviderUrl(address);
+  const origin=url.origin;
+  const signal=AbortSignal.timeout(60_000);
+  for (let redirects=0; ; redirects++) {
+    const {address:ip,family}=await pinnedAddress(url,allowLan && url.origin===origin);
     const transport=url.protocol==='https:' ? https : http;
     const response=await new Promise<http.IncomingMessage>((resolve,reject) => {
       const req=transport.request(url,{
-        method:'GET',signal:AbortSignal.timeout(60_000),maxHeaderSize:16*1024,
+        method:'GET',agent:false,signal,maxHeaderSize:16*1024,
         autoSelectFamily:false,
         headers:{'User-Agent':'Hearthwave','Accept':playlist?'application/x-mpegURL, audio/x-mpegurl, */*':'application/xml, text/xml, application/gzip','Accept-Encoding':'identity'},
         lookup:(_host,_opts,callback)=>callback(null,ip,family),
@@ -134,17 +137,45 @@ async function streamCatalogue(address:string, onChunk:(chunk:Buffer)=>void|Prom
       req.on('error',reject);
       req.end();
     });
+    if (![301,302,303,307,308].includes(response.statusCode || 0)) return response;
+    const location=response.headers.location;
+    response.destroy();
+    if (!location) throw new ProviderError('Source provider redirected without a destination.');
+    if (redirects>=5) throw new ProviderError('Source provider redirected too many times.');
+    url=validateProviderUrl(new URL(location,url).href);
+  }
+}
+
+async function streamCatalogue(address:string, onChunk:(chunk:Buffer)=>void|Promise<void>, options:{allowLan?:boolean}, playlist:boolean):Promise<void> {
+  return withSlot(async () => {
+    const response=await openCatalogue(address,Boolean(options.allowLan),playlist);
     try {
       if (response.statusCode===429) throw new ProviderError('Source provider rate limit reached (HTTP 429).',429,retryTime(response.headers));
       if (response.statusCode!==200) throw new ProviderError(`Source provider returned HTTP ${response.statusCode || 'unknown'}.`);
       const encoding=String(response.headers['content-encoding'] || '').toLowerCase();
       if (!['','identity','gzip','deflate','br'].includes(encoding)) throw new ProviderError('Unsupported guide response encoding.');
-      const factory=encoding==='gzip' ? createGunzip : encoding==='deflate' ? createInflate : encoding==='br' ? createBrotliDecompress : url.pathname.endsWith('.gz') ? createGunzip : null;
-      const decoder=factory?.();
+      // Download handlers often serve gzip files as application/force-download without a .gz path.
+      const iterator=response[Symbol.asyncIterator]();
+      const prefix:Buffer[]=[];
+      let length=0;
+      while (length<2) {
+        const part=await iterator.next();
+        if (part.done) break;
+        const chunk=Buffer.from(part.value);
+        prefix.push(chunk);
+        length+=chunk.length;
+      }
+      const magic=Buffer.concat(prefix,Math.min(length,2));
+      const gzip=encoding==='gzip' || magic.equals(Buffer.from([0x1f,0x8b]));
+      const decoder=encoding==='br' ? createBrotliDecompress() : encoding==='deflate' ? createInflate() : gzip ? createGunzip() : null;
+      const input=Readable.from((async function* () {
+        yield* prefix;
+        for (let part=await iterator.next(); !part.done; part=await iterator.next()) yield part.value;
+      })());
       const fail=(error:Error)=>decoder?.destroy(error);
-      if (decoder) response.on('error',fail);
+      if (decoder) input.on('error',fail);
       try {
-        const stream=decoder ? response.pipe(decoder) : response;
+        const stream=decoder ? input.pipe(decoder) : input;
         let received=0;
         for await (const part of stream) {
           const chunk=Buffer.from(part);
@@ -154,7 +185,7 @@ async function streamCatalogue(address:string, onChunk:(chunk:Buffer)=>void|Prom
           await onChunk(chunk);
         }
       } finally {
-        if (decoder) response.removeListener('error',fail);
+        input.destroy();
         decoder?.destroy();
       }
     } finally { response.destroy(); }
