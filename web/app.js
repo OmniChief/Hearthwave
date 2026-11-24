@@ -365,6 +365,29 @@ function localGuideTime(value) {
   return Number.isFinite(date.getTime()) ? date.toLocaleString(undefined,{weekday:'short',hour:'2-digit',minute:'2-digit',timeZoneName:'short'}) : value;
 }
 
+// Calculate display intervals in absolute time, clipped to the visible window.
+// Keep the original programme index for the details panel.
+function guideProgrammeLayout(programmes,start,end) {
+  const span=end-start;
+  if(!Number.isFinite(span)||span<=0)return [];
+  const entries=programmes.map((programme,index)=>({programme,index,from:Date.parse(programme.start),until:Date.parse(programme.end)}))
+    .filter(entry=>Number.isFinite(entry.from)&&Number.isFinite(entry.until)&&entry.until>entry.from&&entry.until>start&&entry.from<end)
+    .sort((a,b)=>a.from-b.from||b.until-a.until||a.index-b.index);
+  const unique=entries.filter((entry,i)=>!i||entry.from!==entries[i-1].from);
+  return unique.flatMap((entry,i)=>{
+    const from=Math.max(start,entry.from),until=Math.min(end,entry.until,unique[i+1]?.from??end);
+    return until>from?[{...entry,left:(from-start)/span*100,width:(until-from)/span*100}]:[];
+  });
+}
+function positionGuideProgrammes(root) {
+  for(const button of root.querySelectorAll('[data-guide-left][data-guide-width]')){
+    const left=Number(button.dataset.guideLeft),width=Number(button.dataset.guideWidth);
+    if(!Number.isFinite(left)||!Number.isFinite(width)||left<0||left>=100||width<=0)continue;
+    // CSSOM property assignments work with style-src 'self'; inline HTML style attributes do not.
+    button.style.left=left+'%';
+    button.style.width=Math.min(width,100-left)+'%';
+  }
+}
 async function renderGuideGrid() {
   const request=++state.guideRequest;
   const today=new Date();
@@ -380,25 +403,24 @@ async function renderGuideGrid() {
   state.items=result.items;
   state.channelQueue=result.items.filter(item=>item.source_count>0).map(item=>item.id);
   const windowBeginning=start*1000;
-  const renderProgramme=(programme,index,row)=>{
-    const from=Date.parse(programme.start),until=Date.parse(programme.end);
-    const left=Math.max(0,Math.min(100,(from-windowBeginning)/windowMs*100));
-    const right=Math.max(0,Math.min(100,(until-windowBeginning)/windowMs*100));
-    if (!Number.isFinite(left) || !Number.isFinite(right) || right<=left) return '';
+  const renderProgramme=(entry,row)=>{
+    const {programme,index,from,until,left,width}=entry;
     const playing=from<=Date.now() && until>Date.now();
-    return `<button type="button" class="guide-programme ${playing?'is-current':''}" style="left:${left.toFixed(3)}%;width:${(right-left).toFixed(3)}%" data-guide-programme="${row.id}" data-programme-index="${index}" title="${esc(programme.title)} · ${esc(clock(from))}–${esc(clock(until))}" aria-label="${esc(programme.title)} on ${esc(row.title)}, ${esc(clock(from))} to ${esc(clock(until))}"><strong>${esc(programme.title)}</strong><small>${esc(clock(from))}–${esc(clock(until))}</small></button>`;
+    return `<button type="button" class="guide-programme ${playing?'is-current':''}" data-guide-left="${left.toFixed(6)}" data-guide-width="${width.toFixed(6)}" data-guide-programme="${row.id}" data-programme-index="${index}" title="${esc(programme.title)} · ${esc(clock(from))}–${esc(clock(until))}" aria-label="${esc(programme.title)} on ${esc(row.title)}, ${esc(clock(from))} to ${esc(clock(until))}"><span class="guide-programme-copy"><strong>${esc(programme.title)}</strong><small>${esc(clock(from))}–${esc(clock(until))}</small></span></button>`;
   };
   page.innerHTML=`<div class="preview-banner">Programme listings for your available channels from imported XMLTV feeds. Browse times in your device's timezone; channels without matched guide data can still be played.</div>
     ${heading('Programme guide',`${esc(windowLabel)} · ${esc(clock(beginning))}–${esc(clock(ending))}`,'<button class="button button-quiet button-small" data-guide-view="close">← Live channels</button>')}
     <div class="toolbar">${[['','All'],['GB','United Kingdom'],['US','United States']].map(([key,label])=>`<button class="pill ${state.guideCountry===key?'active':''}" data-guide-country="${key}">${label}</button>`).join('')}</div>
     <div class="guide-navigation"><div class="guide-date-nav"><button class="button button-quiet button-small" data-guide-day="-1" ${state.guideDay===0?'disabled':''}>← Previous day</button><strong>${esc(windowLabel)}</strong><button class="button button-quiet button-small" data-guide-day="1" ${state.guideDay===6?'disabled':''}>Next day →</button></div><div class="guide-slot-nav">${[0,6,12,18].map(hour=>`<button class="pill ${state.guideSlot===hour?'active':''}" data-guide-slot="${hour}">${String(hour).padStart(2,'0')}:00–${String(hour+6).padStart(2,'0')}:00</button>`).join('')}<button class="button button-primary button-small" data-guide-now>Now</button></div></div>
     <div id="guide-programme-details" class="guide-programme-details" hidden></div>
-    <div class="guide-ruler"><span>Channel</span><div>${[0,1,2].map(index=>`<span>${esc(clock(windowBeginning+index*windowMs/3))}</span>`).join('')}<span>${esc(clock(ending))}</span></div></div>
+    <div class="guide-scroll" tabindex="0" aria-label="Programme guide timeline, scroll horizontally to see more hours"><div class="guide-ruler"><span>Channel</span><div>${[0,1,2].map(index=>`<span>${esc(clock(windowBeginning+index*windowMs/3))}</span>`).join('')}<span>${esc(clock(ending))}</span></div></div>
     ${result.items.length?`<div class="guide-grid">${result.items.map(row=>{
       const image=typeof row.artwork==='string' && /^https?:\/\//i.test(row.artwork)?`<img src="${esc(row.artwork)}" alt="" loading="lazy" referrerpolicy="no-referrer">`:'';
-      return `<div class="guide-row"><div class="guide-channel"><div class="guide-logo"><span>▻</span>${image}</div><div class="guide-channel-text"><strong>${esc(row.title)}</strong><small>${esc(row.channel_country || 'Unspecified region')}</small></div>${row.source_count?`<button class="button button-quiet button-small" data-play="${row.id}">Watch</button>`:`<span class="field-note">No connection</span>`}</div><div class="guide-timeline">${row.guide.programmes.length?row.guide.programmes.map((programme,index)=>renderProgramme(programme,index,row)).join(''):'<span class="guide-empty-slot">No matched programme data in this window</span>'}</div></div>`;
-    }).join('')}</div>`:emptyState('No live channels yet','Import channels in Settings → Sources to populate the lineup.','▻')}
+      const programmes=guideProgrammeLayout(row.guide.programmes,windowBeginning,windowBeginning+windowMs);
+      return `<div class="guide-row"><div class="guide-channel"><div class="guide-logo"><span>▻</span>${image}</div><div class="guide-channel-text"><strong>${esc(row.title)}</strong><small>${esc(row.channel_country || 'Unspecified region')}</small></div>${row.source_count?`<button class="button button-quiet button-small" data-play="${row.id}">Watch</button>`:`<span class="field-note">No connection</span>`}</div><div class="guide-timeline">${programmes.length?programmes.map(entry=>renderProgramme(entry,row)).join(''):'<span class="guide-empty-slot">No matched programme data in this window</span>'}</div></div>`;
+    }).join('')}</div>`:emptyState('No live channels yet','Import channels in Settings → Sources to populate the lineup.','▻')}</div>
     <div class="guide-pagination"><span>${result.total?`${result.offset+1}–${result.offset+result.items.length} of ${result.total} channels`:'No matching channels'}</span><div><button class="button button-quiet button-small" data-guide-page="-1" ${result.offset===0?'disabled':''}>← Previous channels</button><button class="button button-quiet button-small" data-guide-page="1" ${result.offset+result.items.length>=result.total?'disabled':''}>More channels →</button></div></div>`;
+  positionGuideProgrammes(page);
 }
 
 const settingsSections = [ ['sources','Sources'],['metadata','Metadata & Guide'],['users','Users & Access'],['workers','Downloads & Workers'],['appearance','Appearance & Playback'],['system','System'] ];
