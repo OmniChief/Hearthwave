@@ -520,7 +520,8 @@ export function completeImport(sourceId: number, generation: string): void {
   });
 }
 
-export type CatalogueView='all'|'favourites'|'continue';
+db.exec('CREATE TABLE IF NOT EXISTS watchlist(user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,title_id INTEGER NOT NULL REFERENCES titles(id) ON DELETE CASCADE,added INTEGER NOT NULL,PRIMARY KEY(user_id,title_id));');
+export type CatalogueView='all'|'favourites'|'continue'|'watchlist';
 export type CatalogueSort='title'|'year'|'added'|'activity';
 export type SmartRuleKind='all'|'film'|'series'|'episode'|'music'|'photo';
 export type SmartRuleView='all'|'favourites'|'continue'|'unwatched';
@@ -561,18 +562,19 @@ export function listTitles(kind: MediaKind | 'all' | 'library', userId: number, 
     SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,t.artwork,t.channel_country,t.live_genre, MIN(v.id) AS variant_id, CASE WHEN t.kind='game' THEN v.source_ref END AS game_path,
       COUNT(v.id) AS source_count,
       CASE WHEN f.title_id IS NULL THEN 0 ELSE 1 END AS favourite,
-      p.position_seconds
+      CASE WHEN w.title_id IS NULL THEN 0 ELSE 1 END AS watchlisted,p.position_seconds
     FROM titles t JOIN variants v ON v.title_id=t.id AND (v.series_parent_id IS NULL OR ?='episode' OR ?>0)
     LEFT JOIN favourites f ON f.title_id=t.id AND f.user_id=?
     LEFT JOIN progress p ON p.title_id=t.id AND p.user_id=?
+    LEFT JOIN watchlist w ON w.title_id=t.id AND w.user_id=?
     WHERE (?='all' OR (?='library' AND t.kind NOT IN ('channel','game')) OR t.kind=?) AND t.title LIKE ? ESCAPE '\\'
-      AND (?='all' OR (?='favourites' AND f.title_id IS NOT NULL) OR (?='continue' AND p.position_seconds>0))
+      AND (?='all' OR (?='favourites' AND f.title_id IS NOT NULL) OR (?='continue' AND p.position_seconds>0) OR (?='watchlist' AND w.title_id IS NOT NULL))
       AND (?='' OR (?='other' AND t.channel_country NOT IN ('GB','US')) OR t.channel_country=?)
       AND (?='' OR t.live_genre=?)
       AND (?='' OR EXISTS (SELECT 1 FROM library_genres lg WHERE lg.title_id=t.id AND lg.genre=?))
       ${filter.sql}
     GROUP BY t.id ORDER BY ${order} LIMIT ? OFFSET ?
-  `).all(kind,collection?.id||0,userId,userId,kind,kind,kind,search,view,view,view,country,country,country,genre,genre,libraryGenre,libraryGenre,...filter.params,Math.min(250,Math.max(1,limit)),Math.max(0,offset));
+  `).all(kind,collection?.id||0,userId,userId,userId,kind,kind,kind,search,view,view,view,view,country,country,country,genre,genre,libraryGenre,libraryGenre,...filter.params,Math.min(250,Math.max(1,limit)),Math.max(0,offset));
 }
 
 export function countTitles(kind: MediaKind | 'all' | 'library',userId:number,query='',view:CatalogueView='all',country='',genre='',libraryGenre='',collection?:CollectionSettings):number {
@@ -581,14 +583,15 @@ export function countTitles(kind: MediaKind | 'all' | 'library',userId:number,qu
   return Number((db.prepare(`SELECT COUNT(*) AS total FROM titles t
     LEFT JOIN favourites f ON f.title_id=t.id AND f.user_id=?
     LEFT JOIN progress p ON p.title_id=t.id AND p.user_id=?
+    LEFT JOIN watchlist w ON w.title_id=t.id AND w.user_id=?
     WHERE (?='all' OR (?='library' AND t.kind NOT IN ('channel','game')) OR t.kind=?) AND t.title LIKE ? ESCAPE '\\'
-      AND (?='all' OR (?='favourites' AND f.title_id IS NOT NULL) OR (?='continue' AND p.position_seconds>0))
+      AND (?='all' OR (?='favourites' AND f.title_id IS NOT NULL) OR (?='continue' AND p.position_seconds>0) OR (?='watchlist' AND w.title_id IS NOT NULL))
       AND (?='' OR (?='other' AND t.channel_country NOT IN ('GB','US')) OR t.channel_country=?)
       AND (?='' OR t.live_genre=?)
       AND (?='' OR EXISTS (SELECT 1 FROM library_genres lg WHERE lg.title_id=t.id AND lg.genre=?))
       ${filter.sql}
       AND EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id AND (v.series_parent_id IS NULL OR ?='episode' OR ?>0))`)
-      .get(userId,userId,kind,kind,kind,search,view,view,view,country,country,country,genre,genre,libraryGenre,libraryGenre,...filter.params,kind,collection?.id||0) as {total:number}).total);
+      .get(userId,userId,userId,kind,kind,kind,search,view,view,view,view,country,country,country,genre,genre,libraryGenre,libraryGenre,...filter.params,kind,collection?.id||0) as {total:number}).total);
 }
 
 export interface CollectionRow extends CollectionSettings {created_at:string;item_count:number|null;included:number}
@@ -654,19 +657,21 @@ export function libraryGenreCounts(kind:'library'|'film'|'series',userId:number,
     JOIN titles t ON t.id=lg.title_id
     LEFT JOIN favourites f ON f.title_id=t.id AND f.user_id=?
     LEFT JOIN progress p ON p.title_id=t.id AND p.user_id=?
+    LEFT JOIN watchlist w ON w.title_id=t.id AND w.user_id=?
     WHERE t.kind IN ('film','series') AND (?='library' OR t.kind=?) AND t.title LIKE ? ESCAPE '\\'
-      AND (?='all' OR (?='favourites' AND f.title_id IS NOT NULL) OR (?='continue' AND p.position_seconds>0))
+      AND (?='all' OR (?='favourites' AND f.title_id IS NOT NULL) OR (?='continue' AND p.position_seconds>0) OR (?='watchlist' AND w.title_id IS NOT NULL))
       AND EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL)
-    GROUP BY lg.genre ORDER BY count DESC,lg.genre COLLATE NOCASE`).all(userId,userId,kind,kind,search,view,view,view) as Array<{name:string;count:number}>;
+    GROUP BY lg.genre ORDER BY count DESC,lg.genre COLLATE NOCASE`).all(userId,userId,userId,kind,kind,search,view,view,view,view) as Array<{name:string;count:number}>;
 }
 
-export function channelGenreCounts(country='',query=''):Array<{name:string;count:number}> {
+export function channelGenreCounts(country='',query='',userId=0,view:CatalogueView='all'):Array<{name:string;count:number}> {
   const search=`%${query.replace(/[\\%_]/g,'\\$&')}%`;
   return db.prepare(`SELECT t.live_genre AS name,COUNT(*) AS count FROM titles t
     WHERE t.kind='channel' AND t.title LIKE ? ESCAPE '\\'
+      AND (?<>'favourites' OR EXISTS(SELECT 1 FROM favourites f WHERE f.user_id=? AND f.title_id=t.id))
       AND (?='' OR (?='other' AND t.channel_country NOT IN ('GB','US')) OR t.channel_country=?)
       AND EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL)
-    GROUP BY t.live_genre`).all(search,country,country,country) as Array<{name:string;count:number}>;
+    GROUP BY t.live_genre`).all(search,view,userId,country,country,country) as Array<{name:string;count:number}>;
 }
 
 export function titleExists(id: number): boolean {
@@ -682,11 +687,12 @@ export function getTitleDetail(id:number,userId:number): unknown | undefined {
     t.description,t.genres,t.rating,t.duration_seconds,t.imdb_id,t.tmdb_id,t.channel_country,
     (SELECT COUNT(*) FROM variants v WHERE v.title_id=t.id) AS source_count,
     (SELECT MAX(v.episode_name) FROM variants v WHERE v.title_id=t.id) AS episode_name,
-    CASE WHEN f.title_id IS NULL THEN 0 ELSE 1 END AS favourite,p.position_seconds
+    CASE WHEN f.title_id IS NULL THEN 0 ELSE 1 END AS favourite,CASE WHEN w.title_id IS NULL THEN 0 ELSE 1 END AS watchlisted,p.position_seconds
     FROM titles t LEFT JOIN favourites f ON f.title_id=t.id AND f.user_id=?
     LEFT JOIN progress p ON p.title_id=t.id AND p.user_id=?
+    LEFT JOIN watchlist w ON w.title_id=t.id AND w.user_id=?
     WHERE t.id=? AND EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id)`)
-    .get(userId,userId,id);
+    .get(userId,userId,userId,id);
 }
 
 /** Explicit provider metadata refresh; blank fields never erase previously indexed information. */
@@ -766,6 +772,11 @@ export function getVariant(id: number): VariantRow | undefined {
   if (!variant) return undefined;
   const tier=qualityTier(variant.quality,variant.source_type==='folder'?`${variant.group_name} ${variant.source_ref}`:variant.group_name);
   return { ...variant, quality_tier:tier,quality_rank:qualityRank(tier),url: secrets.open(variant.url), source_location: secrets.open(variant.source_location) };
+}
+
+export function setWatchlisted(userId:number,titleId:number,include:boolean):void {
+  if(include)db.prepare('INSERT OR IGNORE INTO watchlist(user_id,title_id,added) VALUES(?,?,?)').run(userId,titleId,Date.now());
+  else db.prepare('DELETE FROM watchlist WHERE user_id=? AND title_id=?').run(userId,titleId);
 }
 
 export function setFavourite(userId: number, titleId: number, favourite: boolean): void {

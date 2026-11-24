@@ -14,7 +14,7 @@ import { libraryGenres } from './library-genres.ts';
 import { qualityPreferences, type QualityPreference } from './quality.ts';
 import { BackupError, backupBusy, streamBackup } from './backup.ts';
 import { UpdateError, checkForUpdate, startUpdate, updateStatus } from './updater.ts';
-import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, completeImport, countTitles, createCollection, createSmartCollection, createUser, dashboardStats, dataDir, db, deleteCollection, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, libraryGenreCounts, listCategories, listCollections, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, ownedCollection, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, renameCollection, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setCollectionMembership, setFavourite, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, updateSmartCollectionRules, type GuideFeed, type SmartRules, type SourceRow } from './db.ts';
+import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, completeImport, countTitles, createCollection, createSmartCollection, createUser, dashboardStats, dataDir, db, deleteCollection, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, libraryGenreCounts, listCategories, listCollections, listGuideFeeds, listSeriesEpisodes, listSources, listTitles, listVariants, loadSession, ownedCollection, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, renameCollection, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setCollectionMembership, setFavourite, setWatchlisted, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, updateSmartCollectionRules, type GuideFeed, type SmartRules, type SourceRow } from './db.ts';
 import { discoverProvider, discoverSeriesEpisodes, fetchTitleMetadata, importProvider, providerGuide, resolveProviderStream, type ProviderScanProgress } from './adapters/providers.ts';
 import { importXmltv } from './guide.ts';
 import { localSubtitles, subtitleVtt } from './subtitles.ts';
@@ -383,7 +383,7 @@ async function serveLocal(req: IncomingMessage, res: ServerResponse, variantId: 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const path = url.pathname;
   const method = req.method || 'GET';
-  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.25.0', pid: process.pid });
+  if (path === '/api/health' && method === 'GET') return send(res, 200, { ok: true, name: 'Hearthwave', version: '0.26.0', pid: process.pid });
   if (path === '/api/session' && method === 'GET') {
     const current = session(req);
     return send(res, 200, { needsSetup: !hasUsers(), user: current?.user || null, csrf: current?.csrf || null });
@@ -442,7 +442,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   if (path === '/api/system/status' && method === 'GET') {
     if (current.user.role !== 'admin') throw new HttpError(403, 'Administrator access required.');
     const databaseInfo = await stat(join(dataDir, 'hearthwave.sqlite'));
-    return send(res, 200, { version: '0.25.0', schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, databaseBytes: databaseInfo.size, rssBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(process.uptime()), backupBusy: backupBusy() });
+    return send(res, 200, { version: '0.26.0', schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, databaseBytes: databaseInfo.size, rssBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(process.uptime()), backupBusy: backupBusy() });
   }
   if(path==='/api/system/update/check' && method==='GET') {
     if(current.user.role!=='admin') throw new HttpError(403,'Administrator access required.');
@@ -724,7 +724,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     const query = (url.searchParams.get('q') || '').slice(0, 120);
     const view=url.searchParams.get('view') || 'all';
     const sort=url.searchParams.get('sort') || 'title';
-    if(!['all','favourites','continue'].includes(view) || !['title','year','added','activity'].includes(sort)) throw new HttpError(400,'Unknown Library filter or sort order.');
+    if(!['all','favourites','continue','watchlist'].includes(view) || !['title','year','added','activity'].includes(sort)) throw new HttpError(400,'Unknown Library filter or sort order.');
     const limit=Math.min(250,Math.max(1,Math.floor(Number(url.searchParams.get('limit') || 250) || 250)));
     const offset=Number(url.searchParams.get('offset') || 0);
     if(!Number.isSafeInteger(offset) || offset<0 || offset>1_000_000) throw new HttpError(400,'Invalid catalogue page.');
@@ -737,7 +737,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     if (!['','GB','US','other'].includes(country)) throw new HttpError(400,'Unknown Live country filter.');
     if (genre && (kind==='channel' ? !liveGenres.includes(genre as typeof liveGenres[number]) : !['library','film','series'].includes(kind) || !libraryGenres.includes(genre as typeof libraryGenres[number]))) throw new HttpError(400,'Unknown genre filter for this catalogue.');
     const typedKind=kind as 'all'|'library'|ImportItem['kind'];
-    const typedView=view as 'all'|'favourites'|'continue',typedSort=sort as 'title'|'year'|'added'|'activity';
+    const typedView=view as 'all'|'favourites'|'continue'|'watchlist',typedSort=sort as 'title'|'year'|'added'|'activity';
     const liveGenre=kind==='channel'?genre:'',libraryGenre=kind==='channel'?'':genre;
     const rows=listTitles(typedKind,current.user.id,query,typedView,typedSort,limit,offset,country,liveGenre,libraryGenre,collection) as Array<Record<string,unknown> & {game_path?:string}>;
     const items=await Promise.all(rows.map(async ({game_path,...row})=>{
@@ -749,7 +749,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       items,
       total:countTitles(typedKind,current.user.id,query,typedView,country,liveGenre,libraryGenre,collection),
       offset,limit,maxResults:limit,
-      genres:collectionId?[]:kind==='channel'?channelGenreCounts(country,query):['library','film','series'].includes(kind)?libraryGenreCounts(kind as 'library'|'film'|'series',current.user.id,query,typedView):[],
+      genres:collectionId?[]:kind==='channel'?channelGenreCounts(country,query,current.user.id,typedView):['library','film','series'].includes(kind)?libraryGenreCounts(kind as 'library'|'film'|'series',current.user.id,query,typedView):[],
     });
   }
   const detailMatch=/^\/api\/titles\/(\d+)$/.exec(path);
@@ -888,6 +888,15 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       return send(res,200,{message});
     }
     return send(res,200,{url:stream});
+  }
+  const watchlistMatch=/^\/api\/titles\/(\d+)\/watchlist$/.exec(path);
+  if(watchlistMatch&&method==='POST'){
+    requireWrite(req);
+    const id=positiveId(watchlistMatch[1]),title=getTitle(id),input=await body(req);
+    if(!title||!['film','series','episode'].includes(title.kind))throw new HttpError(404,'Choose a film, series or episode.');
+    if(typeof input.include!=='boolean')throw new HttpError(400,'Expected a watchlist boolean.');
+    setWatchlisted(current.user.id,id,input.include);
+    return send(res,200,{watchlisted:input.include});
   }
   const favouriteMatch = /^\/api\/titles\/(\d+)\/favourite$/.exec(path);
   if (favouriteMatch && method === 'POST') {
