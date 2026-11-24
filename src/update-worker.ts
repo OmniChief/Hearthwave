@@ -80,7 +80,7 @@ async function launch(config:Config):Promise<ChildProcess> {
   const fd=openSync(log,'w',0o600);
   try {
     const child=spawn(process.execPath,['--disable-warning=ExperimentalWarning','--experimental-strip-types','src/server.ts'],
-      {cwd:config.root,detached:true,stdio:['ignore',fd,fd],env:process.env});
+      {cwd:config.root,detached:true,stdio:['ignore',fd,fd],env:{...process.env,PORT:String(config.port),HOST:config.host,HEARTHWAVE_DATA_DIR:config.dataDir}});
     await new Promise<void>((resolve,reject)=>{child.once('spawn',resolve);child.once('error',reject);});
     child.unref();
     return child;
@@ -88,11 +88,11 @@ async function launch(config:Config):Promise<ChildProcess> {
 }
 
 async function healthy(config:Config,child:ChildProcess,requirePid=true):Promise<boolean> {
-  const host=['0.0.0.0','::','[::]'].includes(config.host)?'127.0.0.1':config.host;
+  const host=config.host==='0.0.0.0'?'127.0.0.1':['::','[::]'].includes(config.host)?'::1':config.host;
   const address=`http://${host.includes(':')?`[${host}]`:host}:${config.port}/api/health`;
-  const until=Date.now()+25000;
+  const until=Date.now()+60000;
   while(Date.now()<until) {
-    if(child.exitCode!==null) return false;
+    if(child.exitCode!==null || child.signalCode!==null) return false;
     try {
       const response=await fetch(address,{signal:AbortSignal.timeout(1500),cache:'no-store'});
       if(response.ok) {
@@ -127,14 +127,21 @@ async function run(config:Config):Promise<void> {
     await swapCode(config,swaps);
     await writeUpdateStatus(config.dataDir,'health-check','Starting the updated server and checking its health.',config.sha,config.version);
     launched=await launch(config);
-    if(!await healthy(config,launched)) throw new Error('The updated server did not become healthy.');
+    if(!await healthy(config,launched)) {
+      const detail=launched.exitCode!==null?' (exit code '+launched.exitCode+')':launched.signalCode?' (signal '+launched.signalCode+')':'';
+      throw new Error('The updated server did not become healthy'+detail+'. Startup details are retained in hearthwave-update-failed.log in the data directory.');
+    }
     await writeInstalledUpdate(config.dataDir,config.sha,config.version);
     await writeUpdateStatus(config.dataDir,'complete',`Hearthwave ${config.version} is installed and running.`,config.sha,config.version);
   } catch(error) {
     const reason=error instanceof Error?error.message:'Unknown update failure.';
     if(oldStopped) {
       await writeUpdateStatus(config.dataDir,'rolling-back','Update failed; restoring the previous application and database.',config.sha,config.version).catch(()=>{});
-      if(launched) await stopChild(launched);
+      if(launched) {
+        await stopChild(launched);
+        // Preserve the failed candidate output before launch() truncates its log.
+        await rename(join(config.dataDir,'hearthwave-server.log'),join(config.dataDir,'hearthwave-update-failed.log')).catch(()=>{});
+      }
       try {
         if(swaps.length) await restoreCode(config,swaps);
         if(snapshot) await restoreDatabase(config,snapshot);

@@ -13,7 +13,8 @@ let job:MetadataJob|null=null;
 export const metadataStatus=()=>job;
 export const metadataBusy=()=>job?.phase==='running'||job?.phase==='cancelling';
 export function cancelMetadata(){if(metadataBusy()&&job){job.cancelRequested=true;job.phase='cancelling';}}
-db.exec("CREATE TABLE IF NOT EXISTS manual_metadata_attempts(title_id INTEGER PRIMARY KEY REFERENCES titles(id) ON DELETE CASCADE,attempted INTEGER NOT NULL)");
+let metadataSchemaReady=false;
+function ensureMetadataSchema(){if(metadataSchemaReady)return;db.exec("CREATE TABLE IF NOT EXISTS manual_metadata_attempts(title_id INTEGER PRIMARY KEY REFERENCES titles(id) ON DELETE CASCADE,attempted INTEGER NOT NULL)");metadataSchemaReady=true;}
 type Candidate={id:number;title:string;year:number|null;artwork:string;description:string;path:string};
 const candidateSql=(kind:MetadataKind,retry:boolean)=>" FROM titles t WHERE t.kind=? AND "+
   (kind==='film'?"(COALESCE(t.artwork,'')='' OR COALESCE(t.description,'')='')":"COALESCE(t.artwork,'')=''")+
@@ -21,6 +22,7 @@ const candidateSql=(kind:MetadataKind,retry:boolean)=>" FROM titles t WHERE t.ki
   (retry?'':" AND NOT EXISTS(SELECT 1 FROM manual_metadata_attempts a WHERE a.title_id=t.id AND a.attempted>?)");
 export function startMetadata(kind:MetadataKind,retry=false,limit=500):MetadataJob{
   if(metadataBusy())throw new Error('A metadata job is already running.');
+  ensureMetadataSchema();
   const since=Date.now()-86400000,params=retry?[kind]:[kind,since];
   const where=candidateSql(kind,retry);
   const total=Math.min(limit,Number(db.prepare('SELECT COUNT(*) AS n'+where).get(...params)?.n||0));
