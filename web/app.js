@@ -144,7 +144,7 @@ function cardWatchlistButton(item) {
 function mediaCard(item) {
   const initial = Array.from(item.title || '?')[0].toUpperCase();
   const tone = Number(item.id) % 4;
-  const detail = [item.year, item.kind === 'episode' ? `S${item.season || '?'}E${item.episode || '?'}` : null, `${item.source_count?`${item.source_count} source${item.source_count === 1 ? '' : 's'}`:'EPG only · no connection'}`].filter(Boolean).join(' · ');
+  const detail = [item.year, item.kind === 'episode' ? `S${item.season || '?'}E${item.episode || '?'}` : null, `${item.source_count} source${item.source_count === 1 ? '' : 's'}`].filter(Boolean).join(' · ');
   const cover = typeof item.artwork === 'string' && /^https?:\/\//i.test(item.artwork) ? `<img src="${esc(item.artwork)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '';
   const resume=Number(item.position_seconds)>10 && !['channel','photo'].includes(item.kind);
   const action=item.kind==='photo'?'View':item.kind==='music'?(resume?'Resume':'Listen'):(resume?'Resume':'Play');
@@ -153,7 +153,7 @@ function mediaCard(item) {
 
 function liveCard(item) {
   const artwork=typeof item.artwork==='string' && /^https?:\/\//i.test(item.artwork) ? `<img src="${esc(item.artwork)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '▻';
-  return `<div class="channel-row"><button class="channel-play" ${item.source_count?`data-play="${item.id}"`:`data-guide="${item.id}"`}><span class="channel-icon">${artwork}</span><span><strong>${esc(item.title)}</strong><small>${esc(liveGenre(item))} · ${item.source_count} source${item.source_count === 1 ? '' : 's'}</small></span></button><button class="button button-quiet button-small" data-guide="${item.id}" aria-label="Programme guide for ${esc(item.title)}">Guide</button><button class="star-button ${item.favourite?'is-favourite':''}" data-favourite="${item.id}" data-next="${item.favourite?'0':'1'}" aria-label="${item.favourite?'Remove from':'Add to'} favourites">${item.favourite?'★':'☆'}</button></div>`;
+  return `<div class="channel-row"><button class="channel-play" ${item.source_count?`data-play="${item.id}"`:`data-guide="${item.id}"`}><span class="channel-icon">${artwork}</span><span><strong>${esc(item.title)}</strong><small>${esc(liveGenre(item))} · ${item.source_count?`${item.source_count} source${item.source_count===1?'':'s'}${item.epg_backed?' · EPG matched':' · Provider only'}`:'EPG only · no connection'}</small></span></button><button class="button button-quiet button-small" data-guide="${item.id}" aria-label="Programme guide for ${esc(item.title)}">Guide</button><button class="star-button ${item.favourite?'is-favourite':''}" data-favourite="${item.id}" data-next="${item.favourite?'0':'1'}" aria-label="${item.favourite?'Remove from':'Add to'} favourites">${item.favourite?'★':'☆'}</button></div>`;
 }
 
 function sourceOptions(variants,titleId,kind='film') {
@@ -723,7 +723,7 @@ async function startPlayback(titleId,preferredId=null,roomPosition=null) {
   const index = state.seriesEpisodes.findIndex(item => Number(item.id) === Number(titleId));
   $('#previous-episode').hidden = index < 0 || index === state.seriesEpisodes.length - 1;
   $('#next-episode').hidden = index <= 0;
-  if (title.kind==='channel' && !state.channelQueue.some(id=>Number(id)===Number(titleId))) state.channelQueue=state.items.filter(item=>item.kind==='channel').map(item=>item.id);
+  if (title.kind==='channel' && !state.channelQueue.some(id=>Number(id)===Number(titleId))) state.channelQueue=state.items.filter(item=>item.kind==='channel'&&item.source_count>0).map(item=>item.id);
   $('#previous-channel').hidden=title.kind!=='channel' || state.channelQueue.length<2;
   $('#next-channel').hidden=title.kind!=='channel' || state.channelQueue.length<2;
   $('#player-overlay').hidden = false;

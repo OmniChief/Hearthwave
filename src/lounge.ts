@@ -23,7 +23,7 @@ type Services={
 };
 type Kind=MediaKind|'library'|'all';
 type View='all'|'favourites'|'watchlist'|'continue';
-type Entry={id:number;kind:MediaKind;title:string;artwork?:string;year?:number;season?:number;episode?:number;episode_name?:string;description?:string;position_seconds?:number;favourite?:number;watchlisted?:number;source_count?:number;genres?:string;rating?:number;duration_seconds?:number;live_genre?:string};
+type Entry={id:number;kind:MediaKind;title:string;artwork?:string;year?:number;season?:number;episode?:number;episode_name?:string;description?:string;position_seconds?:number;favourite?:number;watchlisted?:number;source_count?:number;epg_backed?:number;genres?:string;rating?:number;duration_seconds?:number;live_genre?:string};
 const kinds:Kind[]=['library','all','film','series','episode','channel','music','photo','game'];
 const kindNames:Record<Kind,string>={all:'Everything',library:'Your library',film:'Films',series:'Series',episode:'Episodes',channel:'Live television',music:'Music',photo:'Photos',game:'Games'};
 const views:View[]=['all','favourites','watchlist','continue'];
@@ -172,7 +172,7 @@ function channelList(items:Entry[],back:string,csrf:string){
   if(!items.length)return '<div class="blank">No channels to display.</div>';
   return '<table class="listing channel-list" cellspacing="0" cellpadding="0">'+items.map(item=>{
     const art=imageUrl(item.artwork),fields={id:item.id,back};
-    return '<tr><td class="channel-logo">'+(art?'<img src="'+esc(art)+'" alt="">':'&#9658;')+'</td><td>'+href(itemUrl(item,back),item.title,'stationlink')+'<span class="caption">'+esc([item.live_genre,item.source_count+' sources'].filter(Boolean).join(' / '))+'</span></td><td class="channel-actions">'+(item.source_count?post(csrf,'watch',fields,'Watch'):'<span class="caption">EPG only</span>')+href(itemUrl(item,back),'Guide')+post(csrf,'star',fields,item.favourite?'★':'☆')+'</td></tr>';
+    return '<tr><td class="channel-logo">'+(art?'<img src="'+esc(art)+'" alt="">':'&#9658;')+'</td><td>'+href(itemUrl(item,back),item.title,'stationlink')+'<span class="caption">'+esc([item.live_genre,(item.source_count?item.source_count+' sources'+(item.epg_backed?' / EPG matched':' / Provider only'):'EPG only / no connection')].filter(Boolean).join(' / '))+'</span></td><td class="channel-actions">'+(item.source_count?post(csrf,'watch',fields,'Watch'):'<span class="caption">EPG only</span>')+href(itemUrl(item,back),'Guide')+post(csrf,'star',fields,item.favourite?'★':'☆')+'</td></tr>';
   }).join('')+'</table>';
 }
 function shelf(items:Entry[],back:string,csrf:string){
@@ -284,7 +284,7 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
       if(item.kind==='channel'){
         const ref=navigation.trail.map(x=>new URL(x,'http://hearthwave.invalid')).reverse().find(u=>u.searchParams.get('kind')==='channel');
         const q=(ref?.searchParams.get('q')||'').slice(0,120),r=ref?.searchParams.get('region')||'',g=ref?.searchParams.get('genre')||'',region=['GB','US','other'].includes(r)?r:'',genre=liveGenres.includes(g as typeof liveGenres[number])?g:'',view=ref?.searchParams.get('view')==='favourites'?'favourites':'all',page=pageNo(ref?.searchParams.get('page'));
-        const start=Math.max(0,(page-1)*12),channels=listTitles('channel',user.id,q,view,'title',36,start,region,genre) as Entry[],at=channels.findIndex(v=>v.id===id);
+        const start=Math.max(0,(page-1)*12),channels=(listTitles('channel',user.id,q,view,'title',36,start,region,genre) as Entry[]).filter(v=>Number(v.source_count)>0),at=channels.findIndex(v=>v.id===id);
         if(at>0)adjacent+=post(csrf,'watch',{id:channels[at-1].id,back},'Previous channel','prevchannel');
         if(at>=0&&at+1<channels.length)adjacent+=post(csrf,'watch',{id:channels[at+1].id,back},'Next channel','nextchannel');
       }

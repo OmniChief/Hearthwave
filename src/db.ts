@@ -442,6 +442,9 @@ const upsertVariant = db.prepare(`
     title_id=excluded.title_id, url=excluded.url,quality=excluded.quality,
     group_name=excluded.group_name,generation=excluded.generation,epg_id=excluded.epg_id
 `);
+const rememberLiveVariant=db.prepare(`INSERT INTO live_variant_identity(variant_id,original_title_id,name,country,artwork)
+          SELECT id,?,?,?,? FROM variants WHERE source_id=? AND source_ref=?
+          ON CONFLICT(variant_id) DO UPDATE SET original_title_id=CASE WHEN live_variant_identity.name=excluded.name AND live_variant_identity.country=excluded.country THEN live_variant_identity.original_title_id ELSE excluded.original_title_id END,name=excluded.name,country=excluded.country,artwork=excluded.artwork`);
 const channelCandidates = db.prepare("SELECT id,channel_country FROM titles WHERE kind='channel' AND canonical_key NOT LIKE 'channel:epg-station:%' AND channel_key=? LIMIT 25");
 const existingKey = db.prepare('SELECT id FROM titles WHERE canonical_key=?');
 const updateMatchedChannel = db.prepare(`UPDATE titles SET
@@ -522,10 +525,7 @@ export function importBatch(sourceId: number, items: ImportItem[], generation: s
       }
       upsertVariant.run(titleId, sourceId, item.sourceRef, secrets.seal(item.url, true), item.quality || '', item.group || '', generation,(item.externalId || '').trim().toLowerCase().slice(0,200));
       if(item.kind==='channel'){
-        db.prepare(`INSERT INTO live_variant_identity(variant_id,original_title_id,name,country,artwork)
-          SELECT id,?,?,?,? FROM variants WHERE source_id=? AND source_ref=?
-          ON CONFLICT(variant_id) DO UPDATE SET original_title_id=CASE WHEN live_variant_identity.name=excluded.name AND live_variant_identity.country=excluded.country THEN live_variant_identity.original_title_id ELSE excluded.original_title_id END,name=excluded.name,country=excluded.country,artwork=excluded.artwork`)
-          .run(titleId,item.title.slice(0,300),country,item.artwork||'',sourceId,item.sourceRef);
+        rememberLiveVariant.run(titleId,item.title.slice(0,300),country,item.artwork||'',sourceId,item.sourceRef);
       }
       if (item.kind==='film' || item.kind==='series') syncLibraryGenres(titleId);
     }
@@ -610,7 +610,7 @@ export function listTitles(kind:BrowseKind,userId:number,query='',view:Catalogue
   // No full-catalogue GROUP BY, and per-user filters can begin with a small indexed user table.
   return db.prepare("WITH selected AS MATERIALIZED (SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,t.artwork,t.channel_country,t.live_genre,CASE WHEN f.title_id IS NULL THEN 0 ELSE 1 END AS favourite,CASE WHEN w.title_id IS NULL THEN 0 ELSE 1 END AS watchlisted,p.position_seconds,p.updated_at AS activity_at FROM titles t"+
     joins.sql+" WHERE "+filter.where+" ORDER BY "+order+" LIMIT ? OFFSET ?) "+
-    "SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,t.artwork,t.channel_country,t.live_genre,t.favourite,t.watchlisted,t.position_seconds,"+
+    "SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,t.artwork,t.channel_country,t.live_genre,t.favourite,t.watchlisted,t.position_seconds,CASE WHEN "+activeEpg+" THEN 1 ELSE 0 END AS epg_backed,"+
     "(SELECT MIN(v.id) FROM variants v WHERE v.title_id=t.id"+filter.variantFilter+") AS variant_id,"+
     "(SELECT COUNT(*) FROM variants v WHERE v.title_id=t.id"+filter.variantFilter+") AS source_count,"+
     "CASE WHEN t.kind='game' THEN (SELECT v.source_ref FROM variants v WHERE v.title_id=t.id"+filter.variantFilter+" ORDER BY v.id LIMIT 1) END AS game_path "+
@@ -892,7 +892,7 @@ export function storedGuide(titleId:number,limit=12,windowStart?:number,windowEn
   const title=db.prepare("SELECT channel_key,channel_country,canonical_key FROM titles WHERE id=? AND kind='channel'").get(titleId) as {channel_key:string;channel_country:string;canonical_key:string}|undefined;
   if (!title) return {programmes:[],source:'',icon:''};
   const explicit=getGuideMapping(titleId);
-  const automatic=db.prepare(`SELECT el.feed_id,el.channel_id FROM live_epg_links el JOIN guide_feeds f ON f.id=el.feed_id JOIN guide_channels c ON c.feed_id=f.id AND c.generation=f.generation AND c.channel_id=el.channel_id WHERE el.title_id=? ORDER BY el.feed_id,el.channel_id LIMIT 1`).get(titleId) as {feed_id:number;channel_id:string}|undefined;
+  const automatic=db.prepare(`SELECT el.feed_id,el.channel_id FROM live_epg_links el JOIN guide_feeds f ON f.id=el.feed_id JOIN guide_channels c ON c.feed_id=f.id AND c.generation=f.generation AND c.channel_id=el.channel_id WHERE el.title_id=? ORDER BY CASE WHEN (SELECT canonical_key FROM titles WHERE id=el.title_id)='channel:epg-station:'||(SELECT channel_country FROM titles WHERE id=el.title_id)||':'||LOWER(el.channel_id) THEN 0 ELSE 1 END,el.feed_id,el.channel_id LIMIT 1`).get(titleId) as {feed_id:number;channel_id:string}|undefined;
   const mapping=explicit?.name?explicit:automatic;
   const epgIds=new Set((db.prepare("SELECT epg_id FROM variants WHERE title_id=? AND epg_id<>''").all(titleId) as Array<{epg_id:string}>).map(row=>row.epg_id.toLowerCase()));
   const encoded=/^channel:[^:]*:epg:(.+)$/.exec(title.canonical_key)?.[1];

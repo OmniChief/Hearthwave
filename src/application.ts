@@ -72,9 +72,9 @@ let systemOperation=false;
 const refreshingMetadata=new Set<number>();
 const metadataLastAttempt=new Map<number,number>();
 let lineupJob:LineupProgress|null=null;
-async function organiseLive():Promise<void>{
+async function organiseLive(sourceId?:number):Promise<void>{
   const job:LineupProgress={phase:'running',stage:'Preparing lineup',processed:0,total:0,stations:0,matched:0,unmatched:0,ambiguous:0,error:''};lineupJob=job;
-  try{const {rebuildLiveLineup}=await import('./live-lineup.ts');await rebuildLiveLineup(job);guideCache.clear();job.phase='completed';job.stage='Complete';}catch(e){job.phase='error';job.error='Channel organisation failed. Retry Rebuild Live lineup.';console.error('Live lineup rebuild failed:',e);}
+  try{const {rebuildLiveLineup}=await import('./live-lineup.ts');await rebuildLiveLineup(job,sourceId);guideCache.clear();job.phase='completed';job.stage='Complete';}catch(e){job.phase='error';job.error='Channel organisation failed. Retry Rebuild Live lineup.';console.error('Live lineup rebuild failed:',e);}
 }
 function maintenanceActive():boolean {
   return !!(lineupJob?.phase==='running'||inProgress.size||importingGuides.size||refreshingMetadata.size||providerGuideRefresh!==null||metadataBusy()||[...episodeJobs.values()].some(j=>j.status==='running')||backupBusy()||systemOperation);
@@ -263,7 +263,7 @@ function startImport(source: SourceRow, items: AsyncIterable<ImportItem>): void 
       if(job.cancelRequested) throw new ScanCancelled();
       if (buffer.length) {importBatch(source.id, buffer, generation);job.indexed+=buffer.length;}
       completeImport(source.id, generation);
-      if(hasChannels&&db.prepare("SELECT 1 FROM guide_feeds WHERE generation<>'' LIMIT 1").get()){job.folder='Organising Live lineup';await organiseLive();}
+      if(hasChannels&&db.prepare("SELECT 1 FROM guide_feeds WHERE generation<>'' LIMIT 1").get()){job.folder='Organising Live lineup';await organiseLive(source.id);}
       job.phase='completed';
     } catch (error) {
       const cancelled=job.cancelRequested || error instanceof ScanCancelled;
@@ -658,6 +658,7 @@ async function dispatchApi(req:IncomingMessage,res:ServerResponse,url:URL,body:B
       const generation = randomUUID();
       importBatch(source.id, [{ kind: 'channel', title: name, sourceRef: 'direct', url: location }], generation);
       completeImport(source.id, generation);
+      if(!maintenanceActive()&&db.prepare("SELECT 1 FROM guide_feeds WHERE generation<>'' LIMIT 1").get())void organiseLive(source.id);
     }
     return send(res, 201, { source: safelyPublicSource(getSource(source.id)!) });
   }
@@ -668,7 +669,7 @@ async function dispatchApi(req:IncomingMessage,res:ServerResponse,url:URL,body:B
     if (!source) throw new HttpError(404, 'Source not found.');
     if (method === 'DELETE' && !sourceMatch[2]) {
       requireWrite(req, true);
-      if (inProgress.has(id)) throw new HttpError(409, 'Wait for this scan to finish before removing the source.');
+      if (inProgress.has(id)||lineupJob?.phase==='running') throw new HttpError(409, 'Wait for the scan or lineup rebuild to finish before removing the source.');
       deleteSource(id);
       sourceJobs.delete(id);
       return send(res, 200, { ok: true });

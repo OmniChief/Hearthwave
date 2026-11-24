@@ -14,6 +14,12 @@ function nameKey(name:string):string {
   return channelKey(stripped).replace(/\b(bbc)\s+(one|two|three|four)\b/g,(_m,p,n)=>p+' '+({one:'1',two:'2',three:'3',four:'4'} as Record<string,string>)[n]).replace(/\s+/g,'');
 }
 function exactId(id:string){return id.trim().toLowerCase();}
+// Collapse an explicit quality suffix only if the display name also identifies
+// a quality rendition, and the resulting station has the same normalized name.
+function qualityBase(id:string,name:string):string{
+  const tagged=/(?:[\s[(|:/-])(?:4K|UHD|FHD|FULL\s*HD|HD|SD|HEVC|H265|H264|1080P|720P|2160P)[\])\s]*$/i.test(name);
+  return tagged?exactId(id).replace(/[._ -]?(?:2160p|1080p|720p|uhd|fhd|hd|sd|4k)(?=(?:[._-](?:uk|gb|us|usa|ca))?$)/i,''):exactId(id);
+}
 function add(map:Map<string,Station[]>,key:string,station:Station){
   if(!key)return;
   const list=map.get(key)||[];
@@ -28,26 +34,42 @@ function choose(stations:Station[],country:string):Station|undefined {
   const candidates=preferred.length?preferred:eligible;
   return candidates.length===1?candidates[0]:undefined;
 }
-export async function rebuildLiveLineup(job:LineupProgress):Promise<void>{
+export async function rebuildLiveLineup(job:LineupProgress,sourceId?:number):Promise<void>{
   const count=Number(db.prepare('SELECT COUNT(*) AS n FROM guide_channels c JOIN guide_feeds f ON f.id=c.feed_id AND f.generation=c.generation').get()?.n||0);
   if(count>60000)throw Error('The combined guides exceed 60,000 stations. Remove unused feeds before rebuilding.');
   const guides=db.prepare('SELECT c.feed_id,c.channel_id,c.name,c.icon,f.country FROM guide_channels c JOIN guide_feeds f ON f.id=c.feed_id AND f.generation=c.generation ORDER BY f.id,c.channel_id').all() as GuideRow[];
   const byId=new Map<string,Station[]>(),byName=new Map<string,Station[]>(),byFeed=new Map<string,Station>(),byKey=new Map<string,Station>();
+  const groups=new Map<string,GuideRow[]>();
+  for(const row of guides){
+    const country=region(row.channel_id,row.name,row.country),key=country+'\0'+qualityBase(row.channel_id,row.name)+'\0'+nameKey(row.name);
+    const list=groups.get(key)||[];list.push(row);groups.set(key,list);
+  }
+  const canonical=new Map<GuideRow,GuideRow>();
+  for(const list of groups.values()){
+    list.sort((a,b)=>Number(qualityBase(a.channel_id,a.name)!==exactId(a.channel_id))-Number(qualityBase(b.channel_id,b.name)!==exactId(b.channel_id))||a.feed_id-b.feed_id||a.channel_id.localeCompare(b.channel_id));
+    for(const row of list)canonical.set(row,list[0]);
+  }
+  const oldLinks=db.prepare('SELECT title_id FROM live_epg_links WHERE feed_id=? AND channel_id=? AND title_id<>?');
+  const unlink=db.prepare('DELETE FROM live_epg_links WHERE feed_id=? AND channel_id=? AND title_id<>?');
+  const guideFavourites=db.prepare('INSERT OR IGNORE INTO favourites(user_id,title_id) SELECT user_id,? FROM favourites WHERE title_id=?');
   const insert=db.prepare("INSERT INTO titles(canonical_key,kind,title,channel_key,channel_country,artwork,live_genre) VALUES (?,'channel',?,?,?,?,?) ON CONFLICT(canonical_key) DO UPDATE SET title=excluded.title,channel_key=excluded.channel_key,channel_country=excluded.channel_country,artwork=COALESCE(NULLIF(excluded.artwork,''),titles.artwork),live_genre=CASE WHEN excluded.live_genre='Other' THEN titles.live_genre ELSE excluded.live_genre END RETURNING id");
   const link=db.prepare('INSERT OR IGNORE INTO live_epg_links(title_id,feed_id,channel_id) VALUES(?,?,?)');
   job.stage='Indexing guide stations';job.total=guides.length;job.processed=0;
   for(let start=0;start<guides.length;start+=128){
     transaction(()=>{
       for(const row of guides.slice(start,start+128)){
-        const country=region(row.channel_id,row.name,row.country),key='channel:epg-station:'+country+':'+exactId(row.channel_id);
+        const primary=canonical.get(row)||row,country=region(primary.channel_id,primary.name,primary.country),key='channel:epg-station:'+country+':'+exactId(primary.channel_id);
         let station=byKey.get(key);
         if(!station){
-          const genre=channelGenre(row.name,/\b(?:BBC\s*(?:One|Two|1|2)|ITV\s*1?|Channel\s*[45])\b/i.test(row.name)?'General':'');
-          const id=Number(insert.get(key,row.name,channelKey(row.name),country,row.icon,genre)?.id);
-          station={id,country,name:row.name,guideId:row.channel_id,feed:row.feed_id};byKey.set(key,station);
+          const genre=channelGenre(primary.name,/\b(?:BBC\s*(?:One|Two|1|2)|ITV\s*1?|Channel\s*[45])\b/i.test(primary.name)?'General':'');
+          const id=Number(insert.get(key,primary.name,channelKey(primary.name),country,primary.icon||row.icon,genre)?.id);
+          station={id,country,name:primary.name,guideId:primary.channel_id,feed:primary.feed_id};byKey.set(key,station);
           add(byId,exactId(row.channel_id),station);add(byName,nameKey(row.name),station);
         }
+        for(const old of oldLinks.all(row.feed_id,row.channel_id,station.id))guideFavourites.run(station.id,old.title_id);
+        unlink.run(row.feed_id,row.channel_id,station.id);
         link.run(station.id,row.feed_id,row.channel_id);
+        add(byId,exactId(row.channel_id),station);
         byFeed.set(row.feed_id+'\0'+row.channel_id,station);
         add(byName,nameKey(row.name),station);
         job.processed++;
@@ -63,20 +85,20 @@ export async function rebuildLiveLineup(job:LineupProgress):Promise<void>{
     FROM variants v JOIN titles t ON t.id=v.title_id
     LEFT JOIN live_variant_identity r ON r.variant_id=v.id LEFT JOIN titles ot ON ot.id=r.original_title_id
     LEFT JOIN guide_mappings m ON m.title_id=t.id LEFT JOIN guide_mappings om ON om.title_id=r.original_title_id
-    WHERE t.kind='channel' AND v.id>? ORDER BY v.id LIMIT 128`);
+    WHERE t.kind='channel' AND v.id>? AND (? IS NULL OR v.source_id=?) ORDER BY v.id LIMIT 128`);
   const remember=db.prepare('INSERT OR IGNORE INTO live_variant_identity(variant_id,original_title_id,name,country,artwork) VALUES(?,?,?,?,?)');
   const move=db.prepare('UPDATE variants SET title_id=? WHERE id=?');
   const addFav=db.prepare('INSERT OR IGNORE INTO favourites(user_id,title_id) SELECT user_id,? FROM favourites WHERE title_id=?');
   const removeFav=db.prepare("DELETE FROM favourites WHERE title_id=? AND NOT EXISTS(SELECT 1 FROM variants WHERE title_id=?) AND NOT EXISTS(SELECT 1 FROM live_epg_links WHERE title_id=?)");
   const fillGenre=db.prepare("UPDATE titles SET live_genre=? WHERE id=? AND live_genre='Other' AND ?<>'Other'");
   const orphan=db.prepare("INSERT INTO titles(canonical_key,kind,title,channel_key,channel_country,artwork,live_genre) VALUES (?,'channel',?,?,?,?,?) ON CONFLICT(canonical_key) DO UPDATE SET artwork=COALESCE(NULLIF(titles.artwork,''),excluded.artwork) RETURNING id");
-  job.stage='Matching provider streams';job.processed=0;job.total=Number(db.prepare("SELECT COUNT(*) AS n FROM variants v JOIN titles t ON t.id=v.title_id WHERE t.kind='channel'").get()?.n||0);
+  job.stage='Matching provider streams';job.processed=0;job.total=Number(db.prepare("SELECT COUNT(*) AS n FROM variants v JOIN titles t ON t.id=v.title_id WHERE t.kind='channel' AND (? IS NULL OR v.source_id=?)").get(sourceId??null,sourceId??null)?.n||0);
   let cursor=0;
   for(;;){
-    const streams=read.all(cursor) as Stream[];if(!streams.length)break;
+    const streams=read.all(cursor,sourceId??null,sourceId??null) as Stream[];if(!streams.length)break;
     transaction(()=>{
       for(const row of streams){
-        const name=row.name||row.title_name,country=row.country||channelCountry(name,row.group_name)||row.title_country||'';
+        const name=row.name||row.title_name,country=row.country||channelCountry(name,row.group_name)||(!row.name?row.title_country:'')||'';
         const original=row.original_title_id||row.title_id;
         remember.run(row.id,original,name,country,row.artwork);
         const manual=row.manual_feed&&row.manual_channel?byFeed.get(row.manual_feed+'\0'+row.manual_channel):undefined;
@@ -91,8 +113,8 @@ export async function rebuildLiveLineup(job:LineupProgress):Promise<void>{
           job.unmatched++;if((exact.length&&!matches.length)||matches.length>1||(!exact.length&&compatible(names,country).length>1))job.ambiguous++;
           // Old provider identity is retained unless it was an EPG station. Distinct
           // EPG IDs remain distinct for unmatched streams instead of guessing.
-          if(row.canonical_key.startsWith('channel:epg-station:')||row.original_key?.startsWith('channel:epg-station:')){
-            const key='channel:unmatched:'+country+':'+(row.epg_id?'epg:'+exactId(row.epg_id):nameKey(name));
+          if(row.canonical_key.startsWith('channel:epg-station:')||row.original_key?.startsWith('channel:epg-station:')||row.epg_id){
+            const key='channel:unmatched:'+country+':'+(row.epg_id?'epg:'+exactId(row.epg_id):nameKey(name)||'stream:'+row.id);
             target=Number(orphan.get(key,displayChannelTitle(name),channelKey(name),country,row.artwork,channelGenre(name,row.group_name))?.id);
           }else if(row.original_title_id&&row.original_key)target=row.original_title_id;
         }
