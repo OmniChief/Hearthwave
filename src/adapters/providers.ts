@@ -251,7 +251,11 @@ class StalkerClient {
       try {
         const result = await this.call(attempt,'create_link',params);
         const address = playbackAddress(result.cmd) || playbackAddress(result.url);
-        if (address) {this.trace?.push('Selected: create_link; '+addressHint(address));return address;}
+        if (address) {
+          this.trace?.push('Selected: create_link; '+addressHint(address));
+          if(this.trace){const media=new URL(address),portal=new URL(this.endpoint);this.trace.push('Media destination: '+(media.hostname===portal.hostname?'same portal hostname':'different hostname')+'; port '+(media.port||(media.protocol==='https:'?'443':'80'))+'; '+(media.origin===portal.origin?'same portal origin':'different origin'));let original:string|null=null;try{original=playbackAddress(cmd);}catch{}this.trace.push('Stored and generated addresses: '+(address===original?'identical':'different'));}
+          return address;
+        }
       } catch (error) {
         if (error instanceof ProviderError && error.status === 429) throw error;
         failure = error;

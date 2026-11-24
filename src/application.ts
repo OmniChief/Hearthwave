@@ -967,7 +967,8 @@ async function dispatchApi(req:IncomingMessage,res:ServerResponse,url:URL,body:B
       try {const u=new URL(String(input.origin||''));if(['http:','https:'].includes(u.protocol)&&u.origin===input.origin&&u.origin.length<=512)origin=u.origin;}catch{}
       const result=await debugStalkerStream(source,variant.url);
       if(!result.url)return send(res,200,{trace:['Header check: fresh link resolution failed.',...result.trace]});
-      try{return send(res,200,{trace:await inspectMediaHeaders(result.url,Boolean(source.config.allowLan),origin)});}
+      const method=input.method==='GET'?'GET':'HEAD';
+      try{return send(res,200,{trace:await inspectMediaHeaders(result.url,Boolean(source.config.allowLan),origin,method)});}
       catch(error){return send(res,200,{trace:['Header check: '+(error instanceof ProviderError?'provider error '+error.status:'network/transport error')+'; no media body requested.']});}
     }
     if(resolveMatch[2]==='debug-playback') {

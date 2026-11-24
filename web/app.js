@@ -689,6 +689,8 @@ function renderPlaybackDiagnostics() {
   debugReport.hidden=!state.stalkerDebug;
   $('#stalker-header-check').hidden=!state.stalkerDebug;
   $('#stalker-header-check').disabled=!current || current.headerBusy || !['Failed','Paused'].includes(current.status);
+  $('#stalker-get-check').hidden=!state.stalkerDebug;
+  $('#stalker-get-check').disabled=$('#stalker-header-check').disabled;
   if(state.stalkerDebug) debugReport.value=playbackReport(attempts,browserPlaybackCapabilities($('#player')))+'\n'+clientDebugSnapshot();
   const caps=browserPlaybackCapabilities($('#player'));
   $('#player-browser-support').innerHTML=caps.map(([label,value])=>`<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join('');
@@ -1423,7 +1425,7 @@ $('#player-diagnostics-toggle').addEventListener('click',()=>{
   $('#player-diagnostics-copy').hidden=!state.stalkerDebug&&!navigator.clipboard?.writeText;
   renderPlaybackDiagnostics();
 });
-$('#stalker-header-check').addEventListener('click',async()=>{
+async function checkStalkerHeaders(method){
   const attempt=currentPlaybackAttempt();
   if(!state.stalkerDebug||state.session?.user?.role!=='admin'||!attempt||attempt.headerBusy||!['Failed','Paused'].includes(attempt.status)) return;
   // Stop the failed/paused media request before asking the provider for a fresh link.
@@ -1432,14 +1434,17 @@ $('#stalker-header-check').addEventListener('click',async()=>{
   resetMediaElement($('#player'));
   clearPlaybackRecovery();
   attempt.headerBusy=true;
-  attempt.headerTrace=['Checking fresh provider link headers (HEAD only, no video body)…'];
+  const prior=(attempt.headerTrace||[]).filter(line=>!line.startsWith('Checking '));
+  attempt.headerTrace=[...prior,'Checking fresh provider link with '+method+'…'];
   renderPlaybackDiagnostics();
   try {
-    const result=await api('/api/variants/'+attempt.variantId+'/debug-headers',{method:'POST',body:{origin:location.origin}});
-    attempt.headerTrace=result.trace||['No header information returned.'];
-  } catch {attempt.headerTrace=['Header check failed; no stream was relayed.'];}
+    const result=await api('/api/variants/'+attempt.variantId+'/debug-headers',{method:'POST',body:{origin:location.origin,method}});
+    attempt.headerTrace=[...prior,...(result.trace||['No header information returned.'])];
+  } catch {attempt.headerTrace=[...prior,'Header check request failed; no stream was relayed.'];}
   finally {attempt.headerBusy=false;if(currentPlaybackAttempt()===attempt)renderPlaybackDiagnostics();}
-});
+}
+$('#stalker-header-check').addEventListener('click',()=>checkStalkerHeaders('HEAD'));
+$('#stalker-get-check').addEventListener('click',()=>checkStalkerHeaders('GET'));
 $('#player-diagnostics-copy').addEventListener('click',()=>{
   const report=playbackReport(state.playbackAttempts,browserPlaybackCapabilities($('#player')))+(state.stalkerDebug?'\n'+clientDebugSnapshot():'');
   const copy=navigator.clipboard?.writeText?.(report);
