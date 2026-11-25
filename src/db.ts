@@ -827,8 +827,11 @@ export function setWatchlisted(userId:number,titleId:number,include:boolean):voi
     WHERE episode_variant.title_id=? AND parent.kind='series'
     ORDER BY episode_variant.id LIMIT 1`).get(titleId) as {id:number}|undefined;
   const savedTitleId=parent?.id ?? titleId;
-  if(include)db.prepare('INSERT OR IGNORE INTO watchlist(user_id,title_id,added) VALUES(?,?,?)').run(userId,savedTitleId,Date.now());
-  else db.prepare('DELETE FROM watchlist WHERE user_id=? AND title_id=?').run(userId,savedTitleId);
+  if(include){
+    db.prepare('INSERT OR IGNORE INTO watchlist(user_id,title_id,added) VALUES(?,?,?)').run(userId,savedTitleId,Date.now());
+    if(parent)db.prepare(`DELETE FROM watchlist WHERE user_id=? AND title_id IN
+      (SELECT episode_variant.title_id FROM variants episode_variant WHERE episode_variant.series_parent_id=?)`).run(userId,savedTitleId);
+  }else db.prepare('DELETE FROM watchlist WHERE user_id=? AND title_id=?').run(userId,savedTitleId);
 }
 
 export function setFavourite(userId: number, titleId: number, favourite: boolean): void {
