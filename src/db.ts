@@ -638,7 +638,7 @@ export function listTitles(kind:BrowseKind,userId:number,query='',view:Catalogue
     "(SELECT MIN(v.id) FROM variants v WHERE v.title_id=t.id"+filter.variantFilter+") AS variant_id,"+
     "(SELECT COUNT(*) FROM variants v WHERE v.title_id=t.id"+filter.variantFilter+") AS source_count,"+
     "CASE WHEN t.kind='game' THEN (SELECT v.source_ref FROM variants v WHERE v.title_id=t.id"+filter.variantFilter+" ORDER BY v.id LIMIT 1) END AS game_path "+
-    "FROM selected t ORDER BY "+order).all(...Array(joins.count).fill(userId),...filter.params,Math.min(250,Math.max(1,limit)),Math.max(0,offset));
+    "FROM selected t ORDER BY "+order).all(userId,...Array(joins.count).fill(userId),...filter.params,Math.min(250,Math.max(1,limit)),Math.max(0,offset));
 }
 export function countTitles(kind:BrowseKind,userId:number,query='',view:CatalogueView='all',country='',genre='',libraryGenre='',collection?:CollectionSettings):number{
   const filter=browseFilter(kind,query,view,country,genre,libraryGenre,collection,userId);
