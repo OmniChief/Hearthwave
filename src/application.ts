@@ -14,7 +14,7 @@ import { libraryGenres } from './library-genres.ts';
 import { qualityPreferences, type QualityPreference } from './quality.ts';
 import { BackupError, backupBusy, streamBackup } from './backup.ts';
 import { UpdateError, checkForUpdate, startUpdate, updateStatus } from './updater.ts';
-import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, completeImport, countTitles, createCollection, createSmartCollection, createUser, dashboardStats, dataDir, db, deleteCollection, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, libraryGenreCounts, listCategories, listCollections, listGuideFeeds, listSeriesEpisodes, liveSourceCounts, listSources, listTitles, listVariants, loadSession, ownedCollection, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, renameCollection, replaceSeriesEpisodes, saveCategories, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setCollectionMembership, setFavourite, setWatchlisted, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, updateSmartCollectionRules, type GuideFeed, type SmartRules, type SourceRow } from './db.ts';
+import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, completeImport, countTitles, createCollection, createSmartCollection, createUser, dashboardStats, dataDir, db, deleteCollection, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, libraryGenreCounts, listCategories, listCollections, listGuideFeeds, listSeriesEpisodes, liveSourceCounts, listSources, listTitles, listVariants, loadSession, ownedCollection, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, renameCollection, replaceSeriesEpisodes, saveCategories, clearSourceLiveChannels, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setCollectionMembership, setFavourite, setWatchlisted, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, updateSmartCollectionRules, type GuideFeed, type SmartRules, type SourceRow } from './db.ts';
 import { discoverProvider, discoverSeriesEpisodes, fetchTitleMetadata, importProvider, providerGuide, resolveProviderStream, debugStalkerStream, compareStalkerMediaRequests, type ProviderScanProgress } from './adapters/providers.ts';
 import { importXmltv } from './guide.ts';
 import { localSubtitles, subtitleVtt } from './subtitles.ts';
@@ -732,8 +732,12 @@ async function dispatchApi(req:IncomingMessage,res:ServerResponse,url:URL,body:B
         if (!['live','vod','series'].includes(String(kind)) || typeof categoryId !== 'string' || categoryId.length > 80) throw new HttpError(400, 'Invalid category selection.');
         return {kind,id:categoryId} as {kind:ProviderCategory['kind'];id:string};
       });
-      try { selectCategories(id,selected); }
-      catch (error) { throw new HttpError(409,error instanceof Error ? error.message : 'Could not update category selections.'); }
+      try {
+        selectCategories(id,selected);
+        // Do not leave an old live lineup visible after the administrator
+        // deselects every live provider folder. VOD/series selections remain.
+        if (!selected.some(row=>row.kind==='live')) clearSourceLiveChannels(id);
+      } catch (error) { throw new HttpError(409,error instanceof Error ? error.message : 'Could not update category selections.'); }
       return send(res, 200, {categories:listCategories(id)});
     }
   }
