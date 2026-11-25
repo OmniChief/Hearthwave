@@ -607,7 +607,7 @@ function browseFilter(kind:BrowseKind,query:string,view:CatalogueView,country:st
   else if(country){terms.push('t.channel_country=?');params.push(country);}
   if(genre){terms.push('t.live_genre=?');params.push(genre);}
   if(libraryGenre){terms.push('EXISTS(SELECT 1 FROM library_genres lg WHERE lg.title_id=t.id AND lg.genre=?)');params.push(libraryGenre);}
-  const rootOnly=kind!=='episode'&&!collection&&view!=='watchlist'&&!(kind==='library'&&view==='continue');
+  const rootOnly=kind!=='episode'&&!collection&&!(kind==='library'&&view==='continue');
   const variantFilter=rootOnly?' AND v.series_parent_id IS NULL':'';
   // EPG defines station identity, not availability: only indexed provider streams make a station visible.
   terms.push('EXISTS(SELECT 1 FROM variants v WHERE v.title_id=t.id'+variantFilter+')');
@@ -821,8 +821,14 @@ export function getVariant(id: number): VariantRow | undefined {
 }
 
 export function setWatchlisted(userId:number,titleId:number,include:boolean):void {
-  if(include)db.prepare('INSERT OR IGNORE INTO watchlist(user_id,title_id,added) VALUES(?,?,?)').run(userId,titleId,Date.now());
-  else db.prepare('DELETE FROM watchlist WHERE user_id=? AND title_id=?').run(userId,titleId);
+  // An episode action represents the whole series in the watchlist.
+  const parent=db.prepare(`SELECT parent.id FROM variants episode_variant
+    JOIN titles parent ON parent.id=episode_variant.series_parent_id
+    WHERE episode_variant.title_id=? AND parent.kind='series'
+    ORDER BY episode_variant.id LIMIT 1`).get(titleId) as {id:number}|undefined;
+  const savedTitleId=parent?.id ?? titleId;
+  if(include)db.prepare('INSERT OR IGNORE INTO watchlist(user_id,title_id,added) VALUES(?,?,?)').run(userId,savedTitleId,Date.now());
+  else db.prepare('DELETE FROM watchlist WHERE user_id=? AND title_id=?').run(userId,savedTitleId);
 }
 
 export function setFavourite(userId: number, titleId: number, favourite: boolean): void {
