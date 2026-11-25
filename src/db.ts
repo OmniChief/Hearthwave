@@ -625,6 +625,7 @@ function browseJoins(view:CatalogueView,collection?:CollectionSettings,allFields
     (watch?join('watchlist','w',view==='watchlist'):''),count:Number(favourite)+Number(progress)+Number(watch)};
 }
 export function listTitles(kind:BrowseKind,userId:number,query='',view:CatalogueView='all',sort:CatalogueSort='title',limit=250,offset=0,country='',genre='',libraryGenre='',collection?:CollectionSettings):unknown[]{
+  migrateEpisodeWatchlist(userId);
   const filter=browseFilter(kind,query,view,country,genre,libraryGenre,collection,userId);
   const joins=browseJoins(view,collection);
   const order=kind==='channel'? "CASE t.channel_country WHEN 'GB' THEN 0 WHEN 'US' THEN 1 ELSE 2 END, CASE WHEN "+activeEpg+" THEN 0 ELSE 1 END, CASE t.live_genre WHEN 'General' THEN 0 WHEN 'Entertainment' THEN 1 WHEN 'Sports' THEN 2 WHEN 'Movies' THEN 3 WHEN 'News' THEN 4 WHEN 'Kids' THEN 5 WHEN 'Documentary' THEN 6 WHEN 'Music' THEN 7 ELSE 8 END,t.title COLLATE NOCASE,t.id":
@@ -641,6 +642,7 @@ export function listTitles(kind:BrowseKind,userId:number,query='',view:Catalogue
     "FROM selected t ORDER BY "+order).all(userId,...Array(joins.count).fill(userId),...filter.params,Math.min(250,Math.max(1,limit)),Math.max(0,offset));
 }
 export function countTitles(kind:BrowseKind,userId:number,query='',view:CatalogueView='all',country='',genre='',libraryGenre='',collection?:CollectionSettings):number{
+  migrateEpisodeWatchlist(userId);
   const filter=browseFilter(kind,query,view,country,genre,libraryGenre,collection,userId);
   const joins=browseJoins(view,collection,false);
   return Number(db.prepare('SELECT COUNT(*) AS total FROM titles t'+joins.sql+' WHERE '+filter.where).get(...Array(joins.count).fill(userId),...filter.params)?.total||0);
@@ -820,6 +822,12 @@ export function getVariant(id: number): VariantRow | undefined {
   if (!variant) return undefined;
   const tier=qualityTier(variant.quality,variant.source_type==='folder'?`${variant.group_name} ${variant.source_ref}`:variant.group_name);
   return { ...variant, quality_tier:tier,quality_rank:qualityRank(tier),url: secrets.open(variant.url), source_location: secrets.open(variant.source_location) };
+}
+
+function migrateEpisodeWatchlist(userId:number):void {
+  const savedEpisodes=db.prepare(`SELECT w.title_id FROM watchlist w JOIN titles t ON t.id=w.title_id
+    WHERE w.user_id=? AND t.kind='episode' ORDER BY w.added,w.title_id`).all(userId) as Array<{title_id:number}>;
+  for(const row of savedEpisodes) setWatchlisted(userId,row.title_id,true);
 }
 
 export function setWatchlisted(userId:number,titleId:number,include:boolean):void {
