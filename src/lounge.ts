@@ -151,6 +151,11 @@ async function formData(req:IncomingMessage):Promise<URLSearchParams>{
   for await(const chunk of req){const b=Buffer.from(chunk);length+=b.length;if(length>32768)throw new Error('Form exceeds the limit.');parts.push(b);}
   return new URLSearchParams(Buffer.concat(parts).toString('utf8'));
 }
+function requestHost(req:IncomingMessage):string{
+  const forwarded=req.headers['x-forwarded-host'];
+  const value=(Array.isArray(forwarded)?forwarded[0]:forwarded)?.split(',')[0].trim()||req.headers.host||'';
+  return value.toLowerCase();
+}
 function loginScreen(req:IncomingMessage,res:ServerResponse,message='',status=200){
   const ticket=randomBytes(24).toString('hex');
   const secure=(req.socket as {encrypted?:boolean}).encrypted||req.headers['x-forwarded-proto']==='https';
@@ -196,7 +201,14 @@ export async function loungeRequest(req:IncomingMessage,res:ServerResponse,url:U
   if(path==='/tv/login'&&method==='POST'){
     const f=await formData(req),ticket=/(?:^|;\s*)hw_lounge_login=([a-f0-9]{48})(?:;|$)/.exec(req.headers.cookie||'')?.[1];
     const origin=req.headers.origin||req.headers.referer;
-    if(origin){try{if(new URL(origin).host!==req.headers.host)throw Error();}catch{return loginScreen(req,res,'Open the sign-in page on this server.',403);}}
+    // Some older TV browsers send an opaque Origin ("null"). The one-time
+    // same-site cookie/form ticket below remains the CSRF check in that case.
+    if(origin&&origin!=='null'){
+      try{
+        const originHost=new URL(origin).host.toLowerCase();
+        if(originHost!==requestHost(req))throw Error();
+      }catch{return loginScreen(req,res,'Open the sign-in page on this server.',403);}
+    }
     if(!ticket||f.get('ticket')!==ticket)return loginScreen(req,res,'Sign-in expired. Try again.',403);
     let account:User;
     try{account=s.login(req,{username:f.get('username'),password:f.get('password')});}
