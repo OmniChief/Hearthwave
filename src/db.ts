@@ -607,7 +607,7 @@ function browseFilter(kind:BrowseKind,query:string,view:CatalogueView,country:st
   else if(country){terms.push('t.channel_country=?');params.push(country);}
   if(genre){terms.push('t.live_genre=?');params.push(genre);}
   if(libraryGenre){terms.push('EXISTS(SELECT 1 FROM library_genres lg WHERE lg.title_id=t.id AND lg.genre=?)');params.push(libraryGenre);}
-  const rootOnly=kind!=='episode'&&!collection&&!(kind==='library'&&view==='continue');
+  const rootOnly=kind!=='episode'&&!collection&&view!=='watchlist'&&!(kind==='library'&&view==='continue');
   const variantFilter=rootOnly?' AND v.series_parent_id IS NULL':'';
   // EPG defines station identity, not availability: only indexed provider streams make a station visible.
   terms.push('EXISTS(SELECT 1 FROM variants v WHERE v.title_id=t.id'+variantFilter+')');
