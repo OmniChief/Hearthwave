@@ -391,6 +391,15 @@ export function selectCategories(sourceId: number, selected: Array<{ kind: Provi
   });
 }
 
+/** Remove a source's old live catalogue when it has no live folders selected. */
+export function clearSourceLiveChannels(sourceId: number): void {
+  transaction(() => {
+    db.prepare(`DELETE FROM variants
+      WHERE source_id=? AND series_parent_id IS NULL
+        AND title_id IN (SELECT id FROM titles WHERE kind='channel')`).run(sourceId);
+  });
+}
+
 export function deleteSource(id: number): boolean {
   return db.prepare('DELETE FROM sources WHERE id=?').run(id).changes > 0;
 }
