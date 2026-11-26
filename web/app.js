@@ -153,7 +153,7 @@ function mediaCard(item) {
 
 function liveCard(item) {
   const artwork=typeof item.artwork==='string' && /^https?:\/\//i.test(item.artwork) ? `<img src="${esc(item.artwork)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '▻';
-  return `<div class="channel-row"><button class="channel-play" ${item.source_count?`data-play="${item.id}"`:`data-guide="${item.id}"`}><span class="channel-icon">${artwork}</span><span><strong>${esc(item.title)}</strong><small>${esc(liveGenre(item))} · ${item.source_count?`${item.source_count} source${item.source_count===1?'':'s'}${item.epg_backed?' · EPG matched':' · Provider only'}${item.source_types?' · '+esc(item.source_types.split(',').map(type=>({m3u:'IPTV (M3U)',xtream:'IPTV (Xtream)',stalker:'Stalker',direct:'Direct'})[type]||type).join(' + ')):''}`:'EPG only · no connection'}</small></span></button><div class="channel-controls"><button class="button button-quiet button-small" data-guide="${item.id}" aria-label="Programme guide for ${esc(item.title)}">Guide</button>${state.session?.user?.role==='admin'&&item.source_types?.split(',').includes('stalker')?`<button class="button button-quiet button-small" data-stalker-debug="${item.id}">Debug</button>`:''}<button class="star-button ${item.favourite?'is-favourite':''}" data-favourite="${item.id}" data-next="${item.favourite?'0':'1'}" aria-label="${item.favourite?'Remove from':'Add to'} favourites">${item.favourite?'★':'☆'}</button></div></div>`;
+  return `<div class="channel-row"><button class="channel-play" ${item.source_count?`data-play="${item.id}"`:`data-guide="${item.id}"`}><span class="channel-icon">${artwork}</span><span><strong>${esc(item.title)}</strong><small>${esc(liveGenre(item))} · ${item.source_count?`${item.source_count} source${item.source_count===1?'':'s'}${item.epg_backed?' · EPG matched':' · Provider only'}${item.source_types?' · '+esc(item.source_types.split(',').map(type=>({m3u:'IPTV (M3U)',xtream:'IPTV (Xtream)',stalker:'Stalker',direct:'Direct'})[type]||type).join(' + ')):''}`:'EPG only · no connection'}</small></span></button><div class="channel-controls">${state.liveView==='favourites'?`<button class="button button-quiet button-small" data-favourite-move="${item.id}" data-direction="up" aria-label="Move ${esc(item.title)} up">↑</button><button class="button button-quiet button-small" data-favourite-move="${item.id}" data-direction="down" aria-label="Move ${esc(item.title)} down">↓</button>`:''}<button class="button button-quiet button-small" data-guide="${item.id}" aria-label="Programme guide for ${esc(item.title)}">Guide</button>${state.session?.user?.role==='admin'&&item.source_types?.split(',').includes('stalker')?`<button class="button button-quiet button-small" data-stalker-debug="${item.id}">Debug</button>`:''}<button class="star-button ${item.favourite?'is-favourite':''}" data-favourite="${item.id}" data-next="${item.favourite?'0':'1'}" aria-label="${item.favourite?'Remove from':'Add to'} favourites">${item.favourite?'★':'☆'}</button></div></div>`;
 }
 
 function sourceOptions(variants,titleId,kind='film') {
@@ -1360,6 +1360,11 @@ page.addEventListener('click', async event => {
   if (target.dataset.play) {
     try { await startPlayback(target.dataset.play,target.dataset.preferred || null); }
     catch (error) { notify(error.message,true); }
+  }
+  if (target.dataset.favouriteMove) {
+    try { await api('/api/favourites/' + target.dataset.favouriteMove + '/' + target.dataset.direction,{method:'POST'}); await renderPage(); }
+    catch(error){notify(error.message,true);}
+    return;
   }
   if (target.dataset.favourite) {
     try {

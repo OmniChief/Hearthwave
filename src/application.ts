@@ -14,7 +14,7 @@ import { libraryGenres } from './library-genres.ts';
 import { qualityPreferences, type QualityPreference } from './quality.ts';
 import { BackupError, backupBusy, streamBackup } from './backup.ts';
 import { UpdateError, checkForUpdate, startUpdate, updateStatus } from './updater.ts';
-import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, completeImport, countTitles, createCollection, createSmartCollection, createUser, dashboardStats, dataDir, db, deleteCollection, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, libraryGenreCounts, listCategories, listCollections, listGuideFeeds, listSeriesEpisodes, liveSourceCounts, listSources, listTitles, listVariants, loadSession, ownedCollection, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, renameCollection, replaceSeriesEpisodes, saveCategories, clearSourceLiveChannels, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setCollectionMembership, setFavourite, setWatchlisted, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, updateSmartCollectionRules, type GuideFeed, type SmartRules, type SourceRow } from './db.ts';
+import { abortGuideImport, addGuideFeed, addSource, channelGenreCounts, completeImport, countTitles, createCollection, createSmartCollection, createUser, dashboardStats, dataDir, db, deleteCollection, deleteGuideFeed, deleteSource, enrichTitleMetadata, findUser, getGuideFeed, getGuideMapping, getSource, getTitle, getTitleDetail, getUserPreferences, getVariant, guideGrid, hasUsers, importBatch, libraryGenreCounts, listCategories, listCollections, listGuideFeeds, listSeriesEpisodes, liveSourceCounts, listSources, listTitles, listVariants, loadSession, ownedCollection, publicGuideFeed, publicSource, publicUsers, removeGuideMapping, removeSession, renameCollection, replaceSeriesEpisodes, saveCategories, clearSourceLiveChannels, saveGuideMapping, saveProgress, saveSession, searchGuideChannels, selectCategories, setCollectionMembership, setFavourite, moveFavourite, setWatchlisted, setGuideStatus, setSourceStatus, setUserPreferences, storedGuide, titleExists, updateSmartCollectionRules, type GuideFeed, type SmartRules, type SourceRow } from './db.ts';
 import { discoverProvider, discoverSeriesEpisodes, fetchTitleMetadata, importProvider, providerGuide, resolveProviderStream, debugStalkerStream, compareStalkerMediaRequests, type ProviderScanProgress } from './adapters/providers.ts';
 import { importXmltv } from './guide.ts';
 import { localSubtitles, subtitleVtt } from './subtitles.ts';
@@ -1015,6 +1015,14 @@ async function dispatchApi(req:IncomingMessage,res:ServerResponse,url:URL,body:B
     if (typeof input.favourite !== 'boolean') throw new HttpError(400, 'Expected a favourite boolean.');
     setFavourite(current.user.id, titleId, input.favourite);
     return send(res, 200, { favourite: input.favourite });
+  }
+  const favouriteOrderMatch = /^\/api\/favourites\/(\d+)\/(up|down)$/.exec(path);
+  if (favouriteOrderMatch && method === 'POST') {
+    requireWrite(req);
+    const titleId=positiveId(favouriteOrderMatch[1]);
+    if(!titleExists(titleId))throw new HttpError(404,'Channel not found.');
+    moveFavourite(current.user.id,titleId,favouriteOrderMatch[2] as 'up'|'down');
+    return send(res,200,{ok:true});
   }
   const progressMatch = /^\/api\/titles\/(\d+)\/progress$/.exec(path);
   if (progressMatch && method === 'POST') {
