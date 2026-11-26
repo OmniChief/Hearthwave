@@ -175,12 +175,12 @@ function cataloguePager(result,scope) {
 }
 
 async function renderHome() {
-  const [stats, library, live, continueWatching,watchlist,favouriteChannels] = await Promise.all([api('/api/stats'), api('/api/catalogue?kind=library&limit=6&sort=added&preview=1'), api('/api/catalogue?kind=channel&limit=6&preview=1'), api('/api/catalogue?kind=library&view=continue&sort=activity&limit=6&preview=1'),api('/api/catalogue?kind=library&view=watchlist&limit=6&preview=1'),api('/api/catalogue?kind=channel&view=favourites&limit=6&preview=1')]);
+  const [stats, library, continueWatching,watchlist,favouriteChannels] = await Promise.all([api('/api/stats'), api('/api/catalogue?kind=library&limit=6&sort=added&preview=1'), api('/api/catalogue?kind=library&view=continue&sort=activity&limit=6&preview=1'),api('/api/catalogue?kind=library&view=watchlist&limit=6&preview=1'),api('/api/catalogue?kind=channel&view=favourites&limit=6&preview=1')]);
   if(state.page!=='home'||!state.session)return;
   state.stats = stats;
-  state.items = [...continueWatching.items,...library.items, ...live.items,...watchlist.items,...favouriteChannels.items];
+  state.items = [...continueWatching.items,...library.items,...watchlist.items,...favouriteChannels.items];
   state.browseItems=state.items;
-  state.channelQueue = live.items.filter(item=>item.source_count>0).slice(0,6).map(item=>item.id);
+  state.channelQueue = favouriteChannels.items.filter(item=>item.source_count>0).map(item=>item.id);
   const recent = library.items.filter(item => item.kind !== 'channel').slice(0, 6);
   page.innerHTML = `<section class="hero"><div><span class="eyebrow">WELCOME TO HEARTHWAVE</span><h2>All your entertainment.<br>One happy place.</h2><p>Movies, music and live television belong together. Your own server, your sources and your choices.</p><button class="button button-primary" data-page="library">Explore your library <span>↗</span></button></div><div class="hero-art"><div class="hero-disc"></div></div></section>
     <div class="stat-grid"><div class="stat"><small>Library titles</small><strong>${stats.items}</strong><span>Grouped across sources</span></div><div class="stat"><small>Live channels</small><strong>${stats.channels}</strong><span>One shared lineup</span></div><div class="stat"><small>Configured sources</small><strong>${stats.sources}</strong><span>Managed in Settings</span></div></div>
@@ -188,9 +188,7 @@ async function renderHome() {
     ${watchlist.items.length?`${heading('Your watchlist','Saved for later.','<button class="link-button" data-home-watchlist>See watchlist →</button>')}<div class="cards">${watchlist.items.map(mediaCard).join('')}</div>`:''}
     ${favouriteChannels.items.length?`${heading('Favourite channels','Jump straight to your favourites.','<button class="link-button" data-home-live-favourites>See favourites →</button>')}<div class="live-list">${favouriteChannels.items.map(liveCard).join('')}</div>`:''}
     ${heading('Your library', 'Pick up something good.', `<button class="link-button" data-page="library">View library →</button>`)}
-    ${recent.length ? `<div class="cards">${recent.map(mediaCard).join('')}</div>` : emptyState('Your library starts here', 'Add a media folder in Settings, then scan it to discover films, episodes, music and photos.', '▣')}
-    ${heading('Live channels', 'Any source. One familiar lineup.', `<button class="link-button" data-page="live">Watch live →</button>`)}
-    ${live.items.length ? `<div class="live-list">${live.items.slice(0, 6).map(liveCard).join('')}</div>` : emptyState('No channels yet', 'Add a direct channel or import an M3U playlist in Settings > Sources.', '▻')}`;
+    ${recent.length ? `<div class="cards">${recent.map(mediaCard).join('')}</div>` : emptyState('Your library starts here', 'Add a media folder in Settings, then scan it to discover films, episodes, music and photos.', '▣')}`;
 }
 
 const smartKindOptions = [{key:'all',label:'All Library media'},{key:'film',label:'Films'},{key:'series',label:'Series'},{key:'episode',label:'Episodes'},{key:'music',label:'Music'},{key:'photo',label:'Photos'}];
