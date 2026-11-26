@@ -637,7 +637,7 @@ export function listTitles(kind:BrowseKind,userId:number,query='',view:Catalogue
   migrateEpisodeWatchlist(userId);
   const filter=browseFilter(kind,query,view,country,genre,libraryGenre,collection,userId);
   const joins=browseJoins(view,collection);
-  const order=kind==='channel' && view==='favourites' ? 't.favourite_position,t.title COLLATE NOCASE,t.id' : kind==='channel'? "CASE t.channel_country WHEN 'GB' THEN 0 WHEN 'US' THEN 1 ELSE 2 END, CASE WHEN "+activeEpg+" THEN 0 ELSE 1 END, CASE t.live_genre WHEN 'General' THEN 0 WHEN 'Entertainment' THEN 1 WHEN 'Sports' THEN 2 WHEN 'Movies' THEN 3 WHEN 'News' THEN 4 WHEN 'Kids' THEN 5 WHEN 'Documentary' THEN 6 WHEN 'Music' THEN 7 ELSE 8 END,t.title COLLATE NOCASE,t.id":
+  const order=kind==='channel' && view==='favourites' ? 'f.position,t.title COLLATE NOCASE,t.id' : kind==='channel'? "CASE t.channel_country WHEN 'GB' THEN 0 WHEN 'US' THEN 1 ELSE 2 END, CASE WHEN "+activeEpg+" THEN 0 ELSE 1 END, CASE t.live_genre WHEN 'General' THEN 0 WHEN 'Entertainment' THEN 1 WHEN 'Sports' THEN 2 WHEN 'Movies' THEN 3 WHEN 'News' THEN 4 WHEN 'Kids' THEN 5 WHEN 'Documentary' THEN 6 WHEN 'Music' THEN 7 ELSE 8 END,t.title COLLATE NOCASE,t.id":
     {title:'t.title COLLATE NOCASE,t.id',year:'(t.year IS NULL),t.year DESC,t.title COLLATE NOCASE,t.id',added:'t.id DESC',activity:'(activity_at IS NULL),activity_at DESC,t.id DESC'}[sort];
   // Select the requested page before counting versions or inspecting ROM paths.
   // No full-catalogue GROUP BY, and per-user filters can begin with a small indexed user table.
