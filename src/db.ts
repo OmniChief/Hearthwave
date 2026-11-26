@@ -639,6 +639,7 @@ export function listTitles(kind:BrowseKind,userId:number,query='',view:Catalogue
   const joins=browseJoins(view,collection);
   const order=kind==='channel' && view==='favourites' ? 'f.position,t.title COLLATE NOCASE,t.id' : kind==='channel'? "CASE t.channel_country WHEN 'GB' THEN 0 WHEN 'US' THEN 1 ELSE 2 END, CASE WHEN "+activeEpg+" THEN 0 ELSE 1 END, CASE t.live_genre WHEN 'General' THEN 0 WHEN 'Entertainment' THEN 1 WHEN 'Sports' THEN 2 WHEN 'Movies' THEN 3 WHEN 'News' THEN 4 WHEN 'Kids' THEN 5 WHEN 'Documentary' THEN 6 WHEN 'Music' THEN 7 ELSE 8 END,t.title COLLATE NOCASE,t.id":
     {title:'t.title COLLATE NOCASE,t.id',year:'(t.year IS NULL),t.year DESC,t.title COLLATE NOCASE,t.id',added:'t.id DESC',activity:'(activity_at IS NULL),activity_at DESC,t.id DESC'}[sort];
+  const outerOrder=kind==='channel' && view==='favourites' ? 't.favourite_position,t.title COLLATE NOCASE,t.id' : order;
   // Select the requested page before counting versions or inspecting ROM paths.
   // No full-catalogue GROUP BY, and per-user filters can begin with a small indexed user table.
   return db.prepare("WITH selected AS MATERIALIZED (SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,COALESCE(NULLIF(t.artwork,''),(SELECT parent.artwork FROM variants episode_variant JOIN titles parent ON parent.id=episode_variant.series_parent_id WHERE episode_variant.title_id=t.id AND episode_variant.series_parent_id IS NOT NULL AND parent.kind='series' AND NULLIF(parent.artwork,'') IS NOT NULL ORDER BY episode_variant.id LIMIT 1)) AS artwork,t.channel_country,t.live_genre,CASE WHEN f.title_id IS NULL THEN 0 ELSE 1 END AS favourite,f.position AS favourite_position,CASE WHEN w.title_id IS NOT NULL OR (t.kind='episode' AND EXISTS(SELECT 1 FROM variants ev JOIN watchlist sw ON sw.title_id=ev.series_parent_id AND sw.user_id=? WHERE ev.title_id=t.id AND ev.series_parent_id IS NOT NULL)) THEN 1 ELSE 0 END AS watchlisted,p.position_seconds,p.updated_at AS activity_at FROM titles t"+
@@ -648,7 +649,7 @@ export function listTitles(kind:BrowseKind,userId:number,query='',view:Catalogue
     "(SELECT MIN(v.id) FROM variants v WHERE v.title_id=t.id"+filter.variantFilter+") AS variant_id,"+
     "(SELECT COUNT(*) FROM variants v WHERE v.title_id=t.id"+filter.variantFilter+") AS source_count,"+
     "CASE WHEN t.kind='game' THEN (SELECT v.source_ref FROM variants v WHERE v.title_id=t.id"+filter.variantFilter+" ORDER BY v.id LIMIT 1) END AS game_path "+
-    "FROM selected t ORDER BY "+order).all(userId,...Array(joins.count).fill(userId),...filter.params,Math.min(250,Math.max(1,limit)),Math.max(0,offset));
+    "FROM selected t ORDER BY "+outerOrder).all(userId,...Array(joins.count).fill(userId),...filter.params,Math.min(250,Math.max(1,limit)),Math.max(0,offset));
 }
 export function countTitles(kind:BrowseKind,userId:number,query='',view:CatalogueView='all',country='',genre='',libraryGenre='',collection?:CollectionSettings):number{
   migrateEpisodeWatchlist(userId);
