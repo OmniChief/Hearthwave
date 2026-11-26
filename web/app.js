@@ -153,7 +153,7 @@ function mediaCard(item) {
 
 function liveCard(item) {
   const artwork=typeof item.artwork==='string' && /^https?:\/\//i.test(item.artwork) ? `<img src="${esc(item.artwork)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '▻';
-  return `<div class="channel-row"><button class="channel-play" ${item.source_count?`data-play="${item.id}"`:`data-guide="${item.id}"`}><span class="channel-icon">${artwork}</span><span><strong>${esc(item.title)}</strong><small>${esc(liveGenre(item))} · ${item.source_count?`${item.source_count} source${item.source_count===1?'':'s'}${item.epg_backed?' · EPG matched':' · Provider only'}${item.source_types?' · '+esc(item.source_types.split(',').map(type=>({m3u:'IPTV (M3U)',xtream:'IPTV (Xtream)',stalker:'Stalker',direct:'Direct'})[type]||type).join(' + ')):''}`:'EPG only · no connection'}</small></span></button><div class="channel-controls">${state.liveView==='favourites'?`<button class="button button-quiet button-small" data-favourite-move="${item.id}" data-direction="up" aria-label="Move ${esc(item.title)} up">↑</button><button class="button button-quiet button-small" data-favourite-move="${item.id}" data-direction="down" aria-label="Move ${esc(item.title)} down">↓</button>`:''}<button class="button button-quiet button-small" data-guide="${item.id}" aria-label="Programme guide for ${esc(item.title)}">Guide</button>${state.session?.user?.role==='admin'&&item.source_types?.split(',').includes('stalker')?`<button class="button button-quiet button-small" data-stalker-debug="${item.id}">Debug</button>`:''}<button class="star-button ${item.favourite?'is-favourite':''}" data-favourite="${item.id}" data-next="${item.favourite?'0':'1'}" aria-label="${item.favourite?'Remove from':'Add to'} favourites">${item.favourite?'★':'☆'}</button></div></div>`;
+  return `<div class="channel-row"><button class="channel-play" ${item.source_count?`data-play="${item.id}"`:`data-guide="${item.id}"`}><span class="channel-icon">${artwork}</span><span><strong>${esc(item.title)}</strong><small>${esc(liveGenre(item))} · ${item.source_count?`${item.source_count} source${item.source_count===1?'':'s'}${item.epg_backed?' · EPG matched':' · Provider only'}${item.source_types?' · '+esc(item.source_types.split(',').map(type=>({m3u:'IPTV (M3U)',xtream:'IPTV (Xtream)',stalker:'Stalker',direct:'Direct'})[type]||type).join(' + ')):''}`:'EPG only · no connection'}</small></span></button><div class="channel-controls">${state.liveView==='favourites'?'<form class="favourite-position-form" data-favourite-position="'+item.id+'"><input type="number" name="position" min="1" step="1" value="'+(Number.isSafeInteger(item.favourite_position)?item.favourite_position+1:1)+'" aria-label="Position for '+esc(item.title)+'"><button class="button button-quiet button-small" type="submit">Set</button></form>':''}<button class="button button-quiet button-small" data-guide="${item.id}" aria-label="Programme guide for ${esc(item.title)}">Guide</button>${state.session?.user?.role==='admin'&&item.source_types?.split(',').includes('stalker')?`<button class="button button-quiet button-small" data-stalker-debug="${item.id}">Debug</button>`:''}<button class="star-button ${item.favourite?'is-favourite':''}" data-favourite="${item.id}" data-next="${item.favourite?'0':'1'}" aria-label="${item.favourite?'Remove from':'Add to'} favourites">${item.favourite?'★':'☆'}</button></div></div>`;
 }
 
 function sourceOptions(variants,titleId,kind='film') {
@@ -1081,6 +1081,16 @@ page.addEventListener('error', event => { if (event.target?.matches?.('.media-ar
 
 page.addEventListener('submit', async event => {
   const form = event.target;
+  if(form.dataset.favouritePosition){
+    event.preventDefault();
+    const position=Number(new FormData(form).get('position'));
+    const submit=form.querySelector('button[type=submit]');
+    if(!Number.isSafeInteger(position)||position<1)return notify('Enter a positive whole-number position.',true);
+    submit.disabled=true;
+    try{await api('/api/favourites/'+form.dataset.favouritePosition+'/position',{method:'POST',body:{position}});notify('Favourite order updated.');await renderPage();}
+    catch(error){notify(error.message,true);submit.disabled=false;}
+    return;
+  }
   if(form.dataset.requestForm)return requests.submit(event);
   if(form.dataset.roomForm) return rooms.submit(event,()=>space.render('community'));
   if(form.dataset.workerForm) return workers.submit(event);
