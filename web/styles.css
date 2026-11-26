@@ -188,6 +188,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .channel-play { display:flex; gap:12px; text-align:left; align-items:center; flex:1 0 auto; width:100%; min-width:0; min-height:48px; background:transparent; border:0; color:inherit; padding:0; }
 .channel-play > span:last-child { flex:1; min-width:0; overflow-wrap:break-word; }
 .channel-controls { display:flex; flex-wrap:wrap; align-items:center; gap:8px; min-width:0; }
+.favourite-position-form { display:inline-flex; align-items:center; gap:5px; margin:0; }
+.favourite-position-form input { width:58px; min-height:34px; padding:5px 6px; border:1px solid var(--stroke); border-radius:8px; background:var(--panel); color:var(--text); font:inherit; font-size:12px; text-align:center; }
+.favourite-position-form .button { min-height:34px; padding:5px 9px; }
 .channel-controls .button { flex:0 0 auto; white-space:nowrap; }
 .channel-controls .star-button { display:flex; align-items:center; justify-content:center; margin-left:auto; min-height:34px; flex:0 0 36px; padding:0; }
 .channel-icon { width:48px; height:48px; display:grid; place-items:center; border-radius:12px; background:#2f3649; color:var(--peach); font-size:23px; flex:0 0 48px; }
