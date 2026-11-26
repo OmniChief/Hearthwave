@@ -609,8 +609,9 @@ function browseFilter(kind:BrowseKind,query:string,view:CatalogueView,country:st
   if(libraryGenre){terms.push('EXISTS(SELECT 1 FROM library_genres lg WHERE lg.title_id=t.id AND lg.genre=?)');params.push(libraryGenre);}
   const rootOnly=kind!=='episode'&&!collection&&!(kind==='library'&&view==='continue');
   const variantFilter=rootOnly?' AND v.series_parent_id IS NULL':'';
-  // EPG defines station identity, not availability: only indexed provider streams make a station visible.
-  terms.push('EXISTS(SELECT 1 FROM variants v WHERE v.title_id=t.id'+variantFilter+')');
+  // A series backed only by locally indexed episodes is still a real library entry.
+  if(rootOnly) terms.push("(EXISTS(SELECT 1 FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL) OR (t.kind='series' AND EXISTS(SELECT 1 FROM variants child WHERE child.series_parent_id=t.id)))");
+  else terms.push('EXISTS(SELECT 1 FROM variants v WHERE v.title_id=t.id'+variantFilter+')');
   const filter=collectionClause(collection,userId);
   return {where:terms.join(' AND ')+filter.sql,params:[...params,...filter.params],variantFilter};
 }
@@ -624,22 +625,24 @@ function browseJoins(view:CatalogueView,collection?:CollectionSettings,allFields
     (watch?join('watchlist','w',view==='watchlist'):''),count:Number(favourite)+Number(progress)+Number(watch)};
 }
 export function listTitles(kind:BrowseKind,userId:number,query='',view:CatalogueView='all',sort:CatalogueSort='title',limit=250,offset=0,country='',genre='',libraryGenre='',collection?:CollectionSettings):unknown[]{
+  migrateEpisodeWatchlist(userId);
   const filter=browseFilter(kind,query,view,country,genre,libraryGenre,collection,userId);
   const joins=browseJoins(view,collection);
   const order=kind==='channel'? "CASE t.channel_country WHEN 'GB' THEN 0 WHEN 'US' THEN 1 ELSE 2 END, CASE WHEN "+activeEpg+" THEN 0 ELSE 1 END, CASE t.live_genre WHEN 'General' THEN 0 WHEN 'Entertainment' THEN 1 WHEN 'Sports' THEN 2 WHEN 'Movies' THEN 3 WHEN 'News' THEN 4 WHEN 'Kids' THEN 5 WHEN 'Documentary' THEN 6 WHEN 'Music' THEN 7 ELSE 8 END,t.title COLLATE NOCASE,t.id":
     {title:'t.title COLLATE NOCASE,t.id',year:'(t.year IS NULL),t.year DESC,t.title COLLATE NOCASE,t.id',added:'t.id DESC',activity:'(activity_at IS NULL),activity_at DESC,t.id DESC'}[sort];
   // Select the requested page before counting versions or inspecting ROM paths.
   // No full-catalogue GROUP BY, and per-user filters can begin with a small indexed user table.
-  return db.prepare("WITH selected AS MATERIALIZED (SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,COALESCE(NULLIF(t.artwork,''),(SELECT parent.artwork FROM variants episode_variant JOIN titles parent ON parent.id=episode_variant.series_parent_id WHERE episode_variant.title_id=t.id AND episode_variant.series_parent_id IS NOT NULL AND parent.kind='series' AND NULLIF(parent.artwork,'') IS NOT NULL ORDER BY episode_variant.id LIMIT 1)) AS artwork,t.channel_country,t.live_genre,CASE WHEN f.title_id IS NULL THEN 0 ELSE 1 END AS favourite,CASE WHEN w.title_id IS NULL THEN 0 ELSE 1 END AS watchlisted,p.position_seconds,p.updated_at AS activity_at FROM titles t"+
+  return db.prepare("WITH selected AS MATERIALIZED (SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,COALESCE(NULLIF(t.artwork,''),(SELECT parent.artwork FROM variants episode_variant JOIN titles parent ON parent.id=episode_variant.series_parent_id WHERE episode_variant.title_id=t.id AND episode_variant.series_parent_id IS NOT NULL AND parent.kind='series' AND NULLIF(parent.artwork,'') IS NOT NULL ORDER BY episode_variant.id LIMIT 1)) AS artwork,t.channel_country,t.live_genre,CASE WHEN f.title_id IS NULL THEN 0 ELSE 1 END AS favourite,CASE WHEN w.title_id IS NOT NULL OR (t.kind='episode' AND EXISTS(SELECT 1 FROM variants ev JOIN watchlist sw ON sw.title_id=ev.series_parent_id AND sw.user_id=? WHERE ev.title_id=t.id AND ev.series_parent_id IS NOT NULL)) THEN 1 ELSE 0 END AS watchlisted,p.position_seconds,p.updated_at AS activity_at FROM titles t"+
     joins.sql+" WHERE "+filter.where+" ORDER BY "+order+" LIMIT ? OFFSET ?) "+
     "SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,t.artwork,t.channel_country,t.live_genre,t.favourite,t.watchlisted,t.position_seconds,CASE WHEN "+activeEpg+" THEN 1 ELSE 0 END AS epg_backed,"+
     "CASE WHEN t.kind='channel' THEN (SELECT GROUP_CONCAT(DISTINCT s.type) FROM variants v JOIN sources s ON s.id=v.source_id WHERE v.title_id=t.id AND v.series_parent_id IS NULL) ELSE NULL END AS source_types,"+
     "(SELECT MIN(v.id) FROM variants v WHERE v.title_id=t.id"+filter.variantFilter+") AS variant_id,"+
     "(SELECT COUNT(*) FROM variants v WHERE v.title_id=t.id"+filter.variantFilter+") AS source_count,"+
     "CASE WHEN t.kind='game' THEN (SELECT v.source_ref FROM variants v WHERE v.title_id=t.id"+filter.variantFilter+" ORDER BY v.id LIMIT 1) END AS game_path "+
-    "FROM selected t ORDER BY "+order).all(...Array(joins.count).fill(userId),...filter.params,Math.min(250,Math.max(1,limit)),Math.max(0,offset));
+    "FROM selected t ORDER BY "+order).all(userId,...Array(joins.count).fill(userId),...filter.params,Math.min(250,Math.max(1,limit)),Math.max(0,offset));
 }
 export function countTitles(kind:BrowseKind,userId:number,query='',view:CatalogueView='all',country='',genre='',libraryGenre='',collection?:CollectionSettings):number{
+  migrateEpisodeWatchlist(userId);
   const filter=browseFilter(kind,query,view,country,genre,libraryGenre,collection,userId);
   const joins=browseJoins(view,collection,false);
   return Number(db.prepare('SELECT COUNT(*) AS total FROM titles t'+joins.sql+' WHERE '+filter.where).get(...Array(joins.count).fill(userId),...filter.params)?.total||0);
@@ -733,12 +736,13 @@ export function getTitleDetail(id:number,userId:number): unknown | undefined {
     t.description,t.genres,t.rating,t.duration_seconds,t.imdb_id,t.tmdb_id,t.channel_country,
     (SELECT COUNT(*) FROM variants v WHERE v.title_id=t.id) AS source_count,
     (SELECT MAX(v.episode_name) FROM variants v WHERE v.title_id=t.id) AS episode_name,
-    CASE WHEN f.title_id IS NULL THEN 0 ELSE 1 END AS favourite,CASE WHEN w.title_id IS NULL THEN 0 ELSE 1 END AS watchlisted,p.position_seconds
+    CASE WHEN f.title_id IS NULL THEN 0 ELSE 1 END AS favourite,
+    CASE WHEN w.title_id IS NOT NULL OR EXISTS(SELECT 1 FROM variants ev JOIN watchlist sw ON sw.title_id=ev.series_parent_id AND sw.user_id=? WHERE ev.title_id=t.id AND ev.series_parent_id IS NOT NULL) THEN 1 ELSE 0 END AS watchlisted,p.position_seconds
     FROM titles t LEFT JOIN favourites f ON f.title_id=t.id AND f.user_id=?
     LEFT JOIN progress p ON p.title_id=t.id AND p.user_id=?
     LEFT JOIN watchlist w ON w.title_id=t.id AND w.user_id=?
-    WHERE t.id=? AND EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id)`)
-    .get(userId,userId,userId,id);
+    WHERE t.id=? AND (EXISTS (SELECT 1 FROM variants v WHERE v.title_id=t.id) OR EXISTS (SELECT 1 FROM variants child WHERE child.series_parent_id=t.id))`)
+    .get(userId,userId,userId,userId,id);
 }
 
 /** Explicit provider metadata refresh; blank fields never erase previously indexed information. */
@@ -820,18 +824,39 @@ export function getVariant(id: number): VariantRow | undefined {
   return { ...variant, quality_tier:tier,quality_rank:qualityRank(tier),url: secrets.open(variant.url), source_location: secrets.open(variant.source_location) };
 }
 
+function migrateEpisodeWatchlist(userId:number):void {
+  const savedEpisodes=db.prepare(`SELECT w.title_id FROM watchlist w JOIN titles t ON t.id=w.title_id
+    WHERE w.user_id=? AND t.kind='episode' ORDER BY w.added,w.title_id`).all(userId) as Array<{title_id:number}>;
+  for(const row of savedEpisodes) setWatchlisted(userId,row.title_id,true);
+}
+
 export function setWatchlisted(userId:number,titleId:number,include:boolean):void {
-  // An episode action represents the whole series in the watchlist.
-  const parent=db.prepare(`SELECT parent.id FROM variants episode_variant
-    JOIN titles parent ON parent.id=episode_variant.series_parent_id
-    WHERE episode_variant.title_id=? AND parent.kind='series'
-    ORDER BY episode_variant.id LIMIT 1`).get(titleId) as {id:number}|undefined;
-  const savedTitleId=parent?.id ?? titleId;
+  const item=db.prepare('SELECT id,kind,title,year,artwork,description,genres,rating,duration_seconds FROM titles WHERE id=?')
+    .get(titleId) as {id:number;kind:MediaKind;title:string;year:number|null;artwork:string;description:string;genres:string;rating:number|null;duration_seconds:number|null}|undefined;
+  if(!item) return;
+  let seriesId=titleId;
+  if(item.kind==='episode'){
+    const linked=db.prepare(`SELECT parent.id FROM variants episode_variant
+      JOIN titles parent ON parent.id=episode_variant.series_parent_id
+      WHERE episode_variant.title_id=? AND parent.kind='series'
+      ORDER BY episode_variant.id LIMIT 1`).get(titleId) as {id:number}|undefined;
+    const existing=linked??db.prepare(`SELECT id FROM titles
+      WHERE kind='series' AND LOWER(TRIM(title))=LOWER(TRIM(?))
+        AND (year=? OR year IS NULL OR ? IS NULL)
+      ORDER BY id LIMIT 1`).get(item.title,item.year,item.year) as {id:number}|undefined;
+    if(existing) seriesId=existing.id;
+    else {
+      const seriesKey=canonicalKey({kind:'series',title:item.title,year:item.year,sourceRef:`watchlist-series:${titleId}`,url:''});
+      seriesId=Number((upsertTitle.get(seriesKey,'series',item.title,item.year,null,null,'Series',item.artwork||'','','',item.description||'',item.genres||'',item.rating,item.duration_seconds,'','','','Other') as {id:number}).id);
+    }
+    db.prepare('UPDATE variants SET series_parent_id=? WHERE title_id=? AND series_parent_id IS NULL').run(seriesId,titleId);
+  }
   if(include){
-    db.prepare('INSERT OR IGNORE INTO watchlist(user_id,title_id,added) VALUES(?,?,?)').run(userId,savedTitleId,Date.now());
-    if(parent)db.prepare(`DELETE FROM watchlist WHERE user_id=? AND title_id IN
-      (SELECT episode_variant.title_id FROM variants episode_variant WHERE episode_variant.series_parent_id=?)`).run(userId,savedTitleId);
-  }else db.prepare('DELETE FROM watchlist WHERE user_id=? AND title_id=?').run(userId,savedTitleId);
+    db.prepare('INSERT OR IGNORE INTO watchlist(user_id,title_id,added) VALUES(?,?,?)').run(userId,seriesId,Date.now());
+    if(item.kind==='episode')db.prepare('DELETE FROM watchlist WHERE user_id=? AND title_id=?').run(userId,titleId);
+  }else{
+    db.prepare('DELETE FROM watchlist WHERE user_id=? AND title_id IN (?,?)').run(userId,seriesId,titleId);
+  }
 }
 
 export function setFavourite(userId: number, titleId: number, favourite: boolean): void {
@@ -954,11 +979,12 @@ export function storedGuide(titleId:number,limit=12,windowStart?:number,windowEn
   return {programmes:[],source:fallback?.source||'',icon:fallback?.icon||''};
 }
 
-export function guideGrid(country:string,limit=40,query='',offset=0,windowStart?:number,windowEnd?:number):{items:unknown[];total:number} {
+export function guideGrid(country:string,limit=40,query='',offset=0,windowStart?:number,windowEnd?:number,channelIds?:number[]):{items:unknown[];total:number} {
   const search='%'+query.replace(/[\\%_]/g,'\\$&')+'%';
-  const filter="t.kind='channel' AND (?='' OR t.channel_country=?) AND t.title LIKE ? ESCAPE '\\' AND EXISTS(SELECT 1 FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL)";
-  const total=Number(db.prepare('SELECT COUNT(*) AS total FROM titles t WHERE '+filter).get(country,country,search)?.total||0);
-  const rows=db.prepare("SELECT t.id,t.kind,t.title,t.artwork,t.channel_country,(SELECT COUNT(*) FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL) AS source_count FROM titles t WHERE "+filter+" ORDER BY CASE t.channel_country WHEN 'GB' THEN 0 WHEN 'US' THEN 1 ELSE 2 END, CASE WHEN "+activeEpg+" THEN 0 ELSE 1 END,t.title COLLATE NOCASE,t.id LIMIT ? OFFSET ?").all(country,country,search,limit,offset) as Array<{id:number;title:string;artwork:string;channel_country:string;source_count:number}>;
+  const filter="t.kind='channel' AND (?='' OR t.channel_country=?) AND t.title LIKE ? ESCAPE '\\' AND EXISTS(SELECT 1 FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL)"+(channelIds===undefined?'':channelIds.length?' AND t.id IN ('+channelIds.map(()=>'?').join(',')+')':' AND 0');
+  const params=[country,country,search,...(channelIds??[])];
+  const total=Number(db.prepare('SELECT COUNT(*) AS total FROM titles t WHERE '+filter).get(...params)?.total||0);
+  const rows=db.prepare("SELECT t.id,t.kind,t.title,t.artwork,t.channel_country,(SELECT COUNT(*) FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL) AS source_count FROM titles t WHERE "+filter+" ORDER BY CASE t.channel_country WHEN 'GB' THEN 0 WHEN 'US' THEN 1 ELSE 2 END, CASE WHEN "+activeEpg+" THEN 0 ELSE 1 END,t.title COLLATE NOCASE,t.id LIMIT ? OFFSET ?").all(...params,limit,offset) as Array<{id:number;title:string;artwork:string;channel_country:string;source_count:number}>;
   return {items:rows.map(row=>{const guide=storedGuide(row.id,48,windowStart,windowEnd);return {...row,artwork:row.artwork||guide.icon,guide};}),total};
 }
 export function dashboardStats():{items:number;channels:number;sources:number}{
