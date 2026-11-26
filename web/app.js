@@ -8,7 +8,7 @@ import { prepareMedia } from './hls-playback.js';
 import { browserPlaybackCapabilities, connectionAdvice, nativeMediaFailure, playbackReport, streamFormat } from './playback-diagnostics.js';
 import { adjacentMedia, mediaQueue, presentation } from './local-media.js';
 
-const state = { session: null, page: 'home', requestView:false, playOffset: 0, playView:'all',liveView:'all', settingsTab: 'sources', kind: 'all', libraryView: 'all', libraryGenre: '', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, collectionOverview: false, collectionId: 0, collectionName: '', collectionMode: 'manual', liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], browseItems: [], mediaQueue: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], sourceJobs: {}, sourcePollTimer: null, detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, qualityPreference: 'auto', activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackRequest: 0, playbackGeneration: 0, playbackAttempts: [], recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
+const state = { session: null, page: 'home', requestView:false, playOffset: 0, playView:'all',liveView:'all', settingsTab: 'sources', kind: 'all', libraryView: 'all', libraryGenre: '', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, collectionOverview: false, collectionId: 0, collectionName: '', collectionMode: 'manual', liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideChannelIds: [], guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], browseItems: [], mediaQueue: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], sourceJobs: {}, sourcePollTimer: null, detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, qualityPreference: 'auto', activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackRequest: 0, playbackGeneration: 0, playbackAttempts: [], recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
 let releaseMedia = () => {};
 let failedPlaybackGeneration = -1;
 let latestUpdateCheck = null;
@@ -398,7 +398,7 @@ async function renderGuideGrid() {
   const windowMs=(end-start)*1000;
   const clock=value=>new Date(value).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'});
   const windowLabel=day.toLocaleDateString(undefined,{weekday:'long',day:'numeric',month:'short'});
-  const result=await api(`/api/guide/grid?country=${encodeURIComponent(state.guideCountry)}&limit=30&offset=${state.guideOffset}&q=${encodeURIComponent(state.query)}&start=${start}&end=${end}`);
+  const result=await api(`/api/guide/grid?country=${encodeURIComponent(state.guideCountry)}&limit=30&offset=${state.guideOffset}&ids=${encodeURIComponent(state.guideChannelIds.join(','))}&q=${encodeURIComponent(state.query)}&start=${start}&end=${end}`);
   if (state.page !== 'live' || !state.guideView || request!==state.guideRequest) return;
   state.items=result.items;
   state.channelQueue=result.items.filter(item=>item.source_count>0).map(item=>item.id);
@@ -1213,7 +1213,7 @@ page.addEventListener('click', async event => {
     try {await renderPage();window.scrollTo({top:0,behavior:'instant'});}catch(error){notify(error.message,true);}
     return;
   }
-  if (target.dataset.guideView) {state.guideView=target.dataset.guideView==='open';state.guideOffset=0;state.guideRequest++;if(state.guideView){state.guideDay=0;state.guideSlot=Math.floor(new Date().getHours()/6)*6;}return renderPage();}
+  if (target.dataset.guideView) {const opening=target.dataset.guideView==='open';if(opening){state.guideChannelIds=state.items.map(item=>Number(item.id)).filter(id=>Number.isSafeInteger(id)&&id>0);state.guideDay=0;state.guideSlot=Math.floor(new Date().getHours()/6)*6;}else state.guideChannelIds=[];state.guideView=opening;state.guideOffset=0;state.guideRequest++;return renderPage();}
   if (target.dataset.guideCountry !== undefined) { state.guideCountry=target.dataset.guideCountry;state.guideOffset=0;return renderPage(); }
   if (target.dataset.guideSlot !== undefined) {state.guideSlot=Number(target.dataset.guideSlot);return renderPage();}
   if (target.dataset.guideDay !== undefined) {state.guideDay=Math.max(0,Math.min(6,state.guideDay+Number(target.dataset.guideDay)));return renderPage();}
