@@ -8,7 +8,7 @@ import { prepareMedia } from './hls-playback.js';
 import { browserPlaybackCapabilities, connectionAdvice, nativeMediaFailure, playbackReport, streamFormat } from './playback-diagnostics.js';
 import { adjacentMedia, mediaQueue, presentation } from './local-media.js';
 
-const state = { session: null, page: 'home', requestView:false, playOffset: 0, playView:'all',liveView:'all', settingsTab: 'sources', kind: 'all', libraryView: 'all', libraryGenre: '', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, collectionOverview: false, collectionId: 0, collectionName: '', collectionMode: 'manual', liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideChannelIds: [], guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], browseItems: [], mediaQueue: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], sourceJobs: {}, sourcePollTimer: null, detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, qualityPreference: 'auto', activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackRequest: 0, playbackGeneration: 0, playbackAttempts: [], recoveryTimer: null, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
+const state = { session: null, page: 'home', requestView:false, playOffset: 0, playView:'all',liveView:'all', settingsTab: 'sources', kind: 'all', libraryView: 'all', libraryGenre: '', librarySort: 'title', libraryOffset: 0, libraryScroll: 0, libraryRequest: 0, collectionOverview: false, collectionId: 0, collectionName: '', collectionMode: 'manual', liveGroup: 'all', liveCountry: 'all', liveOffset: 0, liveRequest: 0, guideView: false, guideCountry: '', guideOffset: 0, guideChannelIds: [], guideDay: 0, guideSlot: Math.floor(new Date().getHours()/6)*6, guideRequest: 0, query: '', items: [], browseItems: [], mediaQueue: [], channelQueue: [], subtitleTracks: [], stats: null, sources: [], sourceJobs: {}, sourcePollTimer: null, detailId: null, seriesDetail: null, seriesEpisodes: [], seriesRefreshTimer: null, autoplayNext: false, qualityPreference: 'auto', activeTitle: null, variants: [], variantIndex: 0, resolvedUrl: null, playbackRequest: 0, playbackGeneration: 0, playbackAttempts: [], recoveryTimer: null, liveRetryIndex: -1, playbackStarted: false, lastMediaTime: 0, lastProgressSave: 0 };
 let releaseMedia = () => {};
 let failedPlaybackGeneration = -1;
 let latestUpdateCheck = null;
@@ -731,6 +731,7 @@ async function startPlayback(titleId,preferredId=null,roomPosition=null,debug=fa
   state.variants = playable;
   state.variantIndex = 0;
   state.playbackAttempts=[];
+  state.liveRetryIndex=-1;
   const queued=mediaQueue(state.browseItems,title.kind);
   state.mediaQueue=queued.includes(Number(title.id)) ? queued : kind==='video'?[]:[Number(title.id)];
   renderVariantPicker();
@@ -841,11 +842,26 @@ function failSource(generation,message,code='unknown') {
   failedPlaybackGeneration=generation;
   setPlaybackStatus(generation,'Failed',code);
   clearPlaybackRecovery();
+  if(state.activeTitle?.kind==='channel') {
+    disposeMedia();
+    currentMedia().pause();
+    if(state.liveRetryIndex!==state.variantIndex) {
+      state.liveRetryIndex=state.variantIndex;
+      $('#player-message').textContent='Live stream interrupted. Reconnecting…';
+      state.recoveryTimer=setTimeout(()=>{
+        state.recoveryTimer=null;
+        if(generation===state.playbackGeneration && !$('#player-overlay').hidden) void playVariant();
+      },1800);
+      return;
+    }
+    state.liveRetryIndex=-1;
+    nextSource();
+    return;
+  }
   if(!state.stalkerDebug && state.variantIndex+1<state.variants.length) {nextSource();return;}
   disposeMedia();
   if(presentation(state.activeTitle?.kind)!=='photo') currentMedia().pause();
   $('#player-message').textContent=message;
-
 }
 
 /** An authenticated <img> only decodes the one selected photo in the viewer. */
@@ -943,6 +959,19 @@ async function playVariant() {
 
 function nextSource(manual=false) {
   if (state.variantIndex + 1 >= state.variants.length) {
+    if(state.activeTitle?.kind==='channel' && !manual) {
+      clearPlaybackRecovery();
+      state.variantIndex=-1;
+      $('#player-message').textContent='All channel connections failed. Retrying available connections…';
+      state.recoveryTimer=setTimeout(()=>{
+        state.recoveryTimer=null;
+        if($('#player-overlay').hidden || state.activeTitle?.kind!=='channel') return;
+        state.variantIndex=0;
+        state.liveRetryIndex=-1;
+        void playVariant();
+      },5000);
+      return;
+    }
     if(!manual || state.variants.length<2) {
       clearPlaybackRecovery();
       $('#player-message').textContent = 'None of the available sources could play in this browser. Try a different device or a supported format.';
@@ -1501,6 +1530,7 @@ for(const media of [$('#player'),$('#music-player')]) {
   media.addEventListener('playing',()=>{
     if(!active()) return;
     state.playbackStarted=true;
+    if(state.activeTitle?.kind==='channel') state.liveRetryIndex=-1;
     clearPlaybackRecovery();
     $('#player-message').textContent='';
     setPlaybackStatus(state.playbackGeneration,'Playing');
