@@ -629,7 +629,7 @@ async function showProviderFolders(sourceId) {
     panel.innerHTML = `<h2>${esc(source?.name || 'Provider')} folders</h2><p class="field-note">No folders discovered. Click Discover folders above, wait for the status to change, then refresh and try again.</p>`;
   } else {
     const kinds = [['live','Live TV'],['vod','Films / VOD'],['series','Series listings']];
-    panel.innerHTML = `<h2>${esc(source?.name || 'Provider')} · Choose folders</h2><p class="field-note">Only checked categories are scanned. Series titles are listed, but individual episodes are not indexed yet. Saved choices remain through later discovery runs.</p><form id="folders-form" class="field-stack"><input name="sourceId" type="hidden" value="${esc(sourceId)}">${kinds.map(([kind,title]) => { const categories = result.categories.filter(row => row.kind === kind); return categories.length ? `<fieldset class="category-set" data-folder-section="${kind}"><legend>${title} (${categories.length})</legend><div class="folder-filter-row"><input type="search" data-folder-filter="${kind}" placeholder="Search ${title.toLowerCase()}…" aria-label="Search ${title} folders"><button class="button button-quiet button-small" type="button" data-select-filtered="${kind}">Select all filtered</button></div><div class="category-grid">${categories.map(row => `<label class="checkbox-row" data-folder-option><input type="checkbox" name="category" data-kind="${esc(row.kind)}" value="${esc(row.category_id)}" ${row.selected ? 'checked':''}> ${esc(row.name)}</label>`).join('')}</div><small class="field-note" data-folder-count>${categories.length} folders</small></fieldset>` : ''; }).join('')}<button class="button button-primary" type="submit">Save folder choices</button></form>`;
+    panel.innerHTML = `<h2>${esc(source?.name || 'Provider')} · Choose folders</h2><p class="field-note">Only checked categories are scanned. Series titles are listed, but individual episodes are not indexed yet. Saved choices remain through later discovery runs.</p><form id="folders-form" class="field-stack"><input name="sourceId" type="hidden" value="${esc(sourceId)}">${kinds.map(([kind,title]) => { const categories = result.categories.filter(row => row.kind === kind); return categories.length ? `<fieldset class="category-set" data-folder-section="${kind}"><legend>${title} (${categories.length})</legend><div class="folder-filter-row"><input type="search" data-folder-filter="${kind}" placeholder="Search ${title.toLowerCase()}…" aria-label="Search ${title} folders"><button class="button button-quiet button-small" type="button" data-select-filtered="${kind}">Add filtered</button></div><div class="category-grid">${categories.map(row => `<label class="checkbox-row" data-folder-option><input type="checkbox" name="category" data-kind="${esc(row.kind)}" value="${esc(row.category_id)}" ${row.selected ? 'checked':''}> ${esc(row.name)}</label>`).join('')}</div></fieldset>` : ''; }).join('')}<button class="button button-primary" type="submit">Save folder choices</button></form>`;
   }
   panel.hidden = false;
   panel.scrollIntoView({ behavior:'smooth', block:'nearest' });
@@ -1057,14 +1057,9 @@ page.addEventListener('input', event => {
   const section=search.closest('[data-folder-section]');
   if(!section) return;
   const query=search.value.trim().toLocaleLowerCase();
-  let visible=0;
   section.querySelectorAll('[data-folder-option]').forEach(option=>{
-    const matches=option.textContent.toLocaleLowerCase().includes(query);
-    option.hidden=!matches;
-    if(matches) visible++;
+    option.hidden=!option.textContent.toLocaleLowerCase().includes(query);
   });
-  const count=section.querySelector('[data-folder-count]');
-  if(count) count.textContent=query?`${visible} of ${section.querySelectorAll('[data-folder-option]').length} folders shown`:`${visible} folders`;
 });
 
 page.addEventListener('change', event => {
