@@ -844,7 +844,6 @@ function failSource(generation,message,code='unknown') {
   clearPlaybackRecovery();
   if(state.activeTitle?.kind==='channel') {
     disposeMedia();
-    currentMedia().pause();
     if(state.liveRetryIndex!==state.variantIndex) {
       state.liveRetryIndex=state.variantIndex;
       $('#player-message').textContent='Live stream interrupted. Reconnecting…';
@@ -1529,6 +1528,7 @@ for(const media of [$('#player'),$('#music-player')]) {
   });
   media.addEventListener('playing',()=>{
     if(!active()) return;
+    if(failedPlaybackGeneration===state.playbackGeneration) failedPlaybackGeneration=-1;
     state.playbackStarted=true;
     if(state.activeTitle?.kind==='channel') state.liveRetryIndex=-1;
     clearPlaybackRecovery();
