@@ -782,7 +782,7 @@ async function dispatchApi(req:IncomingMessage,res:ServerResponse,url:URL,body:B
     let channelIds:number[]|undefined;
     if(idsValue!==null){
       const parts=idsValue?idsValue.split(','):[];
-      if(idsValue.length>800||parts.length>60||parts.some(value=>!/^[1-9]\\d*$/.test(value))||new Set(parts).size!==parts.length) throw new HttpError(400,'Invalid guide channel selection.');
+      if(idsValue.length>800||parts.length>60||parts.some(value=>!/^[1-9]\d*$/.test(value))||new Set(parts).size!==parts.length) throw new HttpError(400,'Invalid guide channel selection.');
       channelIds=parts.map(Number);
     }
     const now=Math.floor(Date.now()/1000);
