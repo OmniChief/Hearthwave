@@ -979,11 +979,12 @@ export function storedGuide(titleId:number,limit=12,windowStart?:number,windowEn
   return {programmes:[],source:fallback?.source||'',icon:fallback?.icon||''};
 }
 
-export function guideGrid(country:string,limit=40,query='',offset=0,windowStart?:number,windowEnd?:number):{items:unknown[];total:number} {
+export function guideGrid(country:string,limit=40,query='',offset=0,windowStart?:number,windowEnd?:number,channelIds?:number[]):{items:unknown[];total:number} {
   const search='%'+query.replace(/[\\%_]/g,'\\$&')+'%';
-  const filter="t.kind='channel' AND (?='' OR t.channel_country=?) AND t.title LIKE ? ESCAPE '\\' AND EXISTS(SELECT 1 FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL)";
-  const total=Number(db.prepare('SELECT COUNT(*) AS total FROM titles t WHERE '+filter).get(country,country,search)?.total||0);
-  const rows=db.prepare("SELECT t.id,t.kind,t.title,t.artwork,t.channel_country,(SELECT COUNT(*) FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL) AS source_count FROM titles t WHERE "+filter+" ORDER BY CASE t.channel_country WHEN 'GB' THEN 0 WHEN 'US' THEN 1 ELSE 2 END, CASE WHEN "+activeEpg+" THEN 0 ELSE 1 END,t.title COLLATE NOCASE,t.id LIMIT ? OFFSET ?").all(country,country,search,limit,offset) as Array<{id:number;title:string;artwork:string;channel_country:string;source_count:number}>;
+  const filter="t.kind='channel' AND (?='' OR t.channel_country=?) AND t.title LIKE ? ESCAPE '\\' AND EXISTS(SELECT 1 FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL)"+(channelIds===undefined?'':channelIds.length?' AND t.id IN ('+channelIds.map(()=>'?').join(',')+')':' AND 0');
+  const params=[country,country,search,...(channelIds??[])];
+  const total=Number(db.prepare('SELECT COUNT(*) AS total FROM titles t WHERE '+filter).get(...params)?.total||0);
+  const rows=db.prepare("SELECT t.id,t.kind,t.title,t.artwork,t.channel_country,(SELECT COUNT(*) FROM variants v WHERE v.title_id=t.id AND v.series_parent_id IS NULL) AS source_count FROM titles t WHERE "+filter+" ORDER BY CASE t.channel_country WHEN 'GB' THEN 0 WHEN 'US' THEN 1 ELSE 2 END, CASE WHEN "+activeEpg+" THEN 0 ELSE 1 END,t.title COLLATE NOCASE,t.id LIMIT ? OFFSET ?").all(...params,limit,offset) as Array<{id:number;title:string;artwork:string;channel_country:string;source_count:number}>;
   return {items:rows.map(row=>{const guide=storedGuide(row.id,48,windowStart,windowEnd);return {...row,artwork:row.artwork||guide.icon,guide};}),total};
 }
 export function dashboardStats():{items:number;channels:number;sources:number}{
