@@ -644,7 +644,7 @@ export function listTitles(kind:BrowseKind,userId:number,query='',view:Catalogue
   // No full-catalogue GROUP BY, and per-user filters can begin with a small indexed user table.
   return db.prepare("WITH selected AS MATERIALIZED (SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,COALESCE(NULLIF(t.artwork,''),(SELECT parent.artwork FROM variants episode_variant JOIN titles parent ON parent.id=episode_variant.series_parent_id WHERE episode_variant.title_id=t.id AND episode_variant.series_parent_id IS NOT NULL AND parent.kind='series' AND NULLIF(parent.artwork,'') IS NOT NULL ORDER BY episode_variant.id LIMIT 1)) AS artwork,t.channel_country,t.live_genre,CASE WHEN f.title_id IS NULL THEN 0 ELSE 1 END AS favourite,f.position AS favourite_position,CASE WHEN w.title_id IS NOT NULL OR (t.kind='episode' AND EXISTS(SELECT 1 FROM variants ev JOIN watchlist sw ON sw.title_id=ev.series_parent_id AND sw.user_id=? WHERE ev.title_id=t.id AND ev.series_parent_id IS NOT NULL)) THEN 1 ELSE 0 END AS watchlisted,p.position_seconds,p.updated_at AS activity_at FROM titles t"+
     joins.sql+" WHERE "+filter.where+" ORDER BY "+order+" LIMIT ? OFFSET ?) "+
-    "SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,t.artwork,t.channel_country,t.live_genre,t.favourite,t.watchlisted,t.position_seconds,CASE WHEN "+activeEpg+" THEN 1 ELSE 0 END AS epg_backed,"+
+    "SELECT t.id,t.kind,t.title,t.year,t.season,t.episode,t.group_name,t.artwork,t.channel_country,t.live_genre,t.favourite,t.watchlisted,t.favourite_position,t.position_seconds,CASE WHEN "+activeEpg+" THEN 1 ELSE 0 END AS epg_backed,"+
     "CASE WHEN t.kind='channel' THEN (SELECT GROUP_CONCAT(DISTINCT s.type) FROM variants v JOIN sources s ON s.id=v.source_id WHERE v.title_id=t.id AND v.series_parent_id IS NULL) ELSE NULL END AS source_types,"+
     "(SELECT MIN(v.id) FROM variants v WHERE v.title_id=t.id"+filter.variantFilter+") AS variant_id,"+
     "(SELECT COUNT(*) FROM variants v WHERE v.title_id=t.id"+filter.variantFilter+") AS source_count,"+
@@ -883,6 +883,19 @@ export function moveFavourite(userId:number,titleId:number,direction:'up'|'down'
     db.prepare('UPDATE favourites SET position=? WHERE user_id=? AND title_id=?').run(second.position,userId,first.title_id);
     db.prepare('UPDATE favourites SET position=? WHERE user_id=? AND title_id=?').run(first.position,userId,second.title_id);
   });
+}
+
+export function setFavouritePosition(userId:number,titleId:number,requestedPosition:number):boolean {
+  const rows=db.prepare('SELECT title_id FROM favourites WHERE user_id=? ORDER BY position,title_id').all(userId) as Array<{title_id:number}>;
+  const index=rows.findIndex(row=>row.title_id===titleId);
+  if(index<0||!Number.isSafeInteger(requestedPosition)||requestedPosition<1||requestedPosition>rows.length)return false;
+  const [moving]=rows.splice(index,1);
+  rows.splice(requestedPosition-1,0,moving);
+  transaction(()=>{
+    const update=db.prepare('UPDATE favourites SET position=? WHERE user_id=? AND title_id=?');
+    rows.forEach((row,position)=>update.run(position,userId,row.title_id));
+  });
+  return true;
 }
 
 export function saveProgress(userId: number, titleId: number, seconds: number): void {
